@@ -47,7 +47,8 @@ SERVICE = "phase1-jupyter"
 _SECRET_KEYS = (
     "ATP_IB_ACCOUNT",
     "ATP_SMTP_API_KEY",
-    "ATP_SMS_API_KEY",
+    "ATP_PUSH_TOPIC",
+    "ATP_PUSH_TOKEN",
     "DATABENTO_API_KEY",
     "SHARADAR_API_KEY",
     "ATP_VAULT_FILE",
@@ -116,7 +117,8 @@ def created_jupyter_container():
         # merge wins — the container env must still resolve them empty.
         "ATP_IB_ACCOUNT": "real-account-should-be-blanked",
         "ATP_SMTP_API_KEY": "smtp-should-be-blanked",
-        "ATP_SMS_API_KEY": "sms-should-be-blanked",
+        "ATP_PUSH_TOPIC": "topic-should-be-blanked",
+        "ATP_PUSH_TOKEN": "token-should-be-blanked",
         "DATABENTO_API_KEY": "databento-should-be-blanked",
         "SHARADAR_API_KEY": "sharadar-should-be-blanked",
     }

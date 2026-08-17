@@ -41,28 +41,33 @@ from atp_readiness import GateState, ReadinessGate  # noqa: E402
 
 pytestmark = [pytest.mark.domain, pytest.mark.safety]
 
-# Representative real-shaped credentials for the three AC-named channels.
+# Representative real-shaped credentials for the AC-named channels. The ntfy
+# TOPIC is here alongside the token because on ntfy the topic is itself a
+# publish credential, so it must be redacted with the same force.
 IB_ACCOUNT = "U7654321"
 SMTP_KEY = "smtp-live-key-9f8e7d6c5b4a3210"
-SMS_KEY = "sms-gw-token-abcdef0123456789"
+PUSH_TOPIC = "atp-alerts-abcdef0123456789"
+PUSH_TOKEN = "tk_pushlive0123456789abcdef"
 
 # The env an operator would supply (placeholders for the two vendor keys prove
 # placeholders are NOT treated as live secrets).
 ENV = {
     "ATP_IB_ACCOUNT": IB_ACCOUNT,
     "ATP_SMTP_API_KEY": SMTP_KEY,
-    "ATP_SMS_API_KEY": SMS_KEY,
+    "ATP_PUSH_TOPIC": PUSH_TOPIC,
+    "ATP_PUSH_TOKEN": PUSH_TOKEN,
     "DATABENTO_API_KEY": "placeholder-set-in-environment",
     "SHARADAR_API_KEY": "placeholder-set-in-environment",
 }
-LIVE_SECRETS = (IB_ACCOUNT, SMTP_KEY, SMS_KEY)
+LIVE_SECRETS = (IB_ACCOUNT, SMTP_KEY, PUSH_TOPIC, PUSH_TOKEN)
 
 
-def test_catalogue_secret_values_cover_ib_smtp_sms() -> None:
+def test_catalogue_secret_values_cover_ib_smtp_push() -> None:
     values = secret_values(ENV)
     assert IB_ACCOUNT in values, "IB account (ATP_IB_ACCOUNT) must be a catalogue secret"
     assert SMTP_KEY in values
-    assert SMS_KEY in values
+    assert PUSH_TOKEN in values
+    assert PUSH_TOPIC in values, "the ntfy topic is a publish credential (NFR-S4)"
     # Placeholders are not live secrets.
     assert "placeholder-set-in-environment" not in values
 
@@ -72,7 +77,12 @@ def test_credentials_encrypted_at_rest() -> None:
         vault_path = Path(d) / "secrets.vault"
         key = generate_key()
         CredentialVault(vault_path, key=key).seal(
-            {"ATP_IB_ACCOUNT": IB_ACCOUNT, "ATP_SMTP_API_KEY": SMTP_KEY, "ATP_SMS_API_KEY": SMS_KEY}
+            {
+                "ATP_IB_ACCOUNT": IB_ACCOUNT,
+                "ATP_SMTP_API_KEY": SMTP_KEY,
+                "ATP_PUSH_TOPIC": PUSH_TOPIC,
+                "ATP_PUSH_TOKEN": PUSH_TOKEN,
+            }
         )
         blob = vault_path.read_bytes()
         for secret in LIVE_SECRETS:
@@ -81,7 +91,8 @@ def test_credentials_encrypted_at_rest() -> None:
         assert CredentialVault(vault_path, key=key).open() == {
             "ATP_IB_ACCOUNT": IB_ACCOUNT,
             "ATP_SMTP_API_KEY": SMTP_KEY,
-            "ATP_SMS_API_KEY": SMS_KEY,
+            "ATP_PUSH_TOPIC": PUSH_TOPIC,
+            "ATP_PUSH_TOKEN": PUSH_TOKEN,
         }
 
 
@@ -208,7 +219,7 @@ def test_boot_factory_redacts_the_vault_passphrase() -> None:
     passphrase = "correct-horse-battery-staple-42"
     with TemporaryDirectory() as d:
         vault_path = Path(d) / "secrets.vault"
-        CredentialVault(vault_path, passphrase=passphrase).seal({"ATP_SMS_API_KEY": "sealed-sms"})
+        CredentialVault(vault_path, passphrase=passphrase).seal({"ATP_PUSH_TOKEN": "sealed-push"})
         env = {"ATP_VAULT_FILE": str(vault_path), "ATP_VAULT_PASSPHRASE": passphrase}
         dispatcher, system_store, strategy_store = build_boot_log_dispatcher(d, env)
         try:
@@ -256,8 +267,8 @@ def test_secrets_never_reach_logs_in_plaintext() -> None:
                     ts,
                     Severity.WARN,
                     Source.STRATEGY,
-                    f"notify-{SMS_KEY}",
-                    f"alert via smtp {SMTP_KEY} and sms {SMS_KEY}",
+                    f"notify-{PUSH_TOKEN}",
+                    f"alert via smtp {SMTP_KEY} and push {PUSH_TOKEN} to {PUSH_TOPIC}",
                     "c-strategy",
                     LogClass.STRATEGY,
                     strategy_id="s1",
@@ -274,7 +285,7 @@ def test_secrets_never_reach_logs_in_plaintext() -> None:
                     f"leaked key {SMTP_KEY} written straight to the store",
                     f"corr-{IB_ACCOUNT}",
                     LogClass.STRATEGY,
-                    strategy_id=f"strat-{SMS_KEY}",  # a secret in strategy_id must scrub too
+                    strategy_id=f"strat-{PUSH_TOKEN}",  # a secret in strategy_id must scrub too
                 )
             )
         finally:
@@ -306,7 +317,8 @@ def test_compose_isolated_services_blank_all_vault_material() -> None:
     for key in (
         "ATP_IB_ACCOUNT",
         "ATP_SMTP_API_KEY",
-        "ATP_SMS_API_KEY",
+        "ATP_PUSH_TOPIC",
+        "ATP_PUSH_TOKEN",
         "DATABENTO_API_KEY",
         "SHARADAR_API_KEY",
         "ATP_VAULT_FILE",

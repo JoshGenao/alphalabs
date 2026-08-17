@@ -109,12 +109,26 @@ def _validate_host(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     return None
 
 
+def _validate_string(spec: KeySpec, raw: str) -> ReadinessFailure | None:
+    """Free-form non-secret string (e.g. a notification destination address).
+
+    Deliberately only a non-empty check: this validator must not encode a
+    format (an RFC 5322 address grammar, a handset number) that would reject a
+    destination the transport itself accepts. The transport owns the format.
+    """
+
+    if spec.validator.get("non_empty", True) and not raw.strip():
+        return _fail(spec, Severity.ERROR, "value is empty")
+    return None
+
+
 _VALIDATORS = {
     KeyType.INT: _validate_int,
     KeyType.FLOAT: _validate_float,
     KeyType.PATH: _validate_path,
     KeyType.ENUM: _validate_enum,
     KeyType.HOST: _validate_host,
+    KeyType.STRING: _validate_string,
 }
 
 

@@ -9,7 +9,7 @@ credential:
   key, and fails closed on a wrong key.
 * **No plaintext credential logging** — a redactor built from the catalogue's
   ``secret`` keys, once installed on the SRS-LOG-001 boot dispatcher + stores,
-  scrubs IB / SMTP / SMS secrets on both the dispatch path and the
+  scrubs IB / SMTP / push secrets on both the dispatch path and the
   direct-to-store bypass path.
 
 It also confirms the catalogue actually marks the IB account and the two
@@ -36,8 +36,11 @@ PYTHON_ROOT = ROOT / "python"
 # Throwaway, obviously-fake secrets — never a real credential.
 _FAKE_IB = "U0000000-CHECK"
 _FAKE_SMTP = "smtp-check-key-0011223344556677"
-_FAKE_SMS = "sms-check-token-8899aabbccddeeff"
-_FAKE_SECRETS = (_FAKE_IB, _FAKE_SMTP, _FAKE_SMS)
+_FAKE_PUSH_TOKEN = "push-check-token-8899aabbccddeeff"
+# The ntfy topic is a credential in its own right (holding it is enough to
+# publish), so it is scanned for exactly like the token.
+_FAKE_PUSH_TOPIC = "push-check-topic-ccddeeff8899aabb"
+_FAKE_SECRETS = (_FAKE_IB, _FAKE_SMTP, _FAKE_PUSH_TOKEN, _FAKE_PUSH_TOPIC)
 
 
 class ContractCheckError(AssertionError):
@@ -69,13 +72,13 @@ def _import():
 
 def check_catalogue_marks_credentials_secret(atp_config) -> str:
     by_name = {spec.name: spec for spec in atp_config.REQUIRED_KEYS}
-    for name in ("ATP_IB_ACCOUNT", "ATP_SMTP_API_KEY", "ATP_SMS_API_KEY"):
+    for name in ("ATP_IB_ACCOUNT", "ATP_SMTP_API_KEY", "ATP_PUSH_TOPIC", "ATP_PUSH_TOKEN"):
         spec = by_name.get(name)
         if spec is None:
             fail(f"catalogue is missing required credential key {name}")
         if not spec.secret:
             fail(f"{name} must be flagged secret=true so it is vaultable + redacted")
-    return "catalogue marks IB account + SMTP + SMS as secret (NFR-S1 / NFR-S4)"
+    return "catalogue marks IB account + SMTP + push topic/token as secret (NFR-S1 / NFR-S4)"
 
 
 def check_vault_encrypts_at_rest(atp_vault) -> str:
@@ -85,7 +88,8 @@ def check_vault_encrypts_at_rest(atp_vault) -> str:
         payload = {
             "ATP_IB_ACCOUNT": _FAKE_IB,
             "ATP_SMTP_API_KEY": _FAKE_SMTP,
-            "ATP_SMS_API_KEY": _FAKE_SMS,
+            "ATP_PUSH_TOPIC": _FAKE_PUSH_TOPIC,
+            "ATP_PUSH_TOKEN": _FAKE_PUSH_TOKEN,
         }
         atp_vault.CredentialVault(vault_path, key=key).seal(payload)
 
@@ -117,10 +121,18 @@ def check_log_redaction_wired(
 ) -> str:
     from atp_logging import LogClass, LogRecord, Severity, Source
 
-    env = {"ATP_IB_ACCOUNT": _FAKE_IB, "ATP_SMTP_API_KEY": _FAKE_SMTP, "ATP_SMS_API_KEY": _FAKE_SMS}
+    env = {
+        "ATP_IB_ACCOUNT": _FAKE_IB,
+        "ATP_SMTP_API_KEY": _FAKE_SMTP,
+        "ATP_PUSH_TOPIC": _FAKE_PUSH_TOPIC,
+        "ATP_PUSH_TOKEN": _FAKE_PUSH_TOKEN,
+    }
     redactor = SecretRedactor(atp_config.secret_values(env))
-    if redactor.secret_count < 3:
-        fail("redactor did not pick up the three IB/SMTP/SMS secret values from the catalogue")
+    if redactor.secret_count < 4:
+        fail(
+            "redactor did not pick up the four IB/SMTP/push-topic/push-token "
+            "secret values from the catalogue"
+        )
 
     with TemporaryDirectory() as d:
         dispatcher, system_store, strategy_store = build_separated_log_dispatcher(
@@ -146,7 +158,7 @@ def check_log_redaction_wired(
                     Severity.WARN,
                     Source.STRATEGY,
                     "notify",
-                    f"smtp {_FAKE_SMTP} sms {_FAKE_SMS}",
+                    f"smtp {_FAKE_SMTP} push {_FAKE_PUSH_TOKEN} topic {_FAKE_PUSH_TOPIC}",
                     "c1",
                     LogClass.STRATEGY,
                     strategy_id="s1",
@@ -166,7 +178,7 @@ def check_log_redaction_wired(
                 )
         if marker not in persisted:
             fail("redaction marker absent from persisted logs")
-    return "log redaction scrubs IB/SMTP/SMS on the dispatcher AND the direct-to-store path"
+    return "log redaction scrubs IB/SMTP/push on the dispatcher AND the direct-to-store path"
 
 
 def check_default_construction_is_never_zero_redaction(
@@ -218,7 +230,12 @@ def check_boot_factory_is_value_aware(build_boot_log_dispatcher, marker) -> str:
     """
     from atp_logging import LogClass, LogRecord, Severity, Source
 
-    env = {"ATP_IB_ACCOUNT": _FAKE_IB, "ATP_SMTP_API_KEY": _FAKE_SMTP, "ATP_SMS_API_KEY": _FAKE_SMS}
+    env = {
+        "ATP_IB_ACCOUNT": _FAKE_IB,
+        "ATP_SMTP_API_KEY": _FAKE_SMTP,
+        "ATP_PUSH_TOPIC": _FAKE_PUSH_TOPIC,
+        "ATP_PUSH_TOKEN": _FAKE_PUSH_TOKEN,
+    }
     with TemporaryDirectory() as d:
         dispatcher, system_store, strategy_store = build_boot_log_dispatcher(d, env)
         try:
@@ -241,7 +258,7 @@ def check_boot_factory_is_value_aware(build_boot_log_dispatcher, marker) -> str:
             fail("production boot factory did not mask a bare IB account value from config")
         if marker not in persisted:
             fail("production boot factory produced no redaction marker")
-    return "production boot factory (build_boot_log_dispatcher) masks bare IB/SMTP/SMS values from config"
+    return "production boot factory (build_boot_log_dispatcher) masks bare IB/SMTP/push values from config"
 
 
 def check_production_secrets_must_be_vaulted(atp_config) -> str:
@@ -282,7 +299,7 @@ def check_production_log_wiring_is_value_aware() -> str:
     The value-aware production path is ``atp_logging_boot.build_boot_log_dispatcher``.
     A production ``.py`` calling ``build_separated_log_dispatcher`` without an
     explicit ``redactor=`` would rely only on the pattern floor for arbitrary
-    SMTP/SMS values — so this scan fails on it. The boot wrapper (which supplies
+    SMTP/push values — so this scan fails on it. The boot wrapper (which supplies
     the value-aware redactor) and the persistence module that defines the builder
     are the only exemptions.
     """

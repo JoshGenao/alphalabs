@@ -13,7 +13,11 @@ x-atp-env: &atp-env
   ATP_SSD_DATA_DIR: ${ATP_SSD_DATA_DIR:-/var/lib/atp/ssd}
   ATP_NAS_DATA_DIR: ${ATP_NAS_DATA_DIR:-/var/lib/atp/nas}
   ATP_SMTP_API_KEY: ${ATP_SMTP_API_KEY:-placeholder-set-in-environment}
-  ATP_SMS_API_KEY: ${ATP_SMS_API_KEY:-placeholder-set-in-environment}
+  ATP_OPERATOR_EMAIL: ${ATP_OPERATOR_EMAIL:-operator@example.invalid}
+  ATP_PUSH_HOST: ${ATP_PUSH_HOST:-127.0.0.1}
+  ATP_PUSH_PORT: ${ATP_PUSH_PORT:-80}
+  ATP_PUSH_TOPIC: ${ATP_PUSH_TOPIC:-placeholder-set-in-environment}
+  ATP_PUSH_TOKEN: ${ATP_PUSH_TOKEN:-placeholder-set-in-environment}
   DATABENTO_API_KEY: ${DATABENTO_API_KEY:-placeholder-set-in-environment}
   SHARADAR_API_KEY: ${SHARADAR_API_KEY:-placeholder-set-in-environment}
   ATP_LIVE_STRATEGY_MEM_MB: ${ATP_LIVE_STRATEGY_MEM_MB:-512}
@@ -40,7 +44,8 @@ x-atp-volumes: &atp-volumes
 x-atp-no-secrets: &atp-no-secrets
   ATP_IB_ACCOUNT: ""
   ATP_SMTP_API_KEY: ""
-  ATP_SMS_API_KEY: ""
+  ATP_PUSH_TOPIC: ""
+  ATP_PUSH_TOKEN: ""
   DATABENTO_API_KEY: ""
   SHARADAR_API_KEY: ""
   ATP_VAULT_FILE: ""

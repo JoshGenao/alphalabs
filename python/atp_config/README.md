@@ -28,9 +28,9 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ib_account` | Interactive Brokers Gateway host, live/paper ports, deployment selector, and the brokerage account identifier (secret; SRS-SEC-001). |
 | `market_data_limits` | Operator-configured IB market-data subscription line cap. |
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
-| `notification_channels` | Email and SMS dispatch credentials. |
+| `notification_channels` | Email (IF-10) and push (IF-11) dispatch credentials and destinations. The push topic is catalogued **secret**: on ntfy, holding the topic is enough to publish. |
 
-## Required keys (19)
+## Required keys (23)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -45,7 +45,11 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_BACKTEST_RESULTS_DIR` | storage_paths | path | `/var/lib/atp/ssd/backtest_results` | no | SRS-BT-009, SyRS:SYS-79 |
 | `ATP_DATA_STORE_DIR` | storage_paths | path | `/var/lib/atp/ssd/market_data` | no | SRS-DATA-016, SyRS:NFR-R4 |
 | `ATP_SMTP_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
-| `ATP_SMS_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
+| `ATP_OPERATOR_EMAIL` | notification_channels | string | `operator@example.invalid` | no | SRS-NOTIF-001, IF-10 |
+| `ATP_PUSH_HOST` | notification_channels | host | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
+| `ATP_PUSH_PORT` | notification_channels | int | `80` | no | SRS-NOTIF-001, IF-11 |
+| `ATP_PUSH_TOPIC` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
+| `ATP_PUSH_TOKEN` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
 | `SHARADAR_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-005, NFR-S1 |
 | `ATP_LIVE_STRATEGY_MEM_MB` | resource_limits | int | `512` | no | SRS-ORCH-002, SyRS:SYS-11/57 |
@@ -60,6 +64,9 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 - `float`: parses as float; range `min..max` (per key).
 - `path`: non-empty string; must be absolute (start with `/`).
 - `host`: non-empty string.
+- `string`: non-empty string. Deliberately format-free — a notification
+  destination's grammar belongs to the transport that sends to it, not to this
+  catalogue, so the validator must not reject an address the transport accepts.
 - `enum`: must be one of the declared `choices`.
 - `secret`: non-empty string. The literal placeholder
   `placeholder-set-in-environment` is a **warning** when `ATP_ENV=development`

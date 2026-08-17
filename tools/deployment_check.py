@@ -175,12 +175,15 @@ _VAULT_ISOLATED_SERVICES = (
     "phase1-ib-gateway",
 )
 _MOUNT_TOKEN = "/run/atp-secrets"
-# Keys the x-atp-no-secrets anchor must blank for isolated services: the five
+# Keys the x-atp-no-secrets anchor must blank for isolated services: the six
 # catalogued secrets + every vault-unlock secret (key file AND passphrase).
+# ATP_PUSH_TOPIC is in this list because on ntfy the topic IS a credential —
+# whoever holds it can publish an alert to the operator's phone.
 _SECRET_BLANK_KEYS = (
     "ATP_IB_ACCOUNT",
     "ATP_SMTP_API_KEY",
-    "ATP_SMS_API_KEY",
+    "ATP_PUSH_TOPIC",
+    "ATP_PUSH_TOKEN",
     "DATABENTO_API_KEY",
     "SHARADAR_API_KEY",
     "ATP_VAULT_FILE",

@@ -2612,7 +2612,11 @@
       "ATP_SSD_DATA_DIR",
       "ATP_NAS_DATA_DIR",
       "ATP_SMTP_API_KEY",
-      "ATP_SMS_API_KEY",
+      "ATP_OPERATOR_EMAIL",
+      "ATP_PUSH_HOST",
+      "ATP_PUSH_PORT",
+      "ATP_PUSH_TOPIC",
+      "ATP_PUSH_TOKEN",
       "DATABENTO_API_KEY",
       "SHARADAR_API_KEY",
       "ATP_LIVE_STRATEGY_MEM_MB",
@@ -2907,7 +2911,53 @@
         ]
       },
       {
-        "name": "ATP_SMS_API_KEY",
+        "name": "ATP_OPERATOR_EMAIL",
+        "category": "notification_channels",
+        "type": "string",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "operator@example.invalid",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-10",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_PUSH_HOST",
+        "category": "notification_channels",
+        "type": "host",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "127.0.0.1",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-11",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_PUSH_PORT",
+        "category": "notification_channels",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 65535
+        },
+        "default": "80",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-11",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_PUSH_TOPIC",
         "category": "notification_channels",
         "type": "secret",
         "validator": {
@@ -2917,6 +2967,23 @@
         "secret": true,
         "srs_trace": [
           "SRS-NOTIF-001",
+          "IF-11",
+          "NFR-S4",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_PUSH_TOKEN",
+        "category": "notification_channels",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-11",
           "NFR-S4",
           "StRS:SN-1.12"
         ]

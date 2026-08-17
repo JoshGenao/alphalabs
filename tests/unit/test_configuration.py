@@ -29,6 +29,16 @@ def _defaults() -> dict[str, str]:
     return {spec.name: spec.default for spec in REQUIRED_KEYS if spec.default is not None}
 
 
+#: Every catalogued secret still carrying the placeholder default. Derived from
+#: the catalogue's ``secret`` flag rather than from a name suffix: the older
+#: ``endswith("_API_KEY")`` filter silently stopped covering the notification
+#: channel the moment its keys were renamed (ATP_PUSH_TOKEN / ATP_PUSH_TOPIC),
+#: which is exactly the drift these tests exist to catch.
+_PLACEHOLDER_SECRET_KEYS = frozenset(
+    spec.name for spec in REQUIRED_KEYS if spec.secret and spec.default == PLACEHOLDER_VALUE
+)
+
+
 class CatalogueShapeTest(unittest.TestCase):
     def test_every_category_has_at_least_one_key(self) -> None:
         declared = {spec.category for spec in REQUIRED_KEYS}
@@ -79,9 +89,11 @@ class ValidatorBehaviourTest(unittest.TestCase):
         report = load_and_validate(_defaults())
         self.assertTrue(report.ok, [f.as_dict() for f in report.errors])
         self.assertEqual(len(report.errors), 0)
-        # Placeholder secrets surface as warnings: the two vendor keys, the
-        # two notification keys, and the IB account identifier (SRS-SEC-001).
-        self.assertEqual(len(report.warnings), 5)
+        # Every catalogued secret still sitting on its placeholder default
+        # surfaces as a warning: the two vendor keys, the three notification
+        # secrets (SMTP key, push topic, push token) and the IB account
+        # identifier (SRS-SEC-001).
+        self.assertEqual(len(report.warnings), len(_PLACEHOLDER_SECRET_KEYS))
 
     def test_missing_required_key_fails_with_structured_failure(self) -> None:
         env = _defaults()
@@ -99,19 +111,29 @@ class ValidatorBehaviourTest(unittest.TestCase):
         env["ATP_ENV"] = "production"
         report = load_and_validate(env)
         self.assertFalse(report.ok)
-        secret_errors = [f for f in report.errors if f.key.endswith("_API_KEY")]
-        self.assertEqual(
-            {f.key for f in secret_errors},
-            {"ATP_SMTP_API_KEY", "ATP_SMS_API_KEY", "DATABENTO_API_KEY", "SHARADAR_API_KEY"},
-        )
+        secret_errors = [f for f in report.errors if f.key in _PLACEHOLDER_SECRET_KEYS]
+        self.assertEqual({f.key for f in secret_errors}, _PLACEHOLDER_SECRET_KEYS)
         for failure in secret_errors:
             self.assertEqual(failure.severity, Severity.ERROR)
             self.assertIn("production", failure.reason)
 
+    def test_push_topic_is_catalogued_secret(self) -> None:
+        """On ntfy the topic IS a credential — holding it is enough to publish.
+
+        Pinned as its own test because a topic reads like an ordinary
+        destination (the address the alert goes to, as ATP_OPERATOR_EMAIL is
+        for email) and would otherwise be catalogued non-secret, dropping it
+        out of the vault, the log redactor and the x-atp-no-secrets blanking.
+        """
+
+        spec = {s.name: s for s in REQUIRED_KEYS}["ATP_PUSH_TOPIC"]
+        self.assertTrue(spec.secret)
+        self.assertEqual(spec.category, Category.NOTIFICATION_CHANNELS)
+
     def test_placeholder_secret_warns_in_development(self) -> None:
         report = load_and_validate(_defaults())
-        secret_warnings = [f for f in report.warnings if f.key.endswith("_API_KEY")]
-        self.assertEqual(len(secret_warnings), 4)
+        secret_warnings = [f for f in report.warnings if f.key in _PLACEHOLDER_SECRET_KEYS]
+        self.assertEqual({f.key for f in secret_warnings}, _PLACEHOLDER_SECRET_KEYS)
         for warning in secret_warnings:
             self.assertEqual(warning.severity, Severity.WARNING)
 

@@ -37,6 +37,7 @@ class KeyType(str, Enum):
     SECRET = "secret"
     ENUM = "enum"
     HOST = "host"
+    STRING = "string"
 
 
 class Severity(str, Enum):

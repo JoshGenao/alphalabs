@@ -36,7 +36,8 @@ from atp_config.vault import (  # noqa: E402
 SECRETS = {
     "ATP_IB_ACCOUNT": "U1234567",
     "ATP_SMTP_API_KEY": "smtp-live-key-abc123DEF456",
-    "ATP_SMS_API_KEY": "sms-gw-token-zzz999",
+    "ATP_PUSH_TOPIC": "push-topic-zzz999",
+    "ATP_PUSH_TOKEN": "tk_push-token-yyy888",
 }
 
 
@@ -61,9 +62,9 @@ class VaultRoundTripTest(unittest.TestCase):
             key = generate_key()
             v = CredentialVault(path, key=key)
             v.seal(SECRETS)
-            v.seal({"ATP_SMS_API_KEY": "rotated-value"})
+            v.seal({"ATP_PUSH_TOKEN": "rotated-value"})
             self.assertEqual(
-                CredentialVault(path, key=key).open(), {"ATP_SMS_API_KEY": "rotated-value"}
+                CredentialVault(path, key=key).open(), {"ATP_PUSH_TOKEN": "rotated-value"}
             )
 
 
@@ -225,9 +226,9 @@ class LoadVaultIntoEnvTest(unittest.TestCase):
     def test_overlay_from_passphrase(self) -> None:
         with TemporaryDirectory() as d:
             path = Path(d) / "secrets.vault"
-            CredentialVault(path, passphrase="pp").seal({"ATP_SMS_API_KEY": "sealed"})
+            CredentialVault(path, passphrase="pp").seal({"ATP_PUSH_TOKEN": "sealed"})
             env = {VAULT_FILE_ENV: str(path), VAULT_PASSPHRASE_ENV: "pp"}
-            self.assertEqual(load_vault_into_env(env)["ATP_SMS_API_KEY"], "sealed")
+            self.assertEqual(load_vault_into_env(env)["ATP_PUSH_TOKEN"], "sealed")
 
     def test_ambiguous_key_config_fails_closed(self) -> None:
         with TemporaryDirectory() as d:
