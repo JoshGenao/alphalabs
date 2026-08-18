@@ -82,7 +82,7 @@ fn record() -> DemotionPendingRecord {
         observed_at_seconds: 1_715_000_000,
         liquidation_cancel: SideEffectOutcome::Succeeded,
         operator_alert: SideEffectOutcome::Failed {
-            reason: "SMS gateway timed out".to_string(),
+            reason: "push service timed out".to_string(),
         },
     }
 }
@@ -179,7 +179,7 @@ fn resv_4_every_corruption_shape_fails_the_read_rather_than_yielding_a_partial_r
             // A recorded failure with no reason cannot tell an operator what to recover.
             "FAILED with no reason",
             good.replace(
-                ",\"operator_alert_reason\":\"SMS gateway timed out\"",
+                ",\"operator_alert_reason\":\"push service timed out\"",
                 "",
             ),
         ),

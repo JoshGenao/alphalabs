@@ -38,7 +38,7 @@ USAGE:
 
 SUBCOMMANDS:
     demote      Run a demotion end to end (real sequence + gate + lockout + notifier,
-                fixture IB/SMTP/SMS transports) and report the disposition.
+                fixture IB/SMTP/push transports) and report the disposition.
     status      Report the DURABLE demotion-pending state at --state. Three-state: no
                 lockout, a held one, or an UNREADABLE one (an error — never a silent
                 'nothing is pending').
@@ -75,7 +75,7 @@ demote FLAGS:
     --fail-liquidations          SYS-49b (3) fails
     --fail-unfilled-cancel       SYS-49c (b) fails
     --fail-email                 the SRS-NOTIF-001 email transport fails
-    --fail-sms                   the SRS-NOTIF-001 SMS transport fails
+    --fail-push                  the SRS-NOTIF-001 push transport fails
     --fail-paper-transition      the container cannot move to paper simulation
 
 status FLAGS:
@@ -434,7 +434,7 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
             "--fail-liquidations",
             "--fail-unfilled-cancel",
             "--fail-email",
-            "--fail-sms",
+            "--fail-push",
             "--fail-paper-transition",
             "--no-live-strategy",
         ],
@@ -482,7 +482,7 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
         fail_liquidations: args.is_set("--fail-liquidations"),
         fail_unfilled_cancel: args.is_set("--fail-unfilled-cancel"),
         fail_email: args.is_set("--fail-email"),
-        fail_sms: args.is_set("--fail-sms"),
+        fail_push: args.is_set("--fail-push"),
         fail_paper_transition: args.is_set("--fail-paper-transition"),
         designated_live: match (
             args.is_set("--no-live-strategy"),
@@ -549,7 +549,7 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
 fn emit_drill(outcome: &DemotionDrillOutcome) -> Result<(), String> {
     proof("disposition", &outcome.disposition)?;
     // The tier travels into any record made from this run: the gate, probe, lockout and
-    // notifier are real, the IB socket and the SMTP/SMS transports are not.
+    // notifier are real, the IB socket and the SMTP/push transports are not.
     proof("transports", outcome.transports)?;
     proof_bool("promotion-blocked", outcome.promotion_blocked)?;
     // Emitted ONLY when there is a block to describe. On the flat path there is none, and a

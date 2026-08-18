@@ -111,6 +111,6 @@
   },
   "SRS-NOTIF-001": {
     "method": "integration",
-    "why": "The AC states only the 60-second dispatch budget, so the text looks solo — but REQUIRED_CHANNELS is Email AND Sms enforced fail-closed against real relays. See its external_blocker."
+    "why": "The AC states only the 60-second dispatch budget, so the text looks solo — but REQUIRED_CHANNELS is Email AND Push enforced fail-closed, and closing it needs a real inbox and a real handset. See its external_blocker."
   }
 }

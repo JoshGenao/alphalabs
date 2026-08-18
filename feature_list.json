@@ -1456,7 +1456,7 @@
     "passes": false,
     "needs_clarification": false,
     "verification_method": "integration",
-    "external_blocker": "SMS provider account (none chosen; REQUIRED_CHANNELS is Email AND Sms, fail-closed) + the unbuilt phase1-notification-egress relay"
+    "external_blocker": "The operator's self-hosted ntfy reachable on the LAN (ATP_PUSH_HOST/TOPIC/TOKEN, phone subscribed over VPN) + the unbuilt phase1-notification-egress relay, which is now needed for EMAIL ONLY \u2014 push posts to ntfy directly with no relay hop. NO SMS PROVIDER IS NEEDED: push replaced SMS as IF-11 on 2026-08-17, and the push transport has been verified end to end against a real ntfy."
   },
   {
     "id": "SRS-SAFE-001",

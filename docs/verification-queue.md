@@ -39,7 +39,7 @@ SRS-NOTIF-001  unblocks 56 of 120   deps=[SRS-EXE-006]  ← already passes
 ```
 
 **`SRS-NOTIF-001` has no unmet feature dependency at all.** The only thing between it and
-green is an SMS provider account plus the unbuilt egress relay. One procurement decision
+green is the operator's LAN ntfy plus the unbuilt egress relay (email only). One deployment step
 is worth 56 features. Behind it, `SRS-PERF-001` additionally needs a PTP-disciplined host.
 
 `SRS-MD-003` left the critical path entirely and is now what it always was: a closeable
@@ -65,7 +65,7 @@ into `tools/feature_deps.json`, which is why `status` flags them `⚠ no dep edg
 
 | feature | unblocks | real blockers | note |
 |---|---|---|---|
-| SRS-DATA-013 | 26 | `SRS-NOTIF-001` | Data layer is complete and solo-verified. Only the dashboard alert pane + email/SMS reason summaries remain. `SRS-UI-001` (the other named owner) **already passes**. |
+| SRS-DATA-013 | 26 | `SRS-NOTIF-001` | Data layer is complete and solo-verified. Only the dashboard alert pane + email/push reason summaries remain. `SRS-UI-001` (the other named owner) **already passes**. |
 | SRS-RESV-004 | 16 | `SRS-LOG-001`, `SRS-EXE-006`†, `SRS-NOTIF-001`, `SRS-RESV-005` | **Also class D** — `SRS-LOG-001` is itself blocked on `SRS-RESV-004`. † `SRS-ARCH-005` and `SRS-EXE-006` already pass. |
 | SRS-UI-002 | 3 | `SRS-BT-004` | Five deferred field producers were named; `SRS-ORCH-001`, `SRS-ORCH-004`, `SRS-ARCH-004`, `SRS-SIM-003` **all already pass**. Only the P&L feed (`SRS-BT-004` → `SRS-MD-001`) is left. |
 | SRS-SAFE-002 | 1 | `SRS-NOTIF-001`, `SRS-API-001` | `SRS-EXE-006` passes, but its `IbConnectionControl` binding needs an operator-gated paper-account re-run (`ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py`) — a solo session cannot lawfully implement it. |
@@ -78,7 +78,7 @@ calendar backlog.
 
 | feature | unblocks | what must be obtained |
 |---|---|---|
-| **SRS-NOTIF-001** | **38** | **An SMS provider account.** `REQUIRED_CHANNELS` is Email **AND** Sms, enforced fail-closed — two email providers cannot close it. Brevo is chosen for email; **no SMS provider has been chosen**. Also needs the `phase1-notification-egress` relay container (not built), which must authenticate its clients. |
+| **SRS-NOTIF-001** | **38** | **The operator's self-hosted ntfy on the LAN**, with the phone subscribed over VPN. `REQUIRED_CHANNELS` is Email **AND** Push, enforced fail-closed. Push replaced SMS as IF-11 on 2026-08-17 (US A2P 10DLC lead time + silent carrier filtering) and is verified end to end against a real ntfy, so **no SMS provider is needed**. Brevo is chosen for email; the `phase1-notification-egress` relay container is still unbuilt and is now needed for EMAIL ONLY — push posts directly, no relay hop. |
 | **SRS-PERF-001** | **35** | **A PTP-disciplined host clock.** The AC demands percentiles "measured against a PTP-disciplined host clock" and `LatencyVerificationArtifact::from_samples` fails closed without one. Nothing in the repo provisions or documents PTP. |
 | SRS-REL-001 | 0 | **30 rolling market-hours days** of real platform operation, plus a host-liveness feed and an operator outage ledger. The `--assume-full-coverage` and `--target-per-mille` shortcuts were **deliberately deleted** (r2/r6) — this cannot be short-circuited. |
 | SRS-REL-002 | 0 | **A real full-stack restart during RTH on the reference Proxmox deployment**, plus the SYS-76 runtime probes (`SRS-MD-006`). A real partial measurement exists (infra span 8.775 s of a 600 s budget) and honestly reports **INCONCLUSIVE**, because the ATP service phases are `cargo test` stubs. |

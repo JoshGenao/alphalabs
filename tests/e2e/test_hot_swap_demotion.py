@@ -7,7 +7,7 @@ Nothing here is faked. A real ``resv004_hot_swap_demotion_cli`` runs a real demo
 SYS-49b sequence, the real flat-confirmation probe, the real ``resolve_demotion`` gate, the real
 SRS-NOTIF-001 dispatcher — and writes a real durable demotion-pending lockout. The production
 ``mount_default_dashboard`` composition reads that same file through the shipped env knob, and a
-real headless browser renders the result. The only fixtures are the IB socket and the SMTP/SMS
+real headless browser renders the result. The only fixtures are the IB socket and the SMTP/push
 transports (the deferred ``atp-adapters`` / SRS-NOTIF-001 legs).
 
 Driving the SHIPPED composition matters: a fixture that mounted the provider by hand would prove
@@ -191,7 +191,7 @@ def test_resv_004_demotion_before_promotion_end_to_end(live_dashboard) -> None:
 
             # ---- SYS-49c: a liquidation timeout, seen by the operator ---------- #
             # The positions never reach flat, so the real 60 s wait elapses on the simulated
-            # clock, the unfilled order is cancelled, email + SMS go out, and the lockout is
+            # clock, the unfilled order is cancelled, email + push go out, and the lockout is
             # engaged. The browser must show it without a reload.
             timeout = _cli(
                 binary,
@@ -212,7 +212,7 @@ def test_resv_004_demotion_before_promotion_end_to_end(live_dashboard) -> None:
             assert timeout.returncode == 0, f"{timeout.stdout}\n{timeout.stderr}"
             assert "unfilled-order-cancels:1" in timeout.stdout
             assert "operator-page-delivered-email:true" in timeout.stdout
-            assert "operator-page-delivered-sms:true" in timeout.stdout
+            assert "operator-page-delivered-push:true" in timeout.stdout
             assert state.exists(), "the demotion-pending lockout must have reached disk"
 
             note = _await_note_tone(page, "error")

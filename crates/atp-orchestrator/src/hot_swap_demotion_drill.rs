@@ -20,7 +20,7 @@
 //! [`crate::hot_swap_demotion::complete_demotion_to_paper`] (the flat-only paper transition).
 //!
 //! **Fixture:** the IB socket (order cancels, liquidation submissions, the position view) and the
-//! SMTP/SMS transports. Those are the deferred `atp-adapters` and SRS-NOTIF-001 legs.
+//! SMTP/push transports. Those are the deferred `atp-adapters` and SRS-NOTIF-001 legs.
 //!
 //! The distinction is not left to a reader of this file: [`DemotionDrillOutcome::transports`]
 //! self-labels the tier as `FIXTURE`, and the CLI prints it, so the tier travels into any
@@ -50,7 +50,7 @@ use crate::hot_swap_demotion::{
     DemotionCompleted, DemotionSequenceReport, LivePositionSource, PaperTransition,
     PollingFlatProbe, SignalHalt,
 };
-use crate::kill_switch_timeout::{FixtureEmailChannel, FixtureSmsChannel};
+use crate::kill_switch_timeout::{FixtureEmailChannel, FixturePushChannel};
 use crate::{
     HotSwapDemotionEventSink, HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator,
     UnfilledOrderCanceller,
@@ -271,9 +271,9 @@ impl PaperTransition for FixturePaperTransition {
 
 /// The concrete SRS-RESV-004 [`OperatorAlertSink`]: builds a `CriticalFailure` trigger — never
 /// suppressed, which is right for a liquidation timeout that blocks a live changeover — and fans
-/// it out through the REAL [`OperatorNotifier`] over exactly the required email + SMS pair.
+/// it out through the REAL [`OperatorNotifier`] over exactly the required email + push pair.
 ///
-/// SYS-49c (a) names three destinations: dashboard, email, SMS. The dashboard leg is not a
+/// SYS-49c (a) names three destinations: dashboard, email, push. The dashboard leg is not a
 /// transport — it is the demotion-pending lockout this same branch persists, which the UI-5 pane
 /// reads — so this sink owns the two that *are* transports and succeeds only when BOTH delivered.
 /// Any other outcome surfaces as a `Failed` side effect on the demotion event rather than a
@@ -345,7 +345,7 @@ impl OperatorAlertSink for DemotionNotifierAlertSink {
                 HotSwapSideEffectError::new(format!("SRS-NOTIF-001 dispatch refused: {error}"))
             })?;
         let mut undelivered = Vec::new();
-        for channel in [NotificationChannel::Email, NotificationChannel::Sms] {
+        for channel in [NotificationChannel::Email, NotificationChannel::Push] {
             let delivered = notification
                 .delivery_for(channel)
                 .is_some_and(|delivery| delivery.outcome().is_delivered());
@@ -406,7 +406,7 @@ pub struct DemotionScenario {
     pub fail_liquidations: bool,
     pub fail_unfilled_cancel: bool,
     pub fail_email: bool,
-    pub fail_sms: bool,
+    pub fail_push: bool,
     pub fail_paper_transition: bool,
     pub position_fault: Option<BrokerReconcileError>,
     /// Who the live registry says is live. `None` designates the demoting strategy (the normal
@@ -433,7 +433,7 @@ impl DemotionScenario {
             fail_liquidations: false,
             fail_unfilled_cancel: false,
             fail_email: false,
-            fail_sms: false,
+            fail_push: false,
             fail_paper_transition: false,
             position_fault: None,
             designated_live: None,
@@ -599,7 +599,7 @@ pub fn run_fixture_demotion(scenario: &DemotionScenario) -> Result<DemotionDrill
         ..FixtureUnfilledOrderCanceller::default()
     };
     let email = Arc::new(FixtureEmailChannel::with_failure(scenario.fail_email));
-    let sms = Arc::new(FixtureSmsChannel::with_failure(scenario.fail_sms));
+    let sms = Arc::new(FixturePushChannel::with_failure(scenario.fail_push));
     let alerts = DemotionNotifierAlertSink::new(
         OperatorNotifier::new(),
         vec![

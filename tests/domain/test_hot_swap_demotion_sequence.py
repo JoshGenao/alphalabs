@@ -5,7 +5,7 @@ The acceptance criterion, clause by clause:
     Current live strategy stops new signals, cancels resting IB orders, submits liquidation
     orders, waits for flat confirmation or the configured timeout defaulting to 60 seconds, and
     transitions to paper only after live positions are flat; on timeout, the swap enters
-    demotion-pending state, dashboard/email/SMS notifications are sent, unfilled liquidation
+    demotion-pending state, dashboard/email/push notifications are sent, unfilled liquidation
     orders are canceled, and promotion is blocked until manual resolution.
 
 L7 domain (safety) test. The diff touches live mode, order cancellation and liquidation
@@ -21,7 +21,7 @@ blocked promotion *for that call*, and a later attempt whose probe reported flat
 candidate over IB positions nobody had resolved. The lockout is what makes the AC's last clause
 ("promotion is blocked until manual resolution") true.
 
-Transport tier: the IB socket and the SMTP/SMS transports are FIXTURES (the deferred
+Transport tier: the IB socket and the SMTP/push transports are FIXTURES (the deferred
 ``atp-adapters`` and SRS-NOTIF-001 legs). Every drill asserts the tier it ran on, so evidence
 made from these runs cannot present itself as a live one.
 """
@@ -196,7 +196,7 @@ def test_a_demotion_that_cannot_silence_the_strategy_does_not_complete(tmp_path:
 def test_a_liquidation_timeout_pages_cancels_locks_out_and_blocks_promotion(
     tmp_path: Path,
 ) -> None:
-    # AC clause 6, every conjunct: demotion-pending state, dashboard/email/SMS notifications,
+    # AC clause 6, every conjunct: demotion-pending state, dashboard/email/push notifications,
     # the unfilled liquidation order cancelled, and promotion blocked.
     state = tmp_path / "pending.json"
     values = _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
@@ -212,7 +212,7 @@ def test_a_liquidation_timeout_pages_cancels_locks_out_and_blocks_promotion(
     # called" is not "the operator was paged".
     assert values["operator-pages"] == "1"
     assert values["operator-page-delivered-email"] == "true"
-    assert values["operator-page-delivered-sms"] == "true"
+    assert values["operator-page-delivered-push"] == "true"
     assert values["event-operator-alert"] == "SUCCEEDED"
 
     # (c) the swap is held in demotion-pending — DURABLY, on disk.
@@ -331,7 +331,7 @@ def test_a_failed_page_and_a_failed_cancel_are_recorded_and_still_block(tmp_path
         "--position",
         "AAPL:100",
         "--fail-unfilled-cancel",
-        "--fail-sms",
+        "--fail-push",
     )
 
     assert values["promotion-blocked"] == "true"
@@ -341,7 +341,7 @@ def test_a_failed_page_and_a_failed_cancel_are_recorded_and_still_block(tmp_path
     # ...and each failure is observable rather than folded into a clean-looking event.
     assert values["event-liquidation-cancel"] == "FAILED"
     assert values["event-operator-alert"] == "FAILED"
-    assert values["operator-page-delivered-sms"] == "false"
+    assert values["operator-page-delivered-push"] == "false"
     # Email still went out: one bad channel must not suppress the others.
     assert values["operator-page-delivered-email"] == "true"
     # The lockout still landed, so the block outlives the call.

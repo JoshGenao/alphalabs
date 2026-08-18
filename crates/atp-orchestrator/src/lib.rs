@@ -1811,7 +1811,7 @@ impl StrategyOrchestrator {
                 channels: vec![
                     OperatorAlertChannel::Dashboard,
                     OperatorAlertChannel::Email,
-                    OperatorAlertChannel::Sms,
+                    OperatorAlertChannel::Push,
                 ],
                 elapsed_seconds,
                 timeout_seconds,

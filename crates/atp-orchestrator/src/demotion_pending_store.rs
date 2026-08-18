@@ -136,7 +136,7 @@ pub struct DemotionPendingRecord {
     pub observed_at_seconds: u64,
     /// Outcome of the SYS-49c (b) unfilled-liquidation-order cancel.
     pub liquidation_cancel: SideEffectOutcome,
-    /// Outcome of the SYS-49c (a) dashboard/email/SMS operator page.
+    /// Outcome of the SYS-49c (a) dashboard/email/push operator page.
     pub operator_alert: SideEffectOutcome,
 }
 

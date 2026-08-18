@@ -1222,7 +1222,7 @@ mod tests {
         // ntfy's success body ECHOES the topic, so the happy path is the one
         // that reliably carries a credential on this transport.
         let echoed = "{\"topic\":\"atp-alerts-topic\",\"auth\":\"Bearer tk_secrettoken\"}";
-        let scrubbed = redact_secrets(&echoed, &["tk_secrettoken", "atp-alerts-topic"]);
+        let scrubbed = redact_secrets(echoed, &["tk_secrettoken", "atp-alerts-topic"]);
         assert!(!scrubbed.contains("tk_secrettoken"), "{scrubbed}");
         assert!(!scrubbed.contains("atp-alerts-topic"), "{scrubbed}");
         assert!(scrubbed.contains("Bearer <redacted>"), "{scrubbed}");
