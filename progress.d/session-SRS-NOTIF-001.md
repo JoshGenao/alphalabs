@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 5
+Adversarial rounds: 6
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -860,6 +860,29 @@ prose needs the hits reviewed individually, exactly as a code rename does.
         omitted ATP_NTFY_PORT and the published mapping, so moving the bundled
         server's port without moving ATP_PUSH_PORT still passed. Extended; the
         new assert was verified to fire with a precise message.
+    round 6: BLOCK, three findings, and one of them was my own overclaim:
+      * The runbook's verification curls used $ATP_PUSH_TOKEN / $ATP_PUSH_TOPIC,
+        which no step ever ASSIGNS — they are shown as .env settings, not
+        exports. An operator following the document in order sends a bare
+        `Authorization: Bearer` and gets 401, and my own troubleshooting line
+        then told them "the token is wrong". Now the token is captured into
+        $TOKEN at the point it is minted, and the 401 branch says an unset
+        variable looks identical to a bad one.
+      * I CLAIMED the ntfy bind was "loopback or RFC 1918 only, enforced by
+        tools/network_binding_check.py". That checker's own docstring says it
+        proves the DEFAULT and is "NOT proof that an override is constrained",
+        so ATP_NTFY_BIND=0.0.0.0 would have published the alert endpoint on
+        every interface with every gate green. Fixed by making the claim TRUE
+        rather than by softening it: ATP_NTFY_BIND is now catalogued with
+        `private_egress`, so atp_config rejects public / unspecified /
+        link-local / non-literal values at startup — verified for 0.0.0.0,
+        8.8.8.8, :: and a hostname. The comment now says which gate does what.
+      * [warn, same fix] ATP_NTFY_BIND and ATP_NTFY_PORT were in .env.example
+        but not the catalogue, so the validator never saw them. Both catalogued
+        (26 keys now).
+      LESSON: "enforced by <checker>" is a claim about a specific checker's
+      actual scope. I wrote it from the checker's NAME. Read what it asserts —
+      or make it true.
 
 ## Gate
   cargo test --workspace 2336 passed / 0 failed; pytest -m "not integration and

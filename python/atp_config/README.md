@@ -30,7 +30,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
 | `notification_channels` | Email (IF-10) and push (IF-11) dispatch credentials and destinations. The push topic is catalogued **secret**: on ntfy, holding the topic is enough to publish. |
 
-## Required keys (24)
+## Required keys (26)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -49,6 +49,8 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_OPERATOR_EMAIL` | notification_channels | string | `operator@example.invalid` | no | SRS-NOTIF-001, IF-10 |
 | `ATP_PUSH_HOST` | notification_channels | host (private, literal) | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_PORT` | notification_channels | int | `8090` | no | SRS-NOTIF-001, IF-11 |
+| `ATP_NTFY_BIND` | notification_channels | host (private, literal) | `127.0.0.1` | no | SRS-NOTIF-001, IF-11, SRS-SEC-002 |
+| `ATP_NTFY_PORT` | notification_channels | int | `8090` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_TOPIC` | notification_channels | secret (charset) | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `ATP_PUSH_TOKEN` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
@@ -65,7 +67,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 - `float`: parses as float; range `min..max` (per key).
 - `path`: non-empty string; must be absolute (start with `/`).
 - `host`: non-empty string. When the key's validator sets `private_egress`
-  (currently `ATP_PUSH_HOST`), the value must additionally be an **IP address
+  (`ATP_PUSH_HOST` and `ATP_NTFY_BIND`), the value must additionally be an **IP address
   literal** that is loopback or private (RFC 1918 for IPv4, `fc00::/7` for
   IPv6; IPv4-mapped forms are unwrapped). Link-local is refused —
   `169.254.169.254` is the cloud metadata endpoint and the transports send a
@@ -106,7 +108,7 @@ ReadinessReport(
     ],
     evidence=[
         "SRS-ARCH-005 configuration system evidence:",
-        "24 keys catalogued across 6 categories (ATP_ENV='development')",
+        "26 keys catalogued across 6 categories (ATP_ENV='development')",
         "credentials: 2 keys — OK (DATABENTO_API_KEY, SHARADAR_API_KEY)",
         "...",
     ],

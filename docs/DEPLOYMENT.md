@@ -303,7 +303,8 @@ echo "$TOPIC"
 docker exec -e NTFY_PASSWORD='<atpbot-password>' atp-ntfy \
   ntfy user add --role=user atpbot
 docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo
-docker exec atp-ntfy ntfy token add atpbot         # prints tk_... for ATP_PUSH_TOKEN
+TOKEN=$(docker exec atp-ntfy ntfy token add atpbot | grep -oE 'tk_[a-z0-9]+')
+echo "$TOKEN"                                      # this is ATP_PUSH_TOKEN
 
 # 2. The phone: read-only. This is the account you sign the ntfy APP in as.
 docker exec -e NTFY_PASSWORD='<operator-password>' atp-ntfy \
@@ -347,9 +348,12 @@ Connect the VPN first.
 
 Then prove the two halves separately, because they fail differently:
 
+`$TOPIC` and `$TOKEN` are the shell variables set in step 2 — keep that shell, or
+re-export them before running this:
+
 ```bash
 # publish as ATP would (write-only token) — expect HTTP 200 + a JSON "id"
-curl -sS -H "Authorization: Bearer $ATP_PUSH_TOKEN" -d "setup check" \
+curl -sS -H "Authorization: Bearer $TOKEN" -d "setup check" \
   "http://192.168.1.50:8090/$TOPIC"
 ```
 
@@ -369,12 +373,16 @@ ATP_PUSH_TOKEN=tk_...           # secret
 Confirm the endpoint before ATP touches it:
 
 ```bash
-curl -v -H "Authorization: Bearer $ATP_PUSH_TOKEN" -d "hello" \
-  "http://192.168.1.50:8090/$ATP_PUSH_TOPIC"
+curl -v -H "Authorization: Bearer $TOKEN" -d "hello" \
+  "http://192.168.1.50:8090/$TOPIC"
 ```
 
-Expect `HTTP 200` and a JSON body carrying `"id"`. `403` means the ACL did not
-take; `401` means the token is wrong.
+Expect `HTTP 200` and a JSON body carrying `"id"`.
+
+- `401` — the token is wrong, **or empty**. An unset `$TOKEN` sends a bare
+  `Authorization: Bearer` and looks identical to a bad one; check `echo "$TOKEN"`
+  first.
+- `403` — the token is valid but `atpbot` has no `wo` grant on this topic.
 
 ### The vault interaction, which will bite you at flip time
 

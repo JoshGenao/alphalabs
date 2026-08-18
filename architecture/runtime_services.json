@@ -2616,6 +2616,8 @@
       "ATP_OPERATOR_EMAIL",
       "ATP_PUSH_HOST",
       "ATP_PUSH_PORT",
+      "ATP_NTFY_BIND",
+      "ATP_NTFY_PORT",
       "ATP_PUSH_TOPIC",
       "ATP_PUSH_TOKEN",
       "DATABENTO_API_KEY",
@@ -2971,6 +2973,38 @@
           "SRS-NOTIF-001",
           "IF-11",
           "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_NTFY_BIND",
+        "category": "notification_channels",
+        "type": "host",
+        "validator": {
+          "non_empty": true,
+          "private_egress": true
+        },
+        "default": "127.0.0.1",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-11",
+          "SRS-SEC-002",
+          "NFR-S3"
+        ]
+      },
+      {
+        "name": "ATP_NTFY_PORT",
+        "category": "notification_channels",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 65535
+        },
+        "default": "8090",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-11"
         ]
       },
       {
