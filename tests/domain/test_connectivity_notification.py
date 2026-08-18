@@ -394,3 +394,77 @@ def test_the_operator_alert_binary_refuses_placeholder_credentials_in_production
         _run_cargo_bin_test("tests::placeholder_credentials_are_refused_in_staging_and_production"),
         "SRS-NOTIF-001 no placeholder credentials in production",
     )
+
+
+def test_every_surface_agrees_on_the_push_endpoint_default() -> None:
+    """A documented default the code does not implement is a lie with a fuse.
+
+    SRS-NOTIF-001 / SRS-ARCH-005. `ATP_PUSH_PORT` is optional, so an operator who
+    trusts the documentation and omits it gets whatever the TRANSPORT decided —
+    and if that disagrees with the catalogue, the disagreement surfaces as the
+    connectivity-loss alert that never arrives.
+
+    This is not hypothetical. Moving the port off a collision with the dashboard
+    API's 8080, five documented surfaces were updated and the Rust constant was
+    not; the operator CLI's own --help then repeated the stale value as a sixth.
+    Adversarial review caught it. This test is what makes the next one impossible
+    to land.
+    """
+
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+
+    def catalogue_default() -> str:
+        blob = json.loads((root / "architecture" / "runtime_services.json").read_text())
+
+        def walk(node: object) -> dict | None:
+            if isinstance(node, dict):
+                if node.get("name") == "ATP_PUSH_PORT":
+                    return node
+                for value in node.values():
+                    if (hit := walk(value)) is not None:
+                        return hit
+            elif isinstance(node, list):
+                for value in node:
+                    if (hit := walk(value)) is not None:
+                        return hit
+            return None
+
+        spec = walk(blob)
+        assert spec is not None, "ATP_PUSH_PORT is not in the ARCH-005 catalogue"
+        return str(spec["default"])
+
+    def one(pattern: str, path: str) -> str:
+        text = (root / path).read_text(encoding="utf-8")
+        match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+        assert match is not None, f"{pattern!r} not found in {path}"
+        return match.group(1)
+
+    surfaces = {
+        "catalogue": catalogue_default(),
+        ".env.example": one(r"^ATP_PUSH_PORT=(\d+)", ".env.example"),
+        "compose anchor": one(r"ATP_PUSH_PORT: \$\{ATP_PUSH_PORT:-(\d+)\}", "docker-compose.yml"),
+        "rust constant": one(
+            r"const DEFAULT_PUSH_PORT: u16 = (\d+)",
+            "crates/atp-adapters/src/notification/push.rs",
+        ),
+        "config README": one(r"`ATP_PUSH_PORT`.*?\| `(\d+)`", "python/atp_config/README.md"),
+        "operator CLI help": one(
+            r"default to a loopback ntfy on port (\d+)",
+            "crates/atp-orchestrator/src/bin/notif001_operator_alert_cli.rs",
+        ),
+    }
+
+    assert len(set(surfaces.values())) == 1, f"ATP_PUSH_PORT default disagrees: {surfaces}"
+
+    # And it must not be the dashboard API's published port: ATP_PUSH_HOST
+    # defaults to loopback, so colliding here aims a default-config alert — body
+    # and bearer token — at the dashboard instead of at ntfy.
+    dashboard = one(r'- "127\.0\.0\.1:(\d+):\d+"', "docker-compose.yml")
+    assert surfaces["catalogue"] != dashboard, (
+        f"the push default ({surfaces['catalogue']}) collides with the dashboard "
+        f"API's published port; a default alert would POST its bearer token there"
+    )

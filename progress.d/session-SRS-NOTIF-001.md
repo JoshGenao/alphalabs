@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 2
+Adversarial rounds: 4
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -810,6 +810,30 @@ prose needs the hits reviewed individually, exactly as a code rename does.
         APPLYING"; STILL NOT APPLIED.
       * [info] commit:mixed-scope — the mypy annotation fix was unrelated to the
         ntfy work. Split into its own commit (10c5e56).
+    round 3: BLOCK, and both blocks were the SAME class I had just spent a whole
+      session eliminating — a documented default the code does not implement:
+      * DEFAULT_PUSH_PORT in push.rs was still 80 after I moved the catalogue,
+        .env.example, the compose anchor, the config README and the runbook to
+        8090. Five surfaces documenting a value the only consumer disagreed with.
+        The CLI --help repeated the stale 80 as a sixth. Both fixed; all six
+        surfaces now checked to agree programmatically.
+      * `docker exec atp-ntfy ...` in the runbook works only on the bare-docker
+        path — compose generates `<project>-phase1-ntfy-1`, so every
+        token-creation command failed with "No such container" for the operator
+        who followed the compose path listed FIRST. Fixed with an explicit
+        `container_name: atp-ntfy` (safe: singleton service, never scaled), so
+        one set of commands works on both paths.
+      Also fixed from that round:
+      * [warn] the image was `:latest` with `restart: unless-stopped` — a later
+        `docker compose pull` could swap ntfy's major version underneath the
+        alert path, and no two operators would run the bytes the documented
+        behaviours were reproduced against. Pinned to v2.27.0, which is the
+        version this session actually probed.
+      * [info] the two paths use different VOLUMES (`atp_ntfy` vs the
+        project-prefixed `<project>_atp_ntfy`), so switching paths silently
+        lands on an empty auth.db — the exact 401 the runbook warns about.
+        Documented as a pick-one-and-stay caveat.
+    round 4: re-run after the above.
 
 ## Gate
   cargo test --workspace 2336 passed / 0 failed; pytest -m "not integration and

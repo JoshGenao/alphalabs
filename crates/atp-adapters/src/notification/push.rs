@@ -66,7 +66,12 @@ use super::{
 const CHANNEL: &str = "push";
 
 const DEFAULT_PUSH_HOST: &str = "127.0.0.1";
-const DEFAULT_PUSH_PORT: u16 = 80;
+/// 8090, not ntfy's own 80: binding 80 is privileged on most hosts, and 8080 is
+/// already taken by `phase1-dashboard-api`. Kept identical to the ARCH-005
+/// catalogue default, `.env.example`, the compose anchor and the runbook — a
+/// documented default the code does not implement is a lie the operator only
+/// discovers when the alert fails.
+const DEFAULT_PUSH_PORT: u16 = 8090;
 
 /// Cap on the response the adapter will read. A server that streams without end
 /// must not be able to exhaust memory on the alert path.

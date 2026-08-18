@@ -271,8 +271,17 @@ docker run -d --name atp-ntfy --restart unless-stopped \
   -e NTFY_CACHE_FILE=/var/lib/ntfy/cache.db \
   -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
   -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
-  binwiederhier/ntfy:latest serve
+  binwiederhier/ntfy:v2.27.0 serve
 ```
+
+Pin the version rather than tracking `:latest`. This image sits on the alert path,
+and 2.27.0 is what the behaviours documented below were reproduced against.
+
+The two paths use the **same container name** (`atp-ntfy`) so the commands below
+work either way, but *not* the same volume: compose creates the project-prefixed
+`<project>_atp_ntfy` while the bare-docker line above uses a plain `atp_ntfy`.
+Switching paths therefore lands on an empty `auth.db`, and every alert 401s until
+you recreate the user, ACL and token. Pick one path and stay on it.
 
 `NTFY_AUTH_DEFAULT_ACCESS=deny-all` is load-bearing. Without it every topic on
 the instance is publishable by anyone who can route to it, and on ntfy the topic

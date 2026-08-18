@@ -265,7 +265,19 @@ services:
   # place in the x-atp-no-secrets blanking list.
   phase1-ntfy:
     profiles: ["notify"]
-    image: binwiederhier/ntfy:latest
+    # PINNED, not :latest. This is the only third-party image in the stack and it
+    # sits on the alert path; with `restart: unless-stopped` a later
+    # `docker compose pull` could otherwise swap the ntfy major version underneath
+    # it. 2.27.0 is the version the transport's documented behaviours (the
+    # inclusive 4,096-byte attachment threshold, the "triggered" empty-body
+    # substitution, the 401/403 split) were actually reproduced against.
+    image: binwiederhier/ntfy:v2.27.0
+    # A fixed name so the runbook's `docker exec atp-ntfy ...` works on BOTH the
+    # compose path and the bare-docker path. Compose would otherwise generate
+    # `<project>-phase1-ntfy-1` and every token-creation command in the runbook
+    # would fail with "No such container". Safe here: this service is a singleton
+    # and is never scaled.
+    container_name: atp-ntfy
     command: ["serve"]
     restart: unless-stopped
     ports:

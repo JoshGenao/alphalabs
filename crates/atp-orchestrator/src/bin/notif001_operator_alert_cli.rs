@@ -90,8 +90,9 @@ ENVIRONMENT (the transports; see architecture/runtime_services.json):
                         the topic alone is enough to publish)
     ATP_SMTP_RELAY_HOST/PORT, ATP_SMTP_RELAY_USER
                         optional; default to the phase1-notification-egress sidecar
-    ATP_PUSH_HOST/PORT  optional; default to a loopback ntfy on port 80. Push
+    ATP_PUSH_HOST/PORT  optional; default to a loopback ntfy on port 8090. Push
                         needs no relay hop — it targets the LAN ntfy directly.
+                        HOST must be an IP LITERAL (loopback / RFC 1918).
 
 EXIT CODES:
     0  every required channel terminal-succeeded AND the event was stored
