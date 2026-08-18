@@ -85,6 +85,14 @@ consistent with the SRS-ARCH-004 metadata block in
 | `phase1-jupyter` | `docker/jupyter.Dockerfile` | SRS-RES-001, SRS-SEC-004 |
 | `phase1-ib-gateway` | `docker/ib-gateway.Dockerfile` (operator-supplied in production) | SRS-EXE-006 |
 | `phase1-strategy-runtime` | `docker/strategy-python.Dockerfile` | SRS-ORCH-001, SyRS SYS-11, SRS-SEC-003 (least-privilege) |
+| `phase1-ntfy` *(profile `notify`, optional)* | `binwiederhier/ntfy` | SRS-NOTIF-001 IF-11 push endpoint |
+
+`phase1-ntfy` is deliberately **absent** from the SRS-ARCH-004 `required_services`
+metadata that `tools/deployment_check.py` enforces. That check tests
+required ⊆ compose in one direction only, so an optional service is permitted but
+unverified — which is the intent here: requiring it would force this deployment
+shape on an operator who already runs ntfy elsewhere. Do not read its absence
+from the metadata as drift.
 
 The strategy runtime container is the canonical template the Strategy
 Orchestrator clones for each live or paper strategy instance. Resource
@@ -141,6 +149,15 @@ phase1-jupyter (internal atp_research_net, base_url=/research/)`:
   documented external layer: HTTPS termination, like all external exposure, is the
   operator-managed authenticated reverse proxy in front of the loopback bind
   (NFR-S3 / SRS-SEC-002) — the runtime itself speaks HTTP on loopback.
+
+- `phase1-ntfy` is **not** in the `phase1` profile — the operator may already run
+  ntfy elsewhere on the LAN, and publishing an alert endpoint on a LAN interface
+  should be deliberate rather than a side effect of the default bring-up. It takes
+  no ATP credentials (an explicit `NTFY_*` environment rather than `*atp-env`), so
+  it needs neither the vault mount nor a place in the `x-atp-no-secrets` blanking
+  list. ATP reaches it by the **host's** RFC 1918 address, never by service name —
+  see *Standing up the IF-11 push endpoint* below for why the transport refuses a
+  hostname.
 
 ## Storage tiers
 
@@ -202,6 +219,149 @@ beyond the local network requires the operator to front the loopback
 bind with an authenticated reverse proxy (the explicit operator
 configuration and documented external authentication SRS-SEC-002
 mandates); that proxy is out of scope for the Phase 1 baseline.
+
+## Standing up the IF-11 push endpoint (ntfy)
+
+SRS-NOTIF-001 fans every operator alert to **email (IF-10) and push (IF-11)**,
+and `REQUIRED_CHANNELS` is enforced fail-closed — if push is unconfigured,
+nothing is sent on either channel. This is how you stand push up.
+
+Push replaced SMS as IF-11 on 2026-08-17. US A2P 10DLC registration is weeks of
+lead time and carriers filter unregistered traffic silently, so an SMS channel
+could not be shown to deliver; a self-hosted ntfy on the LAN, reached from the
+operator's phone over the VPN, meets StRS SN-1.12's intent without a carrier in
+the path.
+
+### Where it runs, and why that is forced
+
+Run ntfy **on the Proxmox VM, bound to the VM's RFC 1918 LAN address** — not
+reached by compose service name.
+
+`PushConfig::new` refuses a hostname and requires a loopback / RFC 1918 **IP
+literal**. That is deliberate: a name cannot be shown to stay private without
+resolving it, and a resolution performed at startup does not bind what the name
+resolves to at send time. The alternative — validating only at send time — means
+the misconfiguration surfaces as the connectivity-loss alert that never arrives,
+during the incident it exists to report.
+
+The phone needs a routable LAN address over the VPN regardless, so one address
+serves both the phone and the ATP containers.
+
+### 1. Bring up the server
+
+The stack ships an optional ntfy service under the `notify` profile. It is not in
+the `phase1` profile because you may already run ntfy elsewhere, and because
+publishing on a LAN interface should be a deliberate act:
+
+```bash
+# in .env — the loopback default cannot reach your phone
+ATP_NTFY_BIND=192.168.1.50        # this VM's RFC 1918 address
+ATP_NTFY_PORT=8090
+
+docker compose --env-file .env --profile phase1 --profile notify up -d
+```
+
+To run it outside compose instead:
+
+```bash
+docker run -d --name atp-ntfy --restart unless-stopped \
+  -p 192.168.1.50:8090:80 \
+  -v atp_ntfy:/var/lib/ntfy \
+  -e NTFY_BASE_URL=http://192.168.1.50:8090 \
+  -e NTFY_CACHE_FILE=/var/lib/ntfy/cache.db \
+  -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
+  -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
+  binwiederhier/ntfy:latest serve
+```
+
+`NTFY_AUTH_DEFAULT_ACCESS=deny-all` is load-bearing. Without it every topic on
+the instance is publishable by anyone who can route to it, and on ntfy the topic
+alone is enough to publish — so an unauthenticated instance lets anyone who
+learns or guesses the topic forge an operator alert.
+
+### 2. Create the topic, the user and the token
+
+```bash
+TOPIC="atp-alerts-$(openssl rand -hex 16)"   # long + random: this is a credential
+echo "$TOPIC"
+
+docker exec -e NTFY_PASSWORD='<choose-one>' atp-ntfy \
+  ntfy user add --role=user atpbot
+
+docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo    # write-only
+docker exec atp-ntfy ntfy token add atpbot             # prints tk_...
+```
+
+Three things that are easy to get wrong:
+
+- **`NTFY_PASSWORD` is required.** Without it `ntfy user add` tries to prompt and
+  fails with `inappropriate ioctl for device` — there is no TTY under
+  `docker exec`.
+- **Use `wo`, not `rw`.** ATP only publishes. Write-only means a leaked token
+  cannot read back the alert history.
+- **The topic must use ntfy's alphabet** (ASCII letters, digits, `-`, `_`). It
+  becomes the URL path, so a `/`, `?`, `#` or space would retarget the publish;
+  startup readiness rejects anything else, and the rejection never echoes the
+  value.
+
+### 3. Subscribe the phone
+
+Install the ntfy app, add server `http://192.168.1.50:8090`, sign in as `atpbot`,
+and subscribe to the topic. Connect the VPN first. Send a test from the app's own
+UI before involving ATP, so a failure later is unambiguously ATP's.
+
+### 4. Point ATP at it
+
+```
+ATP_PUSH_HOST=192.168.1.50      # IP literal, RFC 1918 — not a hostname
+ATP_PUSH_PORT=8090
+ATP_PUSH_TOPIC=<the topic>      # secret
+ATP_PUSH_TOKEN=tk_...           # secret
+```
+
+Confirm the endpoint before ATP touches it:
+
+```bash
+curl -v -H "Authorization: Bearer $ATP_PUSH_TOKEN" -d "hello" \
+  "http://192.168.1.50:8090/$ATP_PUSH_TOPIC"
+```
+
+Expect `HTTP 200` and a JSON body carrying `"id"`. `403` means the ACL did not
+take; `401` means the token is wrong.
+
+### The vault interaction, which will bite you at flip time
+
+`ATP_PUSH_TOPIC` and `ATP_PUSH_TOKEN` are catalogued secrets and belong in the
+encrypted vault for the stack. But `notif001_operator_alert_cli` **cannot open
+the vault** — the vault is a Python component and that binary is the Rust
+composition root. Rather than publish with whatever is in the environment, it
+refuses to run when `ATP_ENV` is `staging` or `production` and any notification
+credential is still the catalogue placeholder.
+
+So for an operator alert run, export the real values into the environment for
+that run. Sealing them in the vault covers the long-running services; it does not
+cover this binary.
+
+### Two ntfy behaviours the transport defends against
+
+Both were reproduced against a live server, and both are silent — the request
+still returns `HTTP 200` with a valid message id:
+
+- **A body of 4,096 bytes or more becomes a file attachment.** ntfy's docs say
+  "greater than 4,096"; it is actually inclusive. On conversion the alert text is
+  replaced by "You received a file: attachment.txt", so the operator's phone shows
+  a filename instead of the outage. The transport caps bodies at 1,024 bytes and
+  additionally *fails* a 2xx that comes back carrying an attachment.
+- **An empty body becomes the literal word "triggered".** An empty composition is
+  replaced with an explicit marker instead.
+
+### What this does not give you
+
+Push reaching ntfy is not push reaching the operator: acceptance is not receipt,
+and it does not prove the phone was subscribed, online, or that the notification
+was displayed. Email is a separate gap — it still needs the
+`phase1-notification-egress` relay, which is not built. Until that exists an
+operator alert run shows `email=Failed` and exits non-zero while push delivers.
 
 ## Portability constraints for future deployment
 

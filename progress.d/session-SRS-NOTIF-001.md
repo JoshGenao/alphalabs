@@ -745,3 +745,86 @@ any `progress.d/*` other than this session note, so the prompt and the tooling
 contradict each other. Dropped from the branch; its content is superseded by this
 note anyway. Worth reconciling in the prompt or the guard so the next session does
 not hit the same wall at the very end of a long run.
+
+=== SESSION 2026-08-17b (operator-directed: stand up the ntfy endpoint) ===
+Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
+passes:false and the flip still needs the operator's real ntfy and a real inbox.
+
+Adversarial rounds: 2
+
+## What landed
+  * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
+    profile, NOT in `phase1`. Optional on purpose: the operator may already run
+    ntfy on the LAN, and publishing an alert endpoint on a LAN interface should
+    be deliberate rather than a side effect of the default bring-up. It takes an
+    explicit NTFY_* environment instead of merging *atp-env, so no ATP secret
+    ever enters a third-party image — which is also why it needs neither the
+    vault mount nor an entry in x-atp-no-secrets. Named volume `atp_ntfy` holds
+    auth.db (users/ACLs/tokens) + cache.db; on a fresh volume the token is gone
+    and every alert 401s.
+  * docs/DEPLOYMENT.md — "Standing up the IF-11 push endpoint (ntfy)": where it
+    runs and why that is forced, compose and bare-docker bring-up, topic/user/
+    token creation, phone subscription, wiring, curl verification, the vault
+    interaction, and the two silent ntfy behaviours the transport defends
+    against.
+  * .env.example / catalogue / README — ATP_NTFY_BIND + ATP_NTFY_PORT, and the
+    ATP_PUSH_PORT default moved 80 -> 8090 (below).
+
+## THE PORT COLLISION — caught by review, worth remembering
+I first used 8080 for the bundled ntfy. `phase1-dashboard-api` already publishes
+`127.0.0.1:8080`, so the bring-up documented three lines above my own compose
+entry would have died on "port is already allocated" — and with no depends_on,
+the loser of that race could have been the dashboard.
+The second-order effect was worse and is the part worth keeping: `.env.example`
+shipped ATP_PUSH_HOST=127.0.0.1 + ATP_PUSH_PORT=8080, which aims the DEFAULT push
+transport at the dashboard API. A default-config alert would have POSTed its body
+and `Authorization: Bearer <ATP_PUSH_TOKEN>` to the wrong service.
+Now 8090 everywhere (catalogue default, compose anchor, published port, env
+template, README, runbook). 80 was avoided because binding it is privileged.
+LESSON: when adding a service, enumerate the ports already published in compose
+before picking one — and check what the new default now POINTS AT, not just
+whether it binds.
+
+## Also caught: a blanket string replace is not a rename
+Moving 8080 -> 8090 across docs/DEPLOYMENT.md also rewrote the DASHBOARD's
+documented port in two unrelated sentences. Reverted. A global substitution over
+prose needs the hits reviewed individually, exactly as a code rename does.
+
+## Review verdicts
+  deterministic (critic_check.py --staged): APPROVE on every commit.
+  judgment (adversarial_review.py, reviewer=CLAUDE-FALLBACK — Codex was rate
+  limited until 12:19 AM, and the dispatcher failed over as designed):
+    round 1: BLOCK — the 8080 collision above [block] plus the default-push
+      -targets-dashboard consequence [warn]. Both fixed.
+    Also raised, and handled rather than fixed:
+      * [warn] docs:arch-metadata-drift — `phase1-ntfy` is in compose and the doc
+        but not in SRS-ARCH-004 `required_services`, and deployment_check only
+        tests required ⊆ compose. That asymmetry is REAL but the absence is
+        intentional: listing it would force this deployment shape on an operator
+        who hosts ntfy elsewhere. Documented in DEPLOYMENT.md so the gap reads as
+        a decision, not drift.
+      * [warn] docs:feature-record-contradiction — feature_list.json still says
+        email/SMS and still carries the SMS-provider external_blocker. Same item
+        as the previous session: the integrator forbids branch commits to that
+        file. The exact replacement strings are above under "WHAT STILL NEEDS
+        APPLYING"; STILL NOT APPLIED.
+      * [info] commit:mixed-scope — the mypy annotation fix was unrelated to the
+        ntfy work. Split into its own commit (10c5e56).
+
+## Gate
+  cargo test --workspace 2336 passed / 0 failed; pytest -m "not integration and
+  not e2e" 5244 passed / 5 pre-existing skips; tools/run_ci_locally.sh --fast
+  exit 0; deployment / network_binding / jupyter_isolation / container_isolation
+  / config / credential_security / architecture checks PASS; mypy clean on the
+  file this session touched.
+  ONE pre-existing failure, not mine and proven so against a clean origin/main
+  worktree at 727272c: tests/unit/test_evidence.py::
+  test_a_quoted_argument_survives_the_record_and_the_replay.
+  NOT RUN: the Rust suite and ci-rust scope are outside --fast; e2e and
+  integration are deselected as always.
+
+## Resume / next
+  Unchanged from the previous session: the flip needs the operator's ntfy stood
+  up per the new runbook, `phase1-notification-egress` built for EMAIL ONLY, and
+  a real IB Gateway outage on the Proxmox host producing a real email + a real
+  push inside 60s. Plus the feature_list.json edits listed above.

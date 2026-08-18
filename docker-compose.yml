@@ -16,7 +16,7 @@ x-atp-env: &atp-env
   ATP_SMTP_SENDER: ${ATP_SMTP_SENDER:-atp-alerts@example.invalid}
   ATP_OPERATOR_EMAIL: ${ATP_OPERATOR_EMAIL:-operator@example.invalid}
   ATP_PUSH_HOST: ${ATP_PUSH_HOST:-127.0.0.1}
-  ATP_PUSH_PORT: ${ATP_PUSH_PORT:-80}
+  ATP_PUSH_PORT: ${ATP_PUSH_PORT:-8090}
   ATP_PUSH_TOPIC: ${ATP_PUSH_TOPIC:-placeholder-set-in-environment}
   ATP_PUSH_TOKEN: ${ATP_PUSH_TOKEN:-placeholder-set-in-environment}
   DATABENTO_API_KEY: ${DATABENTO_API_KEY:-placeholder-set-in-environment}
@@ -239,6 +239,64 @@ services:
     # SRS-SEC-001: SMTP/push credential consumer — needs the read-only vault mount.
     volumes: *atp-volumes
 
+  # --- IF-11 push endpoint: self-hosted ntfy (SRS-NOTIF-001) ---
+  #
+  # DELIBERATELY NOT IN THE phase1 PROFILE. Two reasons:
+  #   * the operator may already run ntfy elsewhere on the LAN, and forcing a
+  #     second instance would split the topic/token state across two auth.db
+  #     files;
+  #   * bringing it up usefully means binding a LAN interface (see ATP_NTFY_BIND
+  #     below), which should be a deliberate act, not a side effect of
+  #     `--profile phase1`.
+  # Start it with:
+  #   docker compose --env-file .env --profile phase1 --profile notify up
+  #
+  # HOW ATP REACHES IT — read this before setting ATP_PUSH_HOST. Not by service
+  # name: `PushConfig::new` refuses a hostname and requires a loopback/RFC 1918
+  # IP LITERAL, because a name cannot be shown to stay private without resolving
+  # it, and a resolution at startup does not bind what it resolves to at send
+  # time. So ATP_PUSH_HOST is the HOST's LAN address — the same address the
+  # operator's phone uses over the VPN. One address for both; no split-horizon
+  # DNS to get wrong.
+  #
+  # This service takes NO ATP credentials. It is a third-party image, so it is
+  # given an explicit NTFY_* environment instead of merging *atp-env — the ATP
+  # secrets never enter it, which is why it needs neither the vault mount nor a
+  # place in the x-atp-no-secrets blanking list.
+  phase1-ntfy:
+    profiles: ["notify"]
+    image: binwiederhier/ntfy:latest
+    command: ["serve"]
+    restart: unless-stopped
+    ports:
+      # SRS-SEC-002 / NFR-S3: loopback or RFC 1918 only, enforced by
+      # tools/network_binding_check.py. The DEFAULT is loopback, which the
+      # operator's phone CANNOT reach — that is intentional (a stack brought up
+      # without thinking must not publish an alert endpoint on the LAN). Set
+      # ATP_NTFY_BIND to the host's RFC 1918 address to actually receive alerts.
+      #
+      # PORT 8090, NOT 8080: phase1-dashboard-api already publishes
+      # 127.0.0.1:8080, so 8080 here makes the documented
+      # `--profile phase1 --profile notify` bring-up die on "port is already
+      # allocated" — and, worse, aims the default ATP_PUSH_PORT at the dashboard,
+      # so an alert would POST its bearer token to the wrong service. 80 is
+      # avoided because binding it is privileged on most hosts.
+      - "${ATP_NTFY_BIND:-127.0.0.1}:${ATP_NTFY_PORT:-8090}:80"
+    environment:
+      NTFY_BASE_URL: http://${ATP_NTFY_BIND:-127.0.0.1}:${ATP_NTFY_PORT:-8090}
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      # LOAD-BEARING. Without deny-all, every topic on this instance is
+      # world-publishable to anyone who can route to it — and on ntfy the topic
+      # alone is enough to publish, so an unauthenticated instance lets anyone
+      # who guesses or learns the topic forge an operator alert. ATP_PUSH_TOPIC
+      # is catalogued `secret` for exactly this reason.
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+    volumes:
+      # Persists auth.db (users, ACLs, tokens) and cache.db across restarts. On a
+      # fresh volume the token is gone and every alert fails 401.
+      - atp_ntfy:/var/lib/ntfy
+
   phase1-dashboard-api:
     profiles: ["phase1"]
     build:
@@ -457,6 +515,11 @@ volumes:
       type: none
       o: bind
       device: ${ATP_SSD_DATA_DIR:-/var/lib/atp/ssd}
+  atp_ntfy:
+    # SRS-NOTIF-001 IF-11: the ntfy auth store (users, ACLs, access tokens) and
+    # message cache. A plain named volume, NOT a bind mount into the ATP data
+    # tiers — this is third-party service state, not trading data.
+    driver: local
   atp_nas:
     # SRS-DATA-008/009 NAS archive tier; bind to ATP_NAS_DATA_DIR on the host.
     driver: local

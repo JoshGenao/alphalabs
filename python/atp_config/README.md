@@ -48,7 +48,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_SMTP_SENDER` | notification_channels | string | `atp-alerts@example.invalid` | no | SRS-NOTIF-001, IF-10 |
 | `ATP_OPERATOR_EMAIL` | notification_channels | string | `operator@example.invalid` | no | SRS-NOTIF-001, IF-10 |
 | `ATP_PUSH_HOST` | notification_channels | host (private, literal) | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
-| `ATP_PUSH_PORT` | notification_channels | int | `80` | no | SRS-NOTIF-001, IF-11 |
+| `ATP_PUSH_PORT` | notification_channels | int | `8090` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_TOPIC` | notification_channels | secret (charset) | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `ATP_PUSH_TOKEN` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
