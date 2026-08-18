@@ -66,6 +66,31 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_cargo_bin_test(test_name: str) -> subprocess.CompletedProcess[str]:
+    """Run one unit test inside the operator-alert BINARY target."""
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run Rust unit test")
+    return subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            "notif001_operator_alert_cli",
+            test_name,
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
@@ -348,3 +373,26 @@ def test_a_public_push_host_is_refused_at_startup_not_at_alert_time() -> None:
         reasons = push_errors(refused)
         assert reasons, f"{refused} must FAIL readiness before any alert is due"
         assert "public network" in reasons[0], reasons
+
+
+def test_the_operator_alert_binary_refuses_placeholder_credentials_in_production() -> None:
+    """SRS-SEC-001 / SRS-NOTIF-001: never publish an alert with a placeholder.
+
+    The documented deployment flow (.env.example, docs/DEPLOYMENT.md) tells the
+    operator to seal ATP_SMTP_API_KEY / ATP_PUSH_TOPIC / ATP_PUSH_TOKEN in the
+    encrypted vault and LEAVE THE PLACEHOLDERS in `.env`. The operator alert
+    binary reads the process environment directly and cannot open that vault —
+    it is the Rust composition root, the vault is a Python component — so
+    following the documented flow would otherwise have published an operator
+    alert authenticated with the literal string `placeholder-set-in-environment`.
+
+    The binary therefore enforces the half of the readiness contract available to
+    it: the same placeholder rejection `atp_config` applies, at the same severity
+    and in the same environments, naming the offending keys and never printing
+    their values. Development keeps the flexibility init.sh depends on.
+    """
+
+    _assert_one_passed(
+        _run_cargo_bin_test("tests::placeholder_credentials_are_refused_in_staging_and_production"),
+        "SRS-NOTIF-001 no placeholder credentials in production",
+    )
