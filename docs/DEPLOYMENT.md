@@ -290,15 +290,31 @@ learns or guesses the topic forge an operator alert.
 
 ### 2. Create the topic, the user and the token
 
+You need **two identities**, not one. ATP publishes and must not be able to read;
+the phone subscribes and must not be able to publish. Granting one account both
+is what most ntfy walkthroughs do, and it means a leaked publishing token can
+also read your entire alert history.
+
 ```bash
 TOPIC="atp-alerts-$(openssl rand -hex 16)"   # long + random: this is a credential
 echo "$TOPIC"
 
-docker exec -e NTFY_PASSWORD='<choose-one>' atp-ntfy \
+# 1. ATP: write-only. This account's token goes in ATP_PUSH_TOKEN.
+docker exec -e NTFY_PASSWORD='<atpbot-password>' atp-ntfy \
   ntfy user add --role=user atpbot
+docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo
+docker exec atp-ntfy ntfy token add atpbot         # prints tk_... for ATP_PUSH_TOKEN
 
-docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo    # write-only
-docker exec atp-ntfy ntfy token add atpbot             # prints tk_...
+# 2. The phone: read-only. This is the account you sign the ntfy APP in as.
+docker exec -e NTFY_PASSWORD='<operator-password>' atp-ntfy \
+  ntfy user add --role=user operator
+docker exec atp-ntfy ntfy access operator "$TOPIC" ro
+```
+
+Confirm the split took:
+
+```bash
+docker exec atp-ntfy ntfy access        # atpbot: write-only, operator: read-only
 ```
 
 Three things that are easy to get wrong:
@@ -306,8 +322,18 @@ Three things that are easy to get wrong:
 - **`NTFY_PASSWORD` is required.** Without it `ntfy user add` tries to prompt and
   fails with `inappropriate ioctl for device` — there is no TTY under
   `docker exec`.
-- **Use `wo`, not `rw`.** ATP only publishes. Write-only means a leaked token
-  cannot read back the alert history.
+- **Do not sign the phone in as `atpbot`.** Under `deny-all` a write-only account
+  cannot subscribe, so the app is refused with 403 and shows nothing — while
+  ATP's publishes keep returning HTTP 200 with a message id. That failure is
+  invisible from the ATP side and looks exactly like a working alert path. It is
+  the acceptance-is-not-receipt gap in its most literal form.
+
+  Measured against ntfy 2.27.0 with `deny-all`, so this is not a guess:
+
+  | account | grant | publish | subscribe |
+  |---|---|---|---|
+  | `atpbot` | `wo` | `200` | **`403`** |
+  | `operator` | `ro` | **`403`** | `200` |
 - **The topic must use ntfy's alphabet** (ASCII letters, digits, `-`, `_`). It
   becomes the URL path, so a `/`, `?`, `#` or space would retarget the publish;
   startup readiness rejects anything else, and the rejection never echoes the
@@ -315,9 +341,21 @@ Three things that are easy to get wrong:
 
 ### 3. Subscribe the phone
 
-Install the ntfy app, add server `http://192.168.1.50:8090`, sign in as `atpbot`,
-and subscribe to the topic. Connect the VPN first. Send a test from the app's own
-UI before involving ATP, so a failure later is unambiguously ATP's.
+Install the ntfy app, add server `http://192.168.1.50:8090`, and sign in as
+**`operator`** — the read-only account, not `atpbot`. Subscribe to the topic.
+Connect the VPN first.
+
+Then prove the two halves separately, because they fail differently:
+
+```bash
+# publish as ATP would (write-only token) — expect HTTP 200 + a JSON "id"
+curl -sS -H "Authorization: Bearer $ATP_PUSH_TOKEN" -d "setup check" \
+  "http://192.168.1.50:8090/$TOPIC"
+```
+
+The phone should display it. If the publish returns 200 and the phone shows
+nothing, the publish half is fine and the subscription half is not — check that
+the app is signed in as `operator` and that `operator` holds `ro` on this topic.
 
 ### 4. Point ATP at it
 

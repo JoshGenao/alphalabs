@@ -460,6 +460,25 @@ def test_every_surface_agrees_on_the_push_endpoint_default() -> None:
 
     assert len(set(surfaces.values())) == 1, f"ATP_PUSH_PORT default disagrees: {surfaces}"
 
+    # The BUNDLED server's own knobs have to agree too, or the class is only
+    # half closed: moving ATP_NTFY_PORT without moving ATP_PUSH_PORT leaves every
+    # surface above self-consistent while the default push target points at a
+    # closed port. The two are one setting wearing two names.
+    bundled = {
+        "ATP_NTFY_PORT (.env.example)": one(r"^ATP_NTFY_PORT=(\d+)", ".env.example"),
+        "compose published port": one(
+            r"\$\{ATP_NTFY_BIND:-127\.0\.0\.1\}:\$\{ATP_NTFY_PORT:-(\d+)\}:80",
+            "docker-compose.yml",
+        ),
+        "compose NTFY_BASE_URL": one(
+            r"NTFY_BASE_URL: http://\$\{ATP_NTFY_BIND:-127\.0\.0\.1\}:\$\{ATP_NTFY_PORT:-(\d+)\}",
+            "docker-compose.yml",
+        ),
+    }
+    assert set(bundled.values()) == set(surfaces.values()), (
+        f"the bundled ntfy port and the push default disagree: {bundled} vs {surfaces['catalogue']}"
+    )
+
     # And it must not be the dashboard API's published port: ATP_PUSH_HOST
     # defaults to loopback, so colliding here aims a default-config alert — body
     # and bearer token — at the dashboard instead of at ntfy.

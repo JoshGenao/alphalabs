@@ -308,6 +308,15 @@ services:
       # Persists auth.db (users, ACLs, tokens) and cache.db across restarts. On a
       # fresh volume the token is gone and every alert fails 401.
       - atp_ntfy:/var/lib/ntfy
+    networks:
+      # A DEDICATED, SINGLE-MEMBER bridge. Without this the service joins the
+      # project's default network, which would give a LAN-exposed third-party
+      # image a reachability path to phase1-dashboard-api — the kill-switch /
+      # live-designation / Hot-Swap REST, published to loopback precisely to keep
+      # it off the LAN — and to phase1-ib-gateway on 4001/4002. It needs neither:
+      # by design ATP reaches ntfy at the HOST's RFC 1918 address, not over a
+      # compose network, so nothing is lost by isolating it completely.
+      - atp_notify_net
 
   phase1-dashboard-api:
     profiles: ["phase1"]
@@ -574,3 +583,16 @@ networks:
   atp_research_edge_net:
     driver: bridge
     internal: true
+  # SRS-NOTIF-001 IF-11: the single-member bridge phase1-ntfy sits on, so a
+  # third-party image published to the LAN shares no network with the execution
+  # peers (see the service's own comment).
+  #
+  # NOT `internal: true`, unlike the three above, and the difference is load
+  # bearing. Those confine containers that must reach nothing; ntfy exists to be
+  # reached. Verified rather than assumed: a container on an `internal` network
+  # is unreachable through its published port (`docker run --network <internal>
+  # -p 127.0.0.1:PORT:80` → connection refused from the host), so marking this
+  # one internal would silently break every operator alert while looking like a
+  # tightening. The isolation here comes from being the network's ONLY member.
+  atp_notify_net:
+    driver: bridge

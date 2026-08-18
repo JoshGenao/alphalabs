@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 4
+Adversarial rounds: 5
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -834,6 +834,32 @@ prose needs the hits reviewed individually, exactly as a code rename does.
         lands on an empty auth.db — the exact 401 the runbook warns about.
         Documented as a pick-one-and-stay caveat.
     round 4: re-run after the above.
+    round 5: BLOCK, two findings, and the first is the one worth remembering:
+      * THE RUNBOOK'S OWN ACL WOULD HAVE LEFT THE PHONE SILENT. I granted
+        `atpbot` write-only and then told the operator to sign the PHONE in as
+        `atpbot`. Under deny-all a write-only account cannot subscribe, so the
+        app is refused 403 and shows nothing — while ATP's publishes keep
+        returning HTTP 200 with a message id. Invisible from the ATP side and
+        indistinguishable from a working alert path: the acceptance-is-not-
+        receipt gap made real by my own instructions, in the very document that
+        warns about it. Fixed with TWO identities — `atpbot` `wo` for ATP,
+        `operator` `ro` for the phone — which is also the better split, since a
+        leaked publishing token can no longer read the alert history.
+        MEASURED, not assumed (ntfy 2.27.0, deny-all): atpbot publish 200 /
+        subscribe 403; operator subscribe 200 / publish 403.
+      * `phase1-ntfy` declared no `networks:`, so a LAN-exposed third-party image
+        joined the project default network alongside phase1-dashboard-api (the
+        kill-switch / live-designation / Hot-Swap REST, bound to loopback
+        precisely to keep it off the LAN) and phase1-ib-gateway. Moved to a
+        dedicated single-member bridge. NOT `internal: true` like the other three
+        isolated networks — verified empirically that a container on an internal
+        network is unreachable through its published port, so marking it internal
+        would have silently broken every alert while looking like a tightening.
+        The isolation comes from being the only member.
+      * [warn] the six-surface guard covered the instance, not the class — it
+        omitted ATP_NTFY_PORT and the published mapping, so moving the bundled
+        server's port without moving ATP_PUSH_PORT still passed. Extended; the
+        new assert was verified to fire with a precise message.
 
 ## Gate
   cargo test --workspace 2336 passed / 0 failed; pytest -m "not integration and
