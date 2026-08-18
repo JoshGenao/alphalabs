@@ -37,6 +37,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -54,9 +55,14 @@ use atp_execution::{
 };
 use atp_notification::{
     ChannelError, ChannelReceipt, ChannelSendResult, NotificationChannel,
-    NotificationChannelClient, NotificationEvent, NotificationMessage, NotificationTrigger,
-    OperatorNotifier, SharedChannelClient,
+    NotificationChannelClient, NotificationEvent, NotificationEventStore, NotificationMessage,
+    NotificationTrigger, OperatorNotifier, SharedChannelClient,
 };
+
+// One clock abstraction for both notification sinks — the connectivity sink and
+// this critical-failure sink measure the same NFR-P6 quantity, so they must not
+// grow two definitions of "now".
+use crate::connectivity_notification::AlertClock;
 use atp_types::{
     ClientCorrelationId, CompositeOrderSubmission, KillSwitchAlertEvent,
     KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest,
@@ -457,6 +463,20 @@ impl NotificationChannelClient for FixturePushChannel {
     }
 }
 
+/// A clock pinned to one instant, for the fixture drill.
+///
+/// The drill is not NFR-P6 evidence — its transports are fixtures and its
+/// outcome self-labels `transports=FIXTURE` — so reading a wall clock here would
+/// make the drill's output non-deterministic without making it a measurement.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedAlertClock(pub u64);
+
+impl AlertClock for FixedAlertClock {
+    fn now_millis(&self) -> u64 {
+        self.0
+    }
+}
+
 /// The concrete `KillSwitchOperatorAlertSink`: builds a `CriticalFailure`
 /// trigger (never suppressed — the SYS-75 fail-safe, right for a SYS-44b
 /// liquidation timeout) carrying the full unfilled-order details and fans it
@@ -467,14 +487,54 @@ impl NotificationChannelClient for FixturePushChannel {
 pub struct NotifierAlertSink {
     notifier: OperatorNotifier,
     channels: Vec<SharedChannelClient>,
+    clock: Arc<dyn AlertClock>,
+    store_dir: Option<PathBuf>,
     events: RefCell<Vec<NotificationEvent>>,
 }
 
 impl NotifierAlertSink {
-    pub fn new(notifier: OperatorNotifier, channels: Vec<SharedChannelClient>) -> Self {
+    /// The PRODUCTION constructor: dispatches and DURABLY STORES the event.
+    ///
+    /// SRS-NOTIF-001's acceptance criterion is "dispatch begins within 60 seconds
+    /// of detection **and delivery status is stored as a notification event**".
+    /// The CriticalFailure trigger is half of that requirement, and this sink is
+    /// its only production producer, so the store binding belongs here rather
+    /// than being left to the caller to remember.
+    pub fn with_store(
+        notifier: OperatorNotifier,
+        channels: Vec<SharedChannelClient>,
+        clock: Arc<dyn AlertClock>,
+        store_dir: PathBuf,
+    ) -> Self {
         Self {
             notifier,
             channels,
+            clock,
+            store_dir: Some(store_dir),
+            events: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// DRILL ONLY: dispatches without persisting.
+    ///
+    /// Named rather than defaulted, because "the delivery status was not stored"
+    /// has to be a decision somebody can grep for, not the shape you get by
+    /// forgetting an argument. The one legitimate use is the fixture drill: its
+    /// transports are `FixtureEmailChannel` / `FixturePushChannel`, and writing
+    /// that into the real notification store would let drill evidence masquerade
+    /// as live SYS-44b evidence — which the rest of this path takes care to
+    /// prevent (the outcome self-labels `transports=FIXTURE`, and the Python
+    /// backend refuses to log a fixture outcome without an explicit opt-in).
+    pub fn without_store(
+        notifier: OperatorNotifier,
+        channels: Vec<SharedChannelClient>,
+        clock: Arc<dyn AlertClock>,
+    ) -> Self {
+        Self {
+            notifier,
+            channels,
+            clock,
+            store_dir: None,
             events: RefCell::new(Vec::new()),
         }
     }
@@ -506,9 +566,17 @@ impl KillSwitchOperatorAlertSink for NotifierAlertSink {
         let detected_at_millis = event.observed_at_seconds.saturating_mul(1_000);
         let trigger =
             NotificationTrigger::critical_failure(Self::page_summary(&event), detected_at_millis);
+        // The dispatch instant is READ FROM THE CLOCK, not reused from the
+        // detection stamp. Passing `detected_at_millis` for both made
+        // `dispatch_latency_millis()` identically zero, so the stored
+        // NFR-P6 evidence asserted a perfect SLA no matter how long the page
+        // actually took to start — falsifiable evidence, and worse than none,
+        // because the only reason to store the latency is so an operator can
+        // trust it. Same defect, and same fix, as the connectivity path.
+        let dispatch_began_at_millis = self.clock.now_millis().max(detected_at_millis);
         let notification = self
             .notifier
-            .dispatch(&trigger, detected_at_millis, &self.channels)
+            .dispatch(&trigger, dispatch_began_at_millis, &self.channels)
             .map_err(|error| {
                 KillSwitchSideEffectError::new(format!("SRS-NOTIF-001 dispatch refused: {error}"))
             })?;
@@ -521,14 +589,34 @@ impl KillSwitchOperatorAlertSink for NotifierAlertSink {
                 undelivered.push(channel.as_str());
             }
         }
+        // PERSIST BEFORE REPORTING THE OUTCOME, and persist a FAILED page too:
+        // "email did not deliver" is exactly the delivery status the audit trail
+        // exists to record. A store failure is itself a failed side effect — the
+        // AC's "delivery status is stored" leg is then unmet, and an audit trail
+        // that silently loses records is worse than one that admits it.
+        let store_error = match &self.store_dir {
+            Some(dir) => NotificationEventStore::append_durably(dir, notification.clone())
+                .err()
+                .map(|error| format!("notification event not stored durably: {error}")),
+            None => None,
+        };
         self.events.borrow_mut().push(notification);
-        if undelivered.is_empty() {
-            Ok(())
-        } else {
-            Err(KillSwitchSideEffectError::new(format!(
-                "operator page not delivered on required channel(s): {}",
-                undelivered.join(", ")
-            )))
+
+        match (undelivered.is_empty(), store_error) {
+            (true, None) => Ok(()),
+            (delivered, stored) => {
+                let mut parts = Vec::new();
+                if !delivered {
+                    parts.push(format!(
+                        "operator page not delivered on required channel(s): {}",
+                        undelivered.join(", ")
+                    ));
+                }
+                if let Some(detail) = stored {
+                    parts.push(detail);
+                }
+                Err(KillSwitchSideEffectError::new(parts.join("; ")))
+            }
         }
     }
 }
@@ -716,12 +804,26 @@ pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutR
         fail: scenario.fail_push,
         ..FixturePushChannel::default()
     });
-    let alerts = NotifierAlertSink::new(
+    // The operator-facing observation stamp (epoch seconds). Wall-clock,
+    // distinct from the monotonic probe clock.
+    let observed_at_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+
+    // DRILL: no durable store, deliberately. See `without_store` — writing
+    // fixture-transport evidence into the real notification store would let a
+    // drill masquerade as live SYS-44b evidence. The clock is pinned to the
+    // observed instant for the same reason: a drill is not NFR-P6 evidence, and
+    // a wall-clock reading here would make the drill's output non-deterministic
+    // while still not being usable as a measurement.
+    let alerts = NotifierAlertSink::without_store(
         OperatorNotifier::new(),
         vec![
             Arc::clone(&email) as SharedChannelClient,
             Arc::clone(&push) as SharedChannelClient,
         ],
+        Arc::new(FixedAlertClock(observed_at_seconds.saturating_mul(1_000))),
     );
 
     let mut bindings = BTreeMap::new();
@@ -745,13 +847,6 @@ pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutR
     );
     let events = CollectingTimeoutEventSink::default();
     let engine = ExecutionEngine::default();
-    // The operator-facing observation stamp (epoch seconds). Wall-clock,
-    // distinct from the monotonic probe clock.
-    let observed_at_seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
-
     let result = match scenario.premature_timeout_at {
         Some(reported_elapsed_seconds) => {
             let lying_probe = LyingProbe {
@@ -790,4 +885,177 @@ pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutR
         probe_polls: feed.polls(),
         simulated_elapsed_ms: clock.now_ms(),
     })
+}
+
+#[cfg(test)]
+mod notifier_alert_sink_tests {
+    use super::*;
+    use atp_types::{OperatorAlertChannel, StrategyId, UnfilledLiquidationOrder};
+
+    fn store_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("atp_safe002_notif_{label}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create store dir");
+        dir
+    }
+
+    fn alert_event(observed_at_seconds: u64) -> KillSwitchAlertEvent {
+        KillSwitchAlertEvent {
+            live_strategy_id: StrategyId::new("alpha-1"),
+            unfilled_order: UnfilledLiquidationOrder {
+                order_id: "LIQ-1".to_string(),
+                symbol: "AAPL".to_string(),
+                side: "SELL".to_string(),
+                quantity: 100,
+            },
+            channels: vec![OperatorAlertChannel::Email, OperatorAlertChannel::Push],
+            elapsed_seconds: 31,
+            timeout_seconds: 30,
+            observed_at_seconds,
+        }
+    }
+
+    fn delivering_channels() -> Vec<SharedChannelClient> {
+        vec![
+            Arc::new(FixtureEmailChannel::default()) as SharedChannelClient,
+            Arc::new(FixturePushChannel::default()) as SharedChannelClient,
+        ]
+    }
+
+    /// SRS-NOTIF-001 AC, CriticalFailure half: "delivery status is stored as a
+    /// notification event".
+    ///
+    /// Found by adversarial review. This sink dispatched the SYS-44b page and
+    /// kept the event only in an in-memory RefCell, so the kill-switch
+    /// liquidation-timeout page — the most serious alert the system sends — left
+    /// nothing in the durable audit trail.
+    #[test]
+    fn a_critical_failure_page_is_stored_durably() {
+        let dir = store_dir("stored");
+        let sink = NotifierAlertSink::with_store(
+            OperatorNotifier::new(),
+            delivering_channels(),
+            Arc::new(FixedAlertClock(1_000_000)),
+            dir.clone(),
+        );
+
+        sink.dispatch(alert_event(900)).expect("page delivered");
+
+        let stored = NotificationEventStore::load_from_path(&dir).expect("store reads back");
+        assert_eq!(
+            stored.len(),
+            1,
+            "the page must reach the durable audit trail"
+        );
+        let event = &stored.events()[0];
+        assert!(event.summary().contains("SRS-SAFE-002"));
+        for channel in [NotificationChannel::Email, NotificationChannel::Push] {
+            assert!(
+                event
+                    .delivery_for(channel)
+                    .is_some_and(|d| d.outcome().is_delivered()),
+                "{channel:?} delivery status missing from the stored event"
+            );
+        }
+    }
+
+    /// A FAILED page must be stored too — that is the delivery status.
+    #[test]
+    fn a_failed_page_is_still_stored_and_still_reported_failed() {
+        let dir = store_dir("failed");
+        let channels = vec![
+            Arc::new(FixtureEmailChannel {
+                fail: true,
+                ..FixtureEmailChannel::default()
+            }) as SharedChannelClient,
+            Arc::new(FixturePushChannel::default()) as SharedChannelClient,
+        ];
+        let sink = NotifierAlertSink::with_store(
+            OperatorNotifier::new(),
+            channels,
+            Arc::new(FixedAlertClock(1_000_000)),
+            dir.clone(),
+        );
+
+        let error = sink.dispatch(alert_event(900)).expect_err("email failed");
+        assert!(format!("{error:?}").contains("EMAIL"), "{error:?}");
+        assert_eq!(
+            NotificationEventStore::load_from_path(&dir)
+                .expect("store reads back")
+                .len(),
+            1,
+            "a failed page is exactly the delivery status the trail must keep"
+        );
+    }
+
+    /// A store failure is itself a failed side effect, never swallowed.
+    #[test]
+    fn a_store_failure_surfaces_even_when_both_channels_delivered() {
+        let missing = std::env::temp_dir().join("atp_safe002_notif_absent/nope");
+        let _ = std::fs::remove_dir_all(missing.parent().expect("parent"));
+        let sink = NotifierAlertSink::with_store(
+            OperatorNotifier::new(),
+            delivering_channels(),
+            Arc::new(FixedAlertClock(1_000_000)),
+            missing,
+        );
+
+        let error = sink
+            .dispatch(alert_event(900))
+            .expect_err("an unstorable page is not a success");
+        assert!(
+            format!("{error:?}").contains("not stored durably"),
+            "{error:?}"
+        );
+    }
+
+    /// The stored NFR-P6 latency must come from the clock, not be fabricated.
+    ///
+    /// Found by adversarial review: `observed_at_seconds * 1000` was passed as
+    /// BOTH the detection stamp and the dispatch-began stamp, so
+    /// `dispatch_latency_millis()` was identically zero and the stored evidence
+    /// asserted a perfect SLA however long the page really took to start.
+    #[test]
+    fn the_stored_latency_is_measured_not_fabricated_zero() {
+        let dir = store_dir("latency");
+        // Observed at t=900s; the dispatch does not begin until t=1000s — 100s
+        // later, past the 60s NFR-P6 budget.
+        let sink = NotifierAlertSink::with_store(
+            OperatorNotifier::new(),
+            delivering_channels(),
+            Arc::new(FixedAlertClock(1_000_000)),
+            dir,
+        );
+
+        sink.dispatch(alert_event(900)).expect("page delivered");
+
+        let event = &sink.events()[0];
+        assert_eq!(event.dispatch_latency_millis(), 100_000);
+        assert!(
+            !event.within_dispatch_sla(),
+            "a page that began 100s after detection must NOT pass NFR-P6"
+        );
+    }
+
+    /// A clock reading BEFORE detection cannot manufacture a negative latency.
+    ///
+    /// The dispatcher rejects dispatch-before-detection outright, so a backwards
+    /// clock step would turn a real page into a refused side effect. Clamping to
+    /// the detection instant keeps the alert going out; the worst it can do is
+    /// under-report latency, which is the safe direction here because the page
+    /// itself matters more than its timing evidence.
+    #[test]
+    fn a_backwards_clock_cannot_refuse_the_page() {
+        let dir = store_dir("backwards");
+        let sink = NotifierAlertSink::with_store(
+            OperatorNotifier::new(),
+            delivering_channels(),
+            Arc::new(FixedAlertClock(1)),
+            dir,
+        );
+
+        sink.dispatch(alert_event(900))
+            .expect("a backwards clock must not stop the page");
+        assert_eq!(sink.events()[0].dispatch_latency_millis(), 0);
+    }
 }

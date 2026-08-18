@@ -75,6 +75,21 @@ def _run_cargo_test(
     )
 
 
+def _run_cargo_lib_test(test_name: str) -> subprocess.CompletedProcess[str]:
+    """Run one atp-orchestrator UNIT test (the sink lives in the lib, not a suite)."""
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run Rust unit test")
+    return subprocess.run(
+        [cargo, "test", "-p", "atp-orchestrator", "--lib", test_name, "--", "--exact"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _assert_passed(result: subprocess.CompletedProcess[str], label: str) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
@@ -646,3 +661,32 @@ def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
     # Continue-to-safety: the disconnect still ran, after the cancel attempt.
     assert outcome["cleanup"]["ib_disconnect"]["status"] == "SUCCEEDED"
     assert outcome["gateway_calls"] == ["cancel:B-0001", "disconnect"]
+
+
+def test_the_critical_failure_page_is_durably_stored_with_a_measured_latency() -> None:
+    """SRS-NOTIF-001 AC on the CriticalFailure trigger, via SYS-44b.
+
+    The acceptance criterion is "notification dispatch begins within 60 seconds
+    of detection AND delivery status is stored as a notification event". The
+    kill-switch liquidation-timeout page is the most serious alert this system
+    sends, and it satisfied neither half: the sink kept the event in an in-memory
+    RefCell so nothing reached the durable audit trail, and it passed the
+    observation instant as BOTH detection and dispatch-began so the stored
+    latency was identically zero — evidence asserting a perfect SLA no matter how
+    long the page actually took to start.
+
+    A failed page is stored too, because "email did not deliver" IS the delivery
+    status; and a store failure is itself a failed side effect, never swallowed.
+    """
+
+    for case in (
+        "a_critical_failure_page_is_stored_durably",
+        "a_failed_page_is_still_stored_and_still_reported_failed",
+        "a_store_failure_surfaces_even_when_both_channels_delivered",
+        "the_stored_latency_is_measured_not_fabricated_zero",
+        "a_backwards_clock_cannot_refuse_the_page",
+    ):
+        _assert_passed(
+            _run_cargo_lib_test(f"kill_switch_timeout::notifier_alert_sink_tests::{case}"),
+            f"SRS-SAFE-002 notifier sink: {case}",
+        )
