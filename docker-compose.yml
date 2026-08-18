@@ -281,15 +281,21 @@ services:
     command: ["serve"]
     restart: unless-stopped
     ports:
-      # SRS-SEC-002 / NFR-S3: loopback or RFC 1918 only. TWO different gates,
-      # and it is worth knowing which does what — network_binding_check.py
-      # proves only that the DEFAULT below is loopback (its own docstring says
-      # it is "NOT proof that an override is constrained"), so on its own an
-      # ATP_NTFY_BIND=0.0.0.0 would publish this endpoint on every interface
-      # with every check green. What actually constrains the OVERRIDE is the
-      # ARCH-005 catalogue: ATP_NTFY_BIND carries `private_egress`, so
-      # atp_config rejects a public, unspecified, link-local or non-literal
-      # value at startup readiness — the same rule ATP_PUSH_HOST carries.
+      # SRS-SEC-002 / NFR-S3. BE PRECISE ABOUT WHAT IS AND IS NOT ENFORCED here,
+      # because two earlier versions of this comment overclaimed it:
+      #   * network_binding_check.py proves the DEFAULT below is loopback. Its
+      #     own docstring says it is "NOT proof that an override is constrained".
+      #   * ATP_NTFY_BIND carries `private_egress` in the ARCH-005 catalogue, so
+      #     atp_config REJECTS a public / unspecified / link-local / non-literal
+      #     value — but only when an ATP process validates configuration. It
+      #     cannot unbind a socket, and `--profile notify up` starts no ATP
+      #     process at all.
+      #   * Nothing therefore PREVENTS `ATP_NTFY_BIND=0.0.0.0 docker compose up`
+      #     from publishing this endpoint on every interface. The bind is done by
+      #     the Docker daemon from an interpolated variable at `up` time; no
+      #     build-time gate in this repo can reach it. That is the operator's
+      #     responsibility, the same way external exposure of the dashboard is
+      #     (SRS-SEC-002 / NFR-S3) — and it is why the default is loopback.
       # The DEFAULT is loopback, which the
       # operator's phone CANNOT reach — that is intentional (a stack brought up
       # without thinking must not publish an alert endpoint on the LAN). Set

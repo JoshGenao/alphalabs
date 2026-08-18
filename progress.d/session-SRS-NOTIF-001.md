@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 6
+Adversarial rounds: 7
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -883,6 +883,35 @@ prose needs the hits reviewed individually, exactly as a code rename does.
       LESSON: "enforced by <checker>" is a claim about a specific checker's
       actual scope. I wrote it from the checker's NAME. Read what it asserts —
       or make it true.
+    round 7: BLOCK, two findings. One was right and showed my round-6 "fix" was
+      ALSO wrong; the other was factually mistaken and I checked rather than
+      complied.
+      * THE BIND STILL IS NOT ENFORCED, and cataloguing it did not change that.
+        `private_egress` makes atp_config reject a bad ATP_NTFY_BIND — but only
+        when an ATP process validates configuration. The bind is performed by the
+        DOCKER DAEMON from an interpolated variable at `up` time, and
+        `--profile notify up` starts no ATP process at all, so the rule never
+        runs and no readiness failure can unbind a published socket. There is no
+        build-time gate in this repo that can reach a runtime compose variable.
+        Now stated plainly in both the compose comment and the runbook: the
+        loopback default and the warning ARE the defence, and keeping the
+        endpoint off public interfaces is the operator's responsibility, exactly
+        as external dashboard exposure already is. The catalogue rule stays — it
+        is still worth having where it does apply — but it is no longer
+        described as constraining the bind.
+        TWO overclaims in a row on the same line. The pattern: I kept reaching
+        for a mechanism that sounded like enforcement instead of asking what
+        actually performs the action. The bind is Docker's; nothing in the
+        Python or Rust tree is in that path.
+      * CLAIMED WRONG, and worth recording as such: the reviewer said the token
+        capture `grep -oE 'tk_[a-z0-9]+'` fails because ntfy tokens are
+        mixed-case base62, citing ntfy's documented example
+        `tk_AgQdq7mVBoFD37zQVN29RhuMzNIz2`. Minted eight real tokens against
+        2.27.0: every one was lowercase alphanumeric, so the pattern works on the
+        pinned version. The FRAGILITY is real though — a charset assumption that
+        breaks silently and produces exactly the empty-token 401 the runbook
+        already warns about — so the pattern was widened to `[A-Za-z0-9]` and a
+        non-empty guard added. Took the fix; did not accept the premise.
 
 ## Gate
   cargo test --workspace 2336 passed / 0 failed; pytest -m "not integration and

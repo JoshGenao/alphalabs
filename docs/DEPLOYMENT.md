@@ -261,6 +261,15 @@ ATP_NTFY_PORT=8090
 docker compose --env-file .env --profile phase1 --profile notify up -d
 ```
 
+Nothing in this repository can *prevent* `ATP_NTFY_BIND=0.0.0.0`. The bind is
+performed by the Docker daemon from an interpolated variable at `up` time, and
+`--profile notify up` starts no ATP process — so the catalogue's `private_egress`
+rule on that key, which does reject public, unspecified, link-local and
+non-literal values, never runs to see it. The loopback default and this paragraph
+are the whole defence; keeping the alert endpoint off public interfaces is an
+operator responsibility, exactly as external exposure of the dashboard is
+(SRS-SEC-002 / NFR-S3).
+
 To run it outside compose instead:
 
 ```bash
@@ -303,7 +312,8 @@ echo "$TOPIC"
 docker exec -e NTFY_PASSWORD='<atpbot-password>' atp-ntfy \
   ntfy user add --role=user atpbot
 docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo
-TOKEN=$(docker exec atp-ntfy ntfy token add atpbot | grep -oE 'tk_[a-z0-9]+')
+TOKEN=$(docker exec atp-ntfy ntfy token add atpbot | grep -oE 'tk_[A-Za-z0-9]+')
+[ -n "$TOKEN" ] || { echo "token capture FAILED — read the raw output"; }
 echo "$TOKEN"                                      # this is ATP_PUSH_TOKEN
 
 # 2. The phone: read-only. This is the account you sign the ntfy APP in as.
