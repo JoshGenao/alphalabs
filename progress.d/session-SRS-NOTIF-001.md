@@ -664,7 +664,26 @@ provider). The bytes are preserved under a self-describing name and are readable
 with the v1 codec from git history. THIS IS A JUDGEMENT CALL AND IT IS RECORDED
 AS ONE, not as an oversight.
 
-### OPEN, and NOT mine to land unasked (round 15)
+R15 (operator-authorised to fix here) two PRE-EXISTING defects in SRS-SAFE-002's
+    composition, both the same classes fixed above for connectivity:
+    `NotifierAlertSink` dispatched the SYS-44b kill-switch page and kept the
+    event in an in-memory RefCell — the most serious alert this system sends
+    reached NO durable audit trail; and it passed `observed_at_seconds * 1000`
+    as BOTH detection and dispatch-began, so the stored latency was identically
+    zero. Fixed: two NAMED constructors (`with_store` / `without_store`, so "not
+    stored" is a decision you can grep for rather than the shape you get by
+    forgetting an argument), a FAILED page stored too (that IS the delivery
+    status), a store failure reported as its own failed side effect, and the
+    dispatch instant read from the shared `AlertClock`.
+R16 the operator-alert binary built transports from placeholder credentials.
+    `.env.example` tells the operator to seal the secrets in the vault and LEAVE
+    THE PLACEHOLDERS in `.env`; the binary reads the environment directly and
+    cannot open that vault, so following the documented flow correctly would
+    have published an alert authenticated with
+    `placeholder-set-in-environment`. It now enforces the half of the readiness
+    contract available to it.
+
+### RESOLVED (was open at round 15)
 Two real, PRE-EXISTING defects in SRS-SAFE-002's composition
 (crates/atp-orchestrator/src/kill_switch_timeout.rs) — the same two classes this
 session fixed on the connectivity path:
@@ -675,6 +694,9 @@ session fixed on the connectivity path:
   * it passes `observed_at_seconds * 1000` as BOTH detection and
     dispatch-began, so dispatch_latency_millis() is always 0 — the same
     fabricated-SLA-evidence bug fixed for connectivity in R8.
-Both are SRS-SAFE-002's code and changing them alters a serialized feature
-awaiting operator verification, so they are surfaced rather than silently fixed.
-Owner decision required.
+Operator authorised fixing them on this branch (AskUserQuestion, 2026-08-17)
+rather than deferring, on the basis that they are the CriticalFailure half of
+SRS-NOTIF-001's own acceptance criterion. Done in d8c9ace with five
+discriminating unit tests and an L7 pairing. SRS-SAFE-002 stays passes:false and
+its fixture drill is unchanged (still `without_store`, still self-labelling
+transports=FIXTURE, so drill evidence still cannot masquerade as live).
