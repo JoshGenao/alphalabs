@@ -24,7 +24,6 @@ from .schema import (
     Severity,
 )
 
-
 #: The three RFC 1918 blocks, exactly as the Rust adapter's `Ipv4Addr::is_private`
 #: defines them — no more (see :func:`_is_private_egress_address`).
 _RFC1918_V4 = (

@@ -252,9 +252,7 @@ def test_the_stored_sla_evidence_cannot_describe_a_dispatch_that_never_started()
     """
 
     _assert_one_passed(
-        _run_cargo_test(
-            "the_stored_dispatch_latency_reflects_when_the_worker_actually_started"
-        ),
+        _run_cargo_test("the_stored_dispatch_latency_reflects_when_the_worker_actually_started"),
         "SRS-NOTIF-001 non-falsifiable SLA evidence",
     )
 
