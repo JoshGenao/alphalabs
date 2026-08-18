@@ -164,7 +164,7 @@ def _validate_enum(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     return None
 
 
-def _is_private_egress_address(address: ipaddress._BaseAddress) -> bool:
+def _is_private_egress_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Mirror of ``atp_adapters``' ``is_private_egress_address`` (Rust).
 
     Written out rather than delegated to :attr:`ipaddress.IPv4Address.is_private`
