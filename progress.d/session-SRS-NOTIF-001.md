@@ -700,3 +700,48 @@ SRS-NOTIF-001's own acceptance criterion. Done in d8c9ace with five
 discriminating unit tests and an L7 pairing. SRS-SAFE-002 stays passes:false and
 its fixture drill is unchanged (still `without_store`, still self-labelling
 transports=FIXTURE, so drill evidence still cannot masquerade as live).
+
+## feature_list.json: WHAT STILL NEEDS APPLYING, AND WHY IT IS NOT IN THIS BRANCH
+The operator authorised editing `feature_list.json` (AskUserQuestion, 2026-08-17,
+on the precedent of 45e9f87) and it was committed here — but
+`agent_pool.py integrate` refuses ANY branch commit touching it
+(`shared_state_violations`: only the integrator's marker commit may write it).
+Correctly so; the authorisation and the tooling simply disagree, and the tooling
+wins because it is what protects `main` from two agents racing. So the change was
+reverted out of the branch and is recorded here for whoever writes it under the
+lock. Nothing is lost, but **it is not yet applied**.
+
+FIVE records, `passes` untouched in every case. Each string is a verbatim mirror
+of an SRS/SyRS line this branch already changed, so leaving them is not cosmetic:
+a verifier reading `feature_list.json` would test a channel that no longer exists.
+
+1. SRS-NOTIF-001 `description`
+   -> "Verify that notify the operator through email and push notification for
+       IB connectivity loss and critical failures."
+2. SRS-NOTIF-001 `external_blocker` — the important one; it currently names a
+   procurement decision that NO LONGER EXISTS
+   -> "The operator's self-hosted ntfy reachable on the LAN
+       (ATP_PUSH_HOST/TOPIC/TOKEN, phone subscribed over VPN) + the unbuilt
+       phase1-notification-egress relay, which is now needed for EMAIL ONLY —
+       push posts to ntfy directly with no relay hop. NO SMS PROVIDER IS NEEDED:
+       push replaced SMS as IF-11 on 2026-08-17, and the push transport has been
+       verified end to end against a real ntfy."
+3. SRS-RESV-004 Step 3: "dashboard/email/SMS notifications are sent"
+   -> "dashboard/email/push notifications are sent"   (mirrors SyRS SYS-49c)
+4. SRS-SAFE-002 Step 3: "details are logged, email and SMS are sent"
+   -> "details are logged, email and push notification are sent"  (SYS-44b)
+   ERR-8 Step 3: "notify by email and SMS"
+   -> "notify by email and push notification"
+5. SRS-SEC-001 Step 3: "prove IB, SMTP, and SMS secrets are not emitted"
+   -> "prove IB, SMTP, and push secrets are not emitted"
+
+The exact diff is preserved at
+`<scratchpad>/feature_list_push_rename.patch` for this session; if that is gone,
+regenerate it from the five substitutions above — they are plain string swaps.
+
+ALSO NOT IN THE BRANCH: `progress.d/plan-SRS-NOTIF-001.md`. Step 4.6 of the
+session prompt says to persist the approved plan there, but `integrate` refuses
+any `progress.d/*` other than this session note, so the prompt and the tooling
+contradict each other. Dropped from the branch; its content is superseded by this
+note anyway. Worth reconciling in the prompt or the guard so the next session does
+not hit the same wall at the very end of a long run.
