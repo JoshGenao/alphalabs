@@ -335,12 +335,20 @@ def run_codex(base_ref: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def run_claude_fallback(base_ref: str, timeout: int = 900) -> tuple[int, str]:
-    diff = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "diff", f"{base_ref}...HEAD"],
-        text=True,
-        capture_output=True,
-    ).stdout
+def run_claude_fallback(
+    base_ref: str, timeout: int = 900, paths: list[str] | None = None
+) -> tuple[int, str]:
+    # `paths` narrows the diff to one feature's surface. It exists for the case a
+    # feature's code ALREADY LANDED: the normal pass reviews a branch's diff, but a
+    # feature whose implementation is on main has no branch, and diffing from its
+    # first commit to HEAD drags in every unrelated commit since (61, when
+    # SRS-MD-003 needed this). Scoping is weaker than a branch review — the reviewer
+    # sees the feature's files and not its callers — so say so in the session note
+    # rather than treating it as equivalent.
+    cmd = ["git", "-C", str(REPO_ROOT), "diff", f"{base_ref}...HEAD"]
+    if paths:
+        cmd += ["--", *paths]
+    diff = subprocess.run(cmd, text=True, capture_output=True).stdout
     prompt = CRITIC_PROMPT.read_text(encoding="utf-8")
     proc = subprocess.run(
         [
@@ -652,11 +660,20 @@ def emit(result: dict) -> int:
     return 1 if result["verdict"] == "block" else 0
 
 
-def review(base_ref: str, *, force_claude: bool = False) -> dict:
+def review(base_ref: str, *, force_claude: bool = False, paths: list[str] | None = None) -> dict:
+    # Codex reviews through the companion's `--base` and has no path argument, so a
+    # scoped request CANNOT be honoured there. Routing it to Codex anyway would
+    # review the whole range while the caller believed it was scoped — a tool
+    # narrating a blind spot as a result. Scoped means Claude, and says why.
+    if paths and not force_claude:
+        force_claude = True
     cooldown = None if force_claude else codex_cooldown_until()
     if force_claude or cooldown:
-        note = "forced" if force_claude else f"codex limited until {cooldown:%-I:%M %p}"
-        return _claude(base_ref, note)
+        if paths:
+            note = "forced (path-scoped: codex takes no path argument)"
+        else:
+            note = "forced" if force_claude else f"codex limited until {cooldown:%-I:%M %p}"
+        return _claude(base_ref, note, paths=paths)
 
     code, out = run_codex(base_ref)
     # Every path below that abandons Codex must record the attempt first. run_codex
@@ -678,9 +695,9 @@ def review(base_ref: str, *, force_claude: bool = False) -> dict:
     return normalize_verdict(payload, "codex")
 
 
-def _claude(base_ref: str, note: str) -> dict:
+def _claude(base_ref: str, note: str, paths: list[str] | None = None) -> dict:
     try:
-        code, out = run_claude_fallback(base_ref)
+        code, out = run_claude_fallback(base_ref, paths=paths)
     except subprocess.TimeoutExpired:
         return {
             "verdict": "block",
@@ -731,6 +748,17 @@ def main() -> int:
         "--force-claude", action="store_true", help="skip Codex, use the Claude reviewer"
     )
     ap.add_argument(
+        "--paths",
+        nargs="+",
+        metavar="PATH",
+        help="restrict the reviewed diff to these paths. For a feature whose code "
+        "already landed on main: it has no branch to diff, and its first commit to "
+        "HEAD drags in every unrelated commit since. IMPLIES --force-claude — Codex "
+        "reviews through the companion's --base and takes no path argument, so a "
+        "scoped request cannot be honoured there. Weaker than a branch review (the "
+        "reviewer sees the feature's files, not its callers); say so in the note.",
+    )
+    ap.add_argument(
         "--record-round",
         action="store_true",
         help="read a reviewer payload on stdin and append it to this feature's "
@@ -771,7 +799,7 @@ def main() -> int:
     if not CRITIC_PROMPT.is_file():
         print(json.dumps({"verdict": "error", "reason": f"missing {CRITIC_PROMPT}"}))
         return 2
-    return emit(review(args.base_ref, force_claude=args.force_claude))
+    return emit(review(args.base_ref, force_claude=args.force_claude, paths=args.paths))
 
 
 if __name__ == "__main__":
