@@ -1286,7 +1286,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-RESV-004 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Current live strategy stops new signals, cancels resting IB orders, submits liquidation orders, waits for flat confirmation or the configured timeout defaulting to 60 seconds, and transitions to paper only after live positions are flat; on timeout, the swap enters demotion-pending state, dashboard/email/SMS notifications are sent, unfilled liquidation orders are canceled, and promotion is blocked until manual resolution.",
+      "Step 3: Verify acceptance criteria: Current live strategy stops new signals, cancels resting IB orders, submits liquidation orders, waits for flat confirmation or the configured timeout defaulting to 60 seconds, and transitions to paper only after live positions are flat; on timeout, the swap enters demotion-pending state, dashboard/email/push notifications are sent, unfilled liquidation orders are canceled, and promotion is blocked until manual resolution.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1446,7 +1446,7 @@
     "category": "notifications",
     "srs_ref": "SRS-5.8 SRS-NOTIF-001",
     "priority": "P1",
-    "description": "Verify that notify the operator through email and SMS for IB connectivity loss and critical failures.",
+    "description": "Verify that notify the operator through email and push notification for IB connectivity loss and critical failures.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-NOTIF-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
@@ -1456,7 +1456,7 @@
     "passes": false,
     "needs_clarification": false,
     "verification_method": "integration",
-    "external_blocker": "SMS provider account (none chosen; REQUIRED_CHANNELS is Email AND Sms, fail-closed) + the unbuilt phase1-notification-egress relay"
+    "external_blocker": "The operator's self-hosted ntfy reachable on the LAN (ATP_PUSH_HOST/PORT/TOPIC/TOKEN, phone subscribed over VPN; see the runbook in docs/DEPLOYMENT.md) + the unbuilt phase1-notification-egress relay, which is now needed for EMAIL ONLY \u2014 push posts to ntfy directly with no relay hop. NO SMS PROVIDER IS NEEDED: push replaced SMS as IF-11 on 2026-08-17 and the push transport is verified end to end against a real ntfy."
   },
   {
     "id": "SRS-SAFE-001",
@@ -1483,7 +1483,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-SAFE-002 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: If a liquidation order remains unfilled after 30 seconds, details are logged, email and SMS are sent, the unfilled liquidation order is canceled, and IB is disconnected.",
+      "Step 3: Verify acceptance criteria: If a liquidation order remains unfilled after 30 seconds, details are logged, email and push notification are sent, the unfilled liquidation order is canceled, and IB is disconnected.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1549,7 +1549,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-SEC-001 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Credential files or records are encrypted; log redaction tests prove IB, SMTP, and SMS secrets are not emitted in plaintext.",
+      "Step 3: Verify acceptance criteria: Credential files or records are encrypted; log redaction tests prove IB, SMTP, and push secrets are not emitted in plaintext.",
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1967,7 +1967,7 @@
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
       "Step 2: Trigger error condition ERR-8: Kill-switch liquidation timeout",
-      "Step 3: Verify expected behavior: Log unfilled order details, notify by email and SMS, cancel unfilled liquidation order, and disconnect from IB.",
+      "Step 3: Verify expected behavior: Log unfilled order details, notify by email and push notification, cancel unfilled liquidation order, and disconnect from IB.",
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-SAFE-002 and leave passes false until evidence is captured."
     ],
     "passes": false,
