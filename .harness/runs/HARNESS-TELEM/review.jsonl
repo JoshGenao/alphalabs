@@ -1,0 +1,1 @@
+{"blocking_rules": ["harness:dispatched-codex-failure-not-recorded"], "n_findings": 1, "reviewer": "codex", "reviewer_note": "", "rules": ["harness:dispatched-codex-failure-not-recorded"], "summary": "No-ship: the primary dispatcher path still loses the failed Codex round it claims to preserve.", "ts": "2026-08-09T22:52:38-04:00", "verdict": "block"}
