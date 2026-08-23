@@ -312,6 +312,33 @@ services:
       NTFY_BASE_URL: http://${ATP_NTFY_BIND:-127.0.0.1}:${ATP_NTFY_PORT:-8090}
       NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
       NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      # iOS ONLY REACHES A LOCKED PHONE THROUGH THIS. The ntfy iOS app receives
+      # notifications via Apple's APNs, and only ntfy.sh's own infrastructure can
+      # send to APNs for that app — a self-hosted server cannot. Without an
+      # upstream, an iPhone gets messages only while the app can hold a
+      # connection, i.e. foreground. That is useless for StRS SN-1.12, whose
+      # entire point is reaching an operator who is NOT looking.
+      #
+      # With it set, this server forwards a WAKE-UP to the upstream, which sends
+      # the APNs push, and the phone then fetches the message from HERE. The alert
+      # body never leaves the LAN; what the upstream learns is that an event fired
+      # and when. That timing metadata is a real disclosure for a trading system,
+      # which is why this is a knob and not a constant.
+      #
+      # It also puts a third party and an outbound-internet dependency back into
+      # the alert path — and those failures CORRELATE with what SYS-46 reports: an
+      # internet outage makes IB unreachable, strands the email relay, AND blocks
+      # this wake-up, so the alert is dispatched and durably stored while the
+      # operator hears nothing. See docs/DEPLOYMENT.md.
+      #
+      # Empty = disabled, VERIFIED against 2.27.0 (starts clean, no error). Leave
+      # it empty for an Android target, which needs no upstream.
+      #
+      # NOTHING CONFIRMS THIS SETTING TOOK. Empty, valid and `not-a-url` all
+      # produce byte-identical startup logs — a malformed upstream fails silently.
+      # `docker exec atp-ntfy env | grep NTFY_UPSTREAM` proves the variable
+      # arrived; only a locked-phone delivery proves it WORKS.
+      NTFY_UPSTREAM_BASE_URL: ${ATP_NTFY_UPSTREAM:-}
       # LOAD-BEARING. Without deny-all, every topic on this instance is
       # world-publishable to anyone who can route to it — and on ntfy the topic
       # alone is enough to publish, so an unauthenticated instance lets anyone

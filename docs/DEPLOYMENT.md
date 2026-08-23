@@ -280,8 +280,15 @@ docker run -d --name atp-ntfy --restart unless-stopped \
   -e NTFY_CACHE_FILE=/var/lib/ntfy/cache.db \
   -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
   -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
+  -e NTFY_UPSTREAM_BASE_URL="${ATP_NTFY_UPSTREAM:-}" \
   binwiederhier/ntfy:v2.27.0 serve
 ```
+
+`ATP_NTFY_UPSTREAM` is read from `.env` by **compose only**. On this bare-Docker
+path nothing reads `.env` for you, so the variable must be in your shell — export
+it or `set -a; . ./.env; set +a` first. Omitting the `-e` line entirely is the
+trap: the container starts fine, publishes return 200, and a locked iPhone gets
+nothing, with no error anywhere to say why.
 
 Pin the version rather than tracking `:latest`. This image sits on the alert path,
 and 2.27.0 is what the behaviours documented below were reproduced against.
@@ -353,8 +360,60 @@ Three things that are easy to get wrong:
 ### 3. Subscribe the phone
 
 Install the ntfy app, add server `http://192.168.1.50:8090`, and sign in as
-**`operator`** — the read-only account, not `atpbot`. Subscribe to the topic.
-Connect the VPN first.
+**`operator`** — the read-only account, not `atpbot`. Connect the VPN first.
+
+**Then subscribe, and check the topic character for character.** This is the step
+that actually goes wrong. The topic is a 32-character random string *because it is
+a credential*, which makes it precisely the thing you truncate or mistype into a
+phone keyboard — and a subscription to a not-quite-right topic looks completely
+healthy in the app while receiving nothing forever. Copy it, don't retype it, and
+confirm the app shows the same string as:
+
+```bash
+echo "$ATP_PUSH_TOPIC"
+```
+
+Check the **server** on the subscription too. The app defaults to `ntfy.sh`, so it
+is easy to end up with a perfectly valid subscription on the public server that
+nobody publishes to.
+
+### iOS: a locked iPhone needs an upstream
+
+The ntfy iOS app receives notifications through Apple's APNs, and only ntfy.sh's
+own infrastructure can send those for that app — a self-hosted server cannot. So
+on iOS, with no upstream configured, messages arrive **only while the app is in
+the foreground**. That is useless for SN-1.12, whose whole purpose is reaching an
+operator who is not looking.
+
+Set `ATP_NTFY_UPSTREAM=https://ntfy.sh` in `.env` and recreate. On the compose
+path that is all — compose interpolates it. On the bare-Docker path `.env` is not
+read for you: export the variable and pass the `-e NTFY_UPSTREAM_BASE_URL` line
+shown above, or the setting silently never reaches ntfy. Your server then
+forwards a wake-up to ntfy.sh, which sends the APNs push, and the phone fetches
+the message **from your server** — the alert body never leaves the LAN.
+
+Three things to understand before enabling it:
+
+- **ntfy.sh learns timing.** Not the alert text, but that an event fired and when.
+  For a trading system that is a real disclosure; decide on it rather than
+  inherit it.
+- **It reintroduces an internet dependency, and the failures correlate.** SYS-46
+  reports connectivity loss. An internet outage makes IB unreachable, strands the
+  email relay *and* blocks this wake-up — the alert is dispatched and durably
+  stored while the operator hears nothing.
+- **Android needs none of this.** Instant delivery runs over a websocket straight
+  to your server. If an Android device can be the alert target, leave
+  `ATP_NTFY_UPSTREAM` empty and the path stays LAN-only.
+
+Re-add the subscription in the app after changing the upstream — the phone
+registers with APNs at subscribe time and an existing subscription will not pick
+it up.
+
+**Nothing on the server tells you whether the upstream took.** Verified against
+2.27.0: empty, a valid URL and `not-a-url` all produce byte-identical startup
+logs, so a malformed value fails silently. `docker exec atp-ntfy env | grep
+NTFY_UPSTREAM` proves the variable reached the container; only a delivery to a
+locked phone proves it works.
 
 Then prove the two halves separately, because they fail differently:
 
@@ -368,8 +427,24 @@ curl -sS -H "Authorization: Bearer $TOKEN" -d "setup check" \
 ```
 
 The phone should display it. If the publish returns 200 and the phone shows
-nothing, the publish half is fine and the subscription half is not — check that
-the app is signed in as `operator` and that `operator` holds `ro` on this topic.
+nothing, the publish half is fine and the subscription half is not. Bisect it
+rather than guessing — read the topic back as `operator` from the server:
+
+```bash
+curl -sS -u operator:'<operator-password>' \
+  "http://192.168.1.50:8090/$TOPIC/json?poll=1"
+```
+
+Your message returns → the server is correct and the problem is the app or its
+network path: check the subscribed topic string, the subscription's server, and
+the upstream if this is an iPhone. `403` → the `operator` grant or password is
+wrong. Nothing at all → the message was never cached, which is a different fault.
+
+**Test with the phone locked and the app closed.** Foreground delivery works over
+a plain websocket and proves nothing about the case that matters. And test again
+after several idle hours: iOS suspends background sockets aggressively, so
+delivery that works a minute after backgrounding can still fail at 2am, which is
+exactly when the Gateway drops.
 
 ### 4. Point ATP at it
 

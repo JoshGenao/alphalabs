@@ -930,3 +930,121 @@ prose needs the hits reviewed individually, exactly as a code rename does.
   up per the new runbook, `phase1-notification-egress` built for EMAIL ONLY, and
   a real IB Gateway outage on the Proxmox host producing a real email + a real
   push inside 60s. Plus the feature_list.json edits listed above.
+
+=== SESSION 2026-08-23 (operator-directed: real ntfy stood up on the Proxmox VM) ===
+Outcome: PUSH IS NOW PROVEN TO A REAL LOCKED IPHONE on the real VM. Still
+serialized, passes:false — email remains unbuilt and the structural items are
+untouched. Docs + one compose knob; no behaviour change to any transport.
+
+## What the operator actually hit, in order — all worth keeping
+  1. `git fetch` on the VM reported `couldn't find remote ref 53338`. NOT
+     reproducible; GIT_TRACE showed a clean fetch. `53338` is in the same range
+     as the fetch-pack PID the trace prints (`--keep=fetch-pack 53380 on
+     alphalabs`), so it was a PID surfacing in a message, not a ref. Recorded as
+     unexplained rather than given a tidy false cause.
+  2. The pull was blocked by a local edit to
+     tests/integration/test_srs_md_006_ib_round_trip.py — which turned out to be
+     a REAL FIX to a false-green gate, found only because the VM is the only
+     place live-IB tests run. Committed separately; see that commit.
+  3. ntfy bound to 127.0.0.1 despite ATP_NTFY_BIND=10.0.0.54 in .env, through
+     THREE recreates. Cause: SHELL ENV BEATS --env-file. The walkthrough's own
+     `set -a; . ./.env; set +a` (needed for the mkdir step) had exported the OLD
+     value, and editing .env afterwards does not update an exported variable.
+     Fix is to re-source after editing. This will recur for anyone following the
+     runbook; `docker compose config` is the reliable pre-flight.
+  4. 401 on the first publish: ATP_PUSH_TOKEN was still the placeholder. The
+     runbook already warns an unset token is indistinguishable from a wrong one.
+  5. Phone silent while publishes returned 200. Bisected server-vs-phone by
+     reading the topic back as `operator` (`?poll=1`) — the message was there, so
+     the server was correct and the fault was entirely app-side.
+  6. ROOT CAUSE of the silence: the topic entered in the app did not include the
+     random hex suffix. A 32-char random credential typed into a phone keyboard
+     is exactly the thing that gets truncated, and a subscription to a
+     nearly-right topic looks healthy forever. Runbook now says copy it and
+     verify character for character.
+
+## iOS: the constraint, and what is NOT yet known
+  The ntfy iOS app takes notifications through APNs, and only ntfy.sh can send
+  those for that app — a self-hosted server cannot. Without an upstream an iPhone
+  gets messages only in the FOREGROUND, which defeats SN-1.12 entirely.
+  `ATP_NTFY_UPSTREAM` (new, empty by default) sets NTFY_UPSTREAM_BASE_URL; the
+  server then forwards a WAKE-UP to ntfy.sh and the phone fetches the body from
+  the LAN.
+  VERIFIED: with the upstream set, delivery to a LOCKED iPhone works.
+  NOT VERIFIED, and the operator and I read it differently: whether the upstream
+  is REQUIRED. It was already set when the topic was fixed, so the experiment
+  cannot separate them. The operator believes the topic was the whole story; I
+  expect the upstream carries the locked case, because the app cannot receive
+  APNs from a self-hosted server at all. TO SETTLE IT: empty ATP_NTFY_UPSTREAM,
+  recreate, re-add the subscription, lock, publish. Arrives -> ntfy.sh is not
+  needed and the path is LAN-only. Whoever runs that closes a real question.
+  ALSO UNTESTED: today's locked test ran soon after the app was active. iOS
+  suspends background sockets aggressively, so it does not yet prove delivery
+  after hours idle — which is the 2am case that matters.
+
+## Findings from probing 2.27.0 directly
+  * An empty NTFY_UPSTREAM_BASE_URL cleanly disables it — server starts normally.
+    So `${ATP_NTFY_UPSTREAM:-}` is safe as a default-off knob.
+  * NOTHING IS LOGGED ABOUT THE UPSTREAM. Empty, a valid URL, and `not-a-url` all
+    produce byte-identical startup logs, so a malformed upstream fails SILENTLY.
+    I had told the operator the logs would mention it; that was wrong and the
+    runbook now says so. `env | grep` proves the variable arrived; only a locked
+    delivery proves it works.
+
+## Why ATP_NTFY_UPSTREAM is NOT catalogued, unlike ATP_NTFY_BIND/PORT
+  Tried it; it cannot work. `merge_env` skips any value that is `""`, so the
+  config system treats empty as "not provided" and a catalogued key whose normal
+  state is empty always fails readiness as "not set". The ARCH-005 catalogue has
+  no way to express an OPTIONAL key. Reverted and recorded in .env.example so the
+  next person does not rediscover it. (Changing merge_env is not the fix —
+  "empty does not override" is load-bearing for the vault overlay.)
+
+## THE CORRELATED-FAILURE LIMITATION — read before flipping passes:true
+  Enabling the iOS upstream puts a third party and an outbound-internet
+  dependency back into the alert path — the thing choosing push over SMS was
+  partly meant to avoid. And the failure modes CORRELATE with the event being
+  reported: SYS-46 fires on connectivity loss, and an internet outage
+  simultaneously makes IB unreachable, strands the email relay, AND blocks the
+  APNs wake-up. The alert would be detected, dispatched within SLA and durably
+  stored while the operator hears nothing on either required channel.
+  This is a property of the connectivity-loss leg, not a bug in any component,
+  and it is not fixed by anything in this branch. It belongs beside the two
+  structural items (no dispatcher runtime; observation-driven detection) in any
+  decision to close this feature. An Android target on the LAN removes the push
+  half of it entirely.
+
+## A REGRESSION I SHIPPED TO MAIN, AND HOW IT SURFACED
+  Earlier this session I committed the operator's `--paths` addition to
+  tools/adversarial_review.py after checking the deterministic critic, `--help`
+  and that the module parsed. I did NOT run the tool's own test suite. It broke
+  five tests: `_claude` now forwards `paths=` to `run_claude_fallback`, and four
+  unit stubs plus one boundary stub were lambdas taking only `(base_ref,
+  timeout)`. Fixed by giving the stubs the real signature (`paths=None`) rather
+  than by weakening the production call.
+  LESSON: for a change to a TOOL, "the critic approves and --help renders" is not
+  verification — run the tool's own tests. The critic checks diff hygiene, not
+  whether the thing still works.
+  The feature had also shipped with NO test, which is why the breakage was
+  silent. Added two:
+    * `test_a_path_scoped_review_never_reaches_codex` — the load-bearing
+      property. Codex takes no path argument, so a scoped request routed there
+      would review the whole range while the caller believed it was narrowed: a
+      tool narrating a blind spot as a result. Asserts Codex is NOT called even
+      when available, that the paths reach the diff, and that the note explains
+      the substitution.
+    * `test_an_unscoped_review_still_prefers_codex` — the discriminating half,
+      without which the first test would pass if review() had simply stopped
+      calling Codex at all.
+  Verified discriminating: deleting the `paths -> force_claude` implication fails
+  exactly the first test and nothing else.
+
+## Gate
+  tools/run_ci_locally.sh --fast exit 0; cargo test --workspace 2336 passed / 0
+  failed; pytest -m "not integration and not e2e" 5247 passed / 5 pre-existing
+  skips; config / deployment / network_binding / container_isolation /
+  architecture / credential_security checks PASS; docs link check 25 passed.
+  ONE pre-existing failure, not mine and proven so against a clean origin/main
+  worktree at 727272c: tests/unit/test_evidence.py::
+  test_a_quoted_argument_survives_the_record_and_the_replay.
+  NOT RUN, as always outside --fast: the Rust ci-rust scope and the 6 skipped
+  mirror steps; e2e and integration are deselected.
