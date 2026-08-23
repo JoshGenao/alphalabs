@@ -531,11 +531,37 @@ def test_a_malformed_ios_upstream_is_refused_before_ntfy_starts() -> None:
     assert check(None) == 0
     assert check("") == 0
 
-    for good in ("https://ntfy.sh", "http://10.0.0.9:8080"):
+    for good in (
+        "https://ntfy.sh",
+        "https://ntfy.sh/",
+        "http://10.0.0.9:8080",
+        "https://ntfy.example.com",
+    ):
         assert check(good) == 0, f"{good} is a usable upstream and must pass"
 
-    # Each of these is accepted silently by ntfy itself, which is the point.
-    for bad in ("not-a-url", "ntfy.sh", "ftp://ntfy.sh", "https://", "://x"):
+    # Each of these is accepted silently by ntfy itself, which is the point. The
+    # first four also survive a naive scheme+netloc check — `urlparse` returns
+    # netloc="exa mple.com", netloc='nt"fy.sh' and netloc=":8080" without
+    # complaint — so they are what make this gate worth more than its first draft.
+    for bad in (
+        "https://exa mple.com",
+        'https://nt"fy.sh',
+        "https://:8080",
+        "https://ntfy.sh:99999",
+        "https://ntfy.sh/some/path",
+        "https://ntfy.sh?q=1",
+        "https://ntfy.sh#frag",
+        "not-a-url",
+        "ntfy.sh",
+        "ftp://ntfy.sh",
+        "https://",
+        "://x",
+        # `parsed.hostname` strips userinfo, so these would otherwise pass with
+        # host "ntfy.sh" — and put a credential in a value that is not
+        # catalogued secret and does get echoed in check evidence.
+        "https://user:pass@ntfy.sh",
+        "https://user@ntfy.sh",
+    ):
         assert check(bad) != 0, f"{bad} must be refused before ntfy is started"
 
 

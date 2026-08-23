@@ -331,19 +331,51 @@ def assert_ntfy_upstream_well_formed(_config: dict, root: Path = ROOT) -> list[s
     if raw is None or raw == "":
         return ["ATP_NTFY_UPSTREAM is unset or empty (iOS wake-up disabled; valid)"]
 
+    # Everything below is deliberately strict, because `urlparse` validates
+    # almost nothing: it happily returns netloc="exa mple.com", netloc='nt"fy.sh'
+    # and netloc=":8080" (no host at all). A scheme-and-netloc check therefore
+    # blesses exactly the typos this gate exists to catch.
+    def refuse(why: str) -> None:
+        fail(
+            f"ATP_NTFY_UPSTREAM in {source} {why} — ntfy accepts a bad upstream "
+            f"SILENTLY, so this would leave a locked iPhone receiving nothing "
+            f"while ATP kept recording deliveries"
+        )
+
+    if any(c.isspace() or ord(c) < 0x20 for c in raw):
+        refuse("contains whitespace or a control character")
+
     parsed = urlparse(raw)
     if parsed.scheme not in ("http", "https"):
-        fail(
-            f"ATP_NTFY_UPSTREAM in {source} must be an http(s) URL, got scheme "
-            f"{parsed.scheme or '(none)'!r} — ntfy accepts this silently and a "
-            f"locked iPhone would then receive nothing"
-        )
-    if not parsed.netloc:
-        fail(
-            f"ATP_NTFY_UPSTREAM in {source} has no host — ntfy accepts this "
-            f"silently and a locked iPhone would then receive nothing"
-        )
-    return [f"ATP_NTFY_UPSTREAM from {source} is a well-formed {parsed.scheme} URL"]
+        refuse(f"must be an http(s) URL, got scheme {parsed.scheme or '(none)'!r}")
+    # It is a BASE url: a path, query or fragment means the operator pasted a
+    # topic or a deep link rather than the server root.
+    if parsed.path not in ("", "/"):
+        refuse(f"must be a base URL with no path, got path {parsed.path!r}")
+    if parsed.query or parsed.fragment:
+        refuse("must be a base URL with no query string or fragment")
+
+    try:
+        port = parsed.port
+    except ValueError:
+        refuse("has a malformed port")
+        port = None
+    if port is not None and not (1 <= port <= 65535):
+        refuse(f"has a port outside 1-65535: {port}")
+
+    # `parsed.hostname` STRIPS userinfo, so `https://user:pass@ntfy.sh` would
+    # otherwise sail through with host "ntfy.sh" — putting a credential in a
+    # config value that is not catalogued secret and gets echoed in evidence.
+    if parsed.username is not None or parsed.password is not None:
+        refuse("must not embed userinfo (user:pass@)")
+
+    host = parsed.hostname  # None for ":8080"; strips IPv6 brackets
+    if not host:
+        refuse("has no host")
+    elif not all(c.isalnum() or c in "-._:" for c in host):
+        refuse(f"has a host with illegal characters: {host!r}")
+
+    return [f"ATP_NTFY_UPSTREAM from {source} is a well-formed {parsed.scheme} base URL"]
 
 
 def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:

@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 11
+Adversarial rounds: 12
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
