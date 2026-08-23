@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 13
+Adversarial rounds: 14
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -1071,6 +1071,17 @@ untouched. Docs + one compose knob; no behaviour change to any transport.
   exported EMPTY ATP_NTFY_UPSTREAM overriding a configured .env value. A
   deliberate override to a different URL is left alone — only the silent
   downgrade is blocked.
+
+## ONE FINDING PARTIALLY DECLINED (round 13)
+  Codex wanted the preflight to REFUSE any upstream that is not ntfy.sh, on the
+  correct premise that only ntfy.sh can send APNs for the App Store iOS app.
+  Declined the refusal, took the warning. "Wrong for iOS" is not "invalid
+  config": an Android-only deployment needs no APNs at all, and a self-built iOS
+  app carries its own APNs credentials and legitimately points elsewhere. The
+  check cannot tell those apart from a mistaken iOS operator, so refusing would
+  break valid topologies to protect one case. It now emits a NOTE naming the host
+  and saying a locked iPhone will not be woken by it — the failure is otherwise
+  silent, so saying so costs nothing and refusing costs correctness.
 
 ## Gate
   tools/run_ci_locally.sh --fast exit 0; cargo test --workspace 2336 passed / 0

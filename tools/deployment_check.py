@@ -399,7 +399,23 @@ def assert_ntfy_upstream_well_formed(_config: dict, root: Path = ROOT) -> list[s
     elif not all(c.isalnum() or c in "-._:" for c in host):
         refuse(f"has a host with illegal characters: {host!r}")
 
-    return [f"ATP_NTFY_UPSTREAM from {source} is a well-formed {parsed.scheme} base URL"]
+    evidence = [f"ATP_NTFY_UPSTREAM from {source} is a well-formed {parsed.scheme} base URL"]
+
+    # A NOTE, deliberately not a refusal. Only ntfy.sh can send APNs for the
+    # App Store iOS app, so a different upstream will not wake a locked iPhone —
+    # but "wrong for iOS" is not "invalid config": an Android-only deployment, or
+    # a self-built iOS app carrying its own APNs credentials, legitimately points
+    # elsewhere. Refusing those to protect an iOS operator would break topologies
+    # this check has no way to distinguish. Flagging costs nothing and is the only
+    # honest option, since the failure it warns about is otherwise silent.
+    if host and host.lower() not in ("ntfy.sh", "www.ntfy.sh"):
+        evidence.append(
+            f"NOTE: upstream host is {host!r}, not ntfy.sh — only ntfy.sh can send "
+            "APNs for the App Store iOS app, so a LOCKED iPhone will not be woken "
+            "by this upstream. Correct for Android or a self-built iOS app; "
+            "verify with a locked-phone delivery either way"
+        )
+    return evidence
 
 
 def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:

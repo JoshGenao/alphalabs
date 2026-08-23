@@ -539,6 +539,30 @@ def test_a_malformed_ios_upstream_is_refused_before_ntfy_starts() -> None:
     ):
         assert check(good) == 0, f"{good} is a usable upstream and must pass"
 
+    # A non-ntfy.sh upstream is NOTED, not refused. Only ntfy.sh can send APNs
+    # for the App Store iOS app, so it will not wake a locked iPhone — but that
+    # is wrong-for-iOS, not invalid: an Android-only deployment or a self-built
+    # iOS app with its own APNs credentials legitimately points elsewhere, and
+    # this check cannot tell them apart. Warning is the honest option; refusing
+    # would break topologies to protect one of them.
+    out = subprocess.run(
+        [sys.executable, "tools/deployment_check.py"],
+        cwd=root,
+        env={**os.environ, "ATP_NTFY_UPSTREAM": "https://ntfy.example.com"},
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0
+    assert "not ntfy.sh" in out.stdout, "a non-APNs upstream must be flagged"
+    ok = subprocess.run(
+        [sys.executable, "tools/deployment_check.py"],
+        cwd=root,
+        env={**os.environ, "ATP_NTFY_UPSTREAM": "https://ntfy.sh"},
+        capture_output=True,
+        text=True,
+    )
+    assert "not ntfy.sh" not in ok.stdout, "ntfy.sh must not be flagged"
+
     # Each of these is accepted silently by ntfy itself, which is the point. The
     # first four also survive a naive scheme+netloc check — `urlparse` returns
     # netloc="exa mple.com", netloc='nt"fy.sh' and netloc=":8080" without
