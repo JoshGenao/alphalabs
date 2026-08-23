@@ -317,9 +317,14 @@ echo "$TOPIC"
 
 # 1. ATP: write-only. This account's token goes in ATP_PUSH_TOKEN.
 # `read -rs` keeps the password out of shell history, and `-e NTFY_PASSWORD`
-# with NO value makes docker forward it from your environment instead of
-# placing it in argv, where any process could read it via `ps`.
+# with NO value makes docker forward it from the environment instead of putting
+# it in argv, where any process could read it via `ps`.
+# The `export` is REQUIRED, not tidiness: `read` creates a shell variable, and an
+# unexported shell variable is not in the docker CLI's environment, so there is
+# nothing for `-e NTFY_PASSWORD` to forward. Verified against 2.27.0 — without
+# it the command fails with `password: inappropriate ioctl for device`.
 read -rsp "atpbot password: " NTFY_PASSWORD; echo
+export NTFY_PASSWORD
 docker exec -e NTFY_PASSWORD atp-ntfy ntfy user add --role=user atpbot
 docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo
 TOKEN=$(docker exec atp-ntfy ntfy token add atpbot | grep -oE 'tk_[A-Za-z0-9]+')
@@ -328,6 +333,7 @@ echo "$TOKEN"                                      # this is ATP_PUSH_TOKEN
 
 # 2. The phone: read-only. This is the account you sign the ntfy APP in as.
 read -rsp "operator password: " NTFY_PASSWORD; echo
+export NTFY_PASSWORD
 docker exec -e NTFY_PASSWORD atp-ntfy ntfy user add --role=user operator
 unset NTFY_PASSWORD
 docker exec atp-ntfy ntfy access operator "$TOPIC" ro

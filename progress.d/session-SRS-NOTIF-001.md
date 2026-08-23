@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 10
+Adversarial rounds: 11
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -1038,9 +1038,26 @@ untouched. Docs + one compose knob; no behaviour change to any transport.
   Verified discriminating: deleting the `paths -> force_claude` implication fails
   exactly the first test and nothing else.
 
+## A SECOND VERIFICATION MISS, SAME SHAPE AS THE FIRST
+  Round 10 caught it: the runbook said `read -rs NTFY_PASSWORD` then
+  `docker exec -e NTFY_PASSWORD`, which cannot work — `read` makes a SHELL
+  variable, and an unexported shell variable is not in the docker CLI's
+  environment, so there is nothing to forward. I had "verified" the `-e VAR`
+  forwarding trick, but with `export NTFY_PASSWORD=...` — I tested a DIFFERENT
+  sequence from the one I wrote down. Measured both afterwards: unexported fails
+  with `password: inappropriate ioctl for device`, exported succeeds.
+  This is the same miss as the adversarial_review one earlier in the session:
+  verifying something adjacent to the change rather than the change itself. Both
+  times the check I ran was real, and both times it did not cover the artefact
+  that shipped.
+  Guarded now rather than just fixed: a domain test asserts every
+  `docker exec -e NTFY_PASSWORD` in the runbook has an `export` above it, and
+  that the password never appears as an argv literal. Both assertions verified
+  to fire independently.
+
 ## Gate
   tools/run_ci_locally.sh --fast exit 0; cargo test --workspace 2336 passed / 0
-  failed; pytest -m "not integration and not e2e" 5247 passed / 5 pre-existing
+  failed; pytest -m "not integration and not e2e" 5249 passed / 5 pre-existing
   skips; config / deployment / network_binding / container_isolation /
   architecture / credential_security checks PASS; docs link check 25 passed.
   ONE pre-existing failure, not mine and proven so against a clean origin/main

@@ -537,3 +537,43 @@ def test_a_malformed_ios_upstream_is_refused_before_ntfy_starts() -> None:
     # Each of these is accepted silently by ntfy itself, which is the point.
     for bad in ("not-a-url", "ntfy.sh", "ftp://ntfy.sh", "https://", "://x"):
         assert check(bad) != 0, f"{bad} must be refused before ntfy is started"
+
+
+def test_the_runbook_exports_the_ntfy_password_before_forwarding_it() -> None:
+    """A `docker exec -e VAR` in the runbook must have an exported VAR to forward.
+
+    The operator runs these commands verbatim, so a broken one is a broken
+    deployment procedure for the SRS-NOTIF-001 alert path, not a typo.
+
+    The specific trap: `read -rs` creates a SHELL variable, and an unexported
+    shell variable is not in the docker CLI's process environment, so
+    `docker exec -e NTFY_PASSWORD` has nothing to forward. Measured against ntfy
+    2.27.0 — the command fails with `password: inappropriate ioctl for device`.
+    The `-e VAR` form is there deliberately (it keeps the password out of argv,
+    where `ps` would expose it), which is exactly why the export is easy to drop
+    while the line still looks right.
+    """
+
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "DEPLOYMENT.md").read_text(
+        encoding="utf-8"
+    )
+    lines = doc.splitlines()
+    forwards = [i for i, line in enumerate(lines) if "docker exec -e NTFY_PASSWORD" in line]
+    assert forwards, "the runbook no longer forwards NTFY_PASSWORD — has the procedure changed?"
+
+    for i in forwards:
+        window = "\n".join(lines[max(0, i - 6) : i])
+        assert "export NTFY_PASSWORD" in window, (
+            f"docs/DEPLOYMENT.md:{i + 1} forwards NTFY_PASSWORD to docker without an "
+            "`export NTFY_PASSWORD` above it; an unexported shell variable is not in "
+            "the docker CLI's environment and the command fails"
+        )
+
+    # And the password must never be an argv literal — that is what the -e form
+    # is avoiding in the first place.
+    assert "-e NTFY_PASSWORD=" not in doc, (
+        "the runbook passes NTFY_PASSWORD as a docker argument; argv is readable "
+        "by any process via `ps` (SRS-SEC-001 / NFR-S4)"
+    )
