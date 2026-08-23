@@ -487,3 +487,53 @@ def test_every_surface_agrees_on_the_push_endpoint_default() -> None:
         f"the push default ({surfaces['catalogue']}) collides with the dashboard "
         f"API's published port; a default alert would POST its bearer token there"
     )
+
+
+def test_a_malformed_ios_upstream_is_refused_before_ntfy_starts() -> None:
+    """SRS-NOTIF-001 / SN-1.12: the iOS wake-up must not fail silently.
+
+    `ATP_NTFY_UPSTREAM` is the only thing that gets an alert to a LOCKED iPhone,
+    and ntfy gives no signal about it at all — an empty value, a valid URL and
+    `not-a-url` produce byte-identical startup logs (measured against 2.27.0). A
+    typo therefore does not fail; it silently downgrades push to foreground-only
+    while ATP keeps publishing 200s and recording deliveries, so SYS-46 would
+    report success for a page the operator never received.
+
+    Nothing else can catch this. The key cannot live in the ARCH-005 catalogue —
+    `merge_env` reads an empty value as "not provided", so a key whose normal
+    state is empty always fails readiness as "not set" — so `atp_config` never
+    sees it. `tools/deployment_check.py` is the preflight, and this pins it.
+    """
+
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+
+    def check(value: str | None) -> int:
+        env = dict(os.environ)
+        if value is None:
+            env.pop("ATP_NTFY_UPSTREAM", None)
+        else:
+            env["ATP_NTFY_UPSTREAM"] = value
+        return subprocess.run(
+            [sys.executable, "tools/deployment_check.py"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    # Empty and unset both mean "no upstream", which is correct for an Android
+    # target and must stay a passing configuration.
+    assert check(None) == 0
+    assert check("") == 0
+
+    for good in ("https://ntfy.sh", "http://10.0.0.9:8080"):
+        assert check(good) == 0, f"{good} is a usable upstream and must pass"
+
+    # Each of these is accepted silently by ntfy itself, which is the point.
+    for bad in ("not-a-url", "ntfy.sh", "ftp://ntfy.sh", "https://", "://x"):
+        assert check(bad) != 0, f"{bad} must be refused before ntfy is started"

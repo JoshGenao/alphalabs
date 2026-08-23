@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -295,6 +296,56 @@ def assert_credential_vault_wiring(config: dict, root: Path = ROOT) -> list[str]
     ]
 
 
+def assert_ntfy_upstream_well_formed(_config: dict, root: Path = ROOT) -> list[str]:
+    """Reject a malformed ATP_NTFY_UPSTREAM before ntfy is ever started.
+
+    This knob is the ONLY thing that gets an alert to a locked iPhone (see
+    docs/DEPLOYMENT.md), and ntfy gives no signal about it whatsoever: an empty
+    value, a valid URL and `not-a-url` all produce byte-identical startup logs,
+    verified against 2.27.0. So a typo here does not fail — it silently downgrades
+    the push channel to foreground-only, while ATP keeps publishing 200s and
+    recording deliveries. SYS-46 would report success for a page the operator
+    never received.
+
+    Nothing else can catch it. The key cannot live in the ARCH-005 catalogue —
+    ``merge_env`` treats an empty value as "not provided", so a key whose normal
+    state is empty always fails readiness as "not set" — so ``atp_config`` never
+    sees it. This is the preflight.
+
+    EMPTY IS VALID and means disabled: an Android target needs no upstream.
+    """
+
+    from urllib.parse import urlparse
+
+    raw = os.environ.get("ATP_NTFY_UPSTREAM")
+    source = "the environment"
+    if raw is None:
+        env_path = root / ".env"
+        if env_path.is_file():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("ATP_NTFY_UPSTREAM="):
+                    raw = stripped.partition("=")[2].strip().strip('"').strip("'")
+                    source = ".env"
+                    break
+    if raw is None or raw == "":
+        return ["ATP_NTFY_UPSTREAM is unset or empty (iOS wake-up disabled; valid)"]
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https"):
+        fail(
+            f"ATP_NTFY_UPSTREAM in {source} must be an http(s) URL, got scheme "
+            f"{parsed.scheme or '(none)'!r} — ntfy accepts this silently and a "
+            f"locked iPhone would then receive nothing"
+        )
+    if not parsed.netloc:
+        fail(
+            f"ATP_NTFY_UPSTREAM in {source} has no host — ntfy accepts this "
+            f"silently and a locked iPhone would then receive nothing"
+        )
+    return [f"ATP_NTFY_UPSTREAM from {source} is a well-formed {parsed.scheme} URL"]
+
+
 def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence: list[str] = [
         "SRS-ARCH-004 Phase 1 deployment evidence:",
@@ -305,6 +356,7 @@ def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence.extend(assert_env_example(config, root))
     evidence.extend(assert_deployment_doc(config, root))
     evidence.extend(assert_credential_vault_wiring(config, root))
+    evidence.extend(assert_ntfy_upstream_well_formed(config, root))
     return evidence
 
 

@@ -316,16 +316,20 @@ TOPIC="atp-alerts-$(openssl rand -hex 16)"   # long + random: this is a credenti
 echo "$TOPIC"
 
 # 1. ATP: write-only. This account's token goes in ATP_PUSH_TOKEN.
-docker exec -e NTFY_PASSWORD='<atpbot-password>' atp-ntfy \
-  ntfy user add --role=user atpbot
+# `read -rs` keeps the password out of shell history, and `-e NTFY_PASSWORD`
+# with NO value makes docker forward it from your environment instead of
+# placing it in argv, where any process could read it via `ps`.
+read -rsp "atpbot password: " NTFY_PASSWORD; echo
+docker exec -e NTFY_PASSWORD atp-ntfy ntfy user add --role=user atpbot
 docker exec atp-ntfy ntfy access atpbot "$TOPIC" wo
 TOKEN=$(docker exec atp-ntfy ntfy token add atpbot | grep -oE 'tk_[A-Za-z0-9]+')
 [ -n "$TOKEN" ] || { echo "token capture FAILED — read the raw output"; }
 echo "$TOKEN"                                      # this is ATP_PUSH_TOKEN
 
 # 2. The phone: read-only. This is the account you sign the ntfy APP in as.
-docker exec -e NTFY_PASSWORD='<operator-password>' atp-ntfy \
-  ntfy user add --role=user operator
+read -rsp "operator password: " NTFY_PASSWORD; echo
+docker exec -e NTFY_PASSWORD atp-ntfy ntfy user add --role=user operator
+unset NTFY_PASSWORD
 docker exec atp-ntfy ntfy access operator "$TOPIC" ro
 ```
 
@@ -431,9 +435,14 @@ nothing, the publish half is fine and the subscription half is not. Bisect it
 rather than guessing — read the topic back as `operator` from the server:
 
 ```bash
-curl -sS -u operator:'<operator-password>' \
+curl -sS -u operator \
   "http://192.168.1.50:8090/$TOPIC/json?poll=1"
 ```
+
+`-u operator` with no colon makes curl prompt for the password. Do not put it on
+the command line: argv is visible to every process on the box via `ps`, and the
+line lands in your shell history — during the one workflow SRS-SEC-001 / NFR-S4
+exist to protect.
 
 Your message returns → the server is correct and the problem is the app or its
 network path: check the subscribed topic string, the subscription's server, and
