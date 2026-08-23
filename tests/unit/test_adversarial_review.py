@@ -347,7 +347,9 @@ def test_a_rate_limited_codex_is_recorded_on_the_dispatched_path(tmp_path, monke
         ar, "run_codex", lambda _b: (1, "you've hit your usage limit, try again at 3:00 PM")
     )
     monkeypatch.setattr(
-        ar, "run_claude_fallback", lambda _b, timeout=900: (0, json.dumps({"verdict": "approve"}))
+        ar,
+        "run_claude_fallback",
+        lambda _b, timeout=900, paths=None: (0, json.dumps({"verdict": "approve"})),
     )
 
     result = ar.review("origin/main")
@@ -368,7 +370,9 @@ def test_an_unparseable_codex_reply_is_also_recorded_before_the_fallback(tmp_pat
     monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
     monkeypatch.setattr(ar, "run_codex", lambda _b: (0, "I could not complete the review."))
     monkeypatch.setattr(
-        ar, "run_claude_fallback", lambda _b, timeout=900: (0, json.dumps({"verdict": "approve"}))
+        ar,
+        "run_claude_fallback",
+        lambda _b, timeout=900, paths=None: (0, json.dumps({"verdict": "approve"})),
     )
 
     ar.review("origin/main")
@@ -397,7 +401,7 @@ def test_a_timed_out_fallback_blocks_but_is_not_a_round(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
 
-    def _timeout(_b, timeout=900):
+    def _timeout(_b, timeout=900, paths=None):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
 
     monkeypatch.setattr(ar, "run_claude_fallback", _timeout)
@@ -516,7 +520,7 @@ def test_a_fallback_that_ran_but_said_nothing_readable_is_an_attempt(monkeypatch
     mute reviewer could satisfy `Adversarial rounds:` without reading anything."""
     monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
     monkeypatch.setattr(
-        ar, "run_claude_fallback", lambda _b, timeout=900: (0, "I cannot produce JSON.")
+        ar, "run_claude_fallback", lambda _b, timeout=900, paths=None: (0, "I cannot produce JSON.")
     )
     res = ar.review("origin/main", force_claude=True)
     assert res.get("no_verdict") is True
@@ -636,3 +640,69 @@ def test_an_outage_with_no_declared_verdict_is_still_an_attempt():
         res = ar.outcome(payload, raw, "codex")
         assert res.get("no_verdict") is True
         assert res["verdict"] == "block", "still halts the agent"
+
+
+def test_a_path_scoped_review_never_reaches_codex(monkeypatch, tmp_path):
+    """`--paths` must imply the Claude reviewer, and the note must say why.
+
+    This is the load-bearing property of path scoping, and it is a correctness
+    claim rather than a preference. Codex reviews through the companion's
+    `--base` and takes NO path argument, so a scoped request cannot be honoured
+    there. Routing it to Codex anyway would review the entire range while the
+    caller believed the review was narrowed — a tool narrating a blind spot as a
+    result, which is the failure mode this whole review harness exists to catch.
+
+    Pinned because the feature shipped without a test and its first regression
+    was silent: a stub signature drifted and four unrelated telemetry tests were
+    what noticed.
+    """
+
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-SCOPED")
+
+    def _codex_must_not_run(_b):
+        raise AssertionError("a path-scoped review was dispatched to Codex")
+
+    monkeypatch.setattr(ar, "run_codex", _codex_must_not_run)
+    # No cooldown: Codex is AVAILABLE. Without the implication, review() would
+    # prefer it — so this asserts the scoping, not a fallback that happened anyway.
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+
+    seen = {}
+
+    def _capture(base_ref, timeout=900, paths=None):
+        seen["base_ref"] = base_ref
+        seen["paths"] = paths
+        return 0, json.dumps({"verdict": "approve"})
+
+    monkeypatch.setattr(ar, "run_claude_fallback", _capture)
+
+    result = ar.review("origin/main", paths=["crates/atp-notification/"])
+
+    assert result["reviewer"] == "claude-fallback"
+    assert seen["paths"] == ["crates/atp-notification/"], "the scope must reach the diff"
+    assert seen["base_ref"] == "origin/main"
+    # The note has to explain the substitution, or a session note citing this
+    # review cannot tell a scoped pass from an ordinary Codex outage.
+    assert "path-scoped" in result.get("reviewer_note", "")
+
+
+def test_an_unscoped_review_still_prefers_codex(monkeypatch, tmp_path):
+    """The discriminating half: scoping is what diverts, not the plumbing.
+
+    Without this, `test_a_path_scoped_review_never_reaches_codex` would still
+    pass if `review()` had simply stopped calling Codex altogether.
+    """
+
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-UNSCOPED")
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(ar, "run_codex", lambda _b: (0, json.dumps({"verdict": "approve"})))
+
+    def _claude_must_not_run(_b, timeout=900, paths=None):
+        raise AssertionError("an unscoped review bypassed Codex")
+
+    monkeypatch.setattr(ar, "run_claude_fallback", _claude_must_not_run)
+
+    result = ar.review("origin/main")
+    assert result["reviewer"] == "codex"

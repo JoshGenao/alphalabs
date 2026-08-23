@@ -219,7 +219,7 @@ def test_dispatched_rate_limit_records_the_attempt_not_just_the_fallback(
     monkeypatch.setattr(adversarial_review, "codex_cooldown_until", lambda: None)
     monkeypatch.setattr(adversarial_review, "record_cooldown", lambda *_a, **_k: None)
 
-    def _no_claude(_base, timeout=900):
+    def _no_claude(_base, timeout=900, paths=None):
         raise FileNotFoundError("claude")  # keep it offline; no paid call from a test
 
     monkeypatch.setattr(adversarial_review, "run_claude_fallback", _no_claude)
