@@ -603,3 +603,59 @@ def test_the_runbook_exports_the_ntfy_password_before_forwarding_it() -> None:
         "the runbook passes NTFY_PASSWORD as a docker argument; argv is readable "
         "by any process via `ps` (SRS-SEC-001 / NFR-S4)"
     )
+
+
+def test_a_stale_empty_shell_export_cannot_silently_disable_the_ios_wakeup() -> None:
+    """The trap that cost real time twice, caught mechanically.
+
+    `set -a; . ./.env; set +a` exports the file into the shell, and the shell
+    WINS over `--env-file`: compose resolves `${VAR:-default}` from the
+    environment first. Editing `.env` afterwards therefore changes nothing until
+    the operator re-sources — the stale value survives any number of
+    `up -d --force-recreate` runs, with no error.
+
+    Observed twice on the real VM: once binding ntfy to loopback while `.env`
+    said the LAN address, once leaving the iOS wake-up disabled while `.env` said
+    it was on. Both were silent, and the second one means SYS-46 reports a
+    delivered page the operator never received.
+
+    Only the HARMFUL direction is refused — an exported EMPTY value overriding a
+    configured one. A deliberate override to a different URL is left alone.
+    """
+
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    env_file = root / ".env"
+    if env_file.exists():
+        pytest.skip("a real .env is present; refusing to overwrite operator config")
+
+    def check(exported: str | None) -> int:
+        env = dict(os.environ)
+        if exported is None:
+            env.pop("ATP_NTFY_UPSTREAM", None)
+        else:
+            env["ATP_NTFY_UPSTREAM"] = exported
+        return subprocess.run(
+            [sys.executable, "tools/deployment_check.py"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    env_file.write_text("ATP_NTFY_UPSTREAM=https://ntfy.sh\n", encoding="utf-8")
+    try:
+        assert check("") != 0, (
+            "an empty shell export silently overriding a configured .env upstream "
+            "must be refused — it disables the iOS wake-up with no other signal"
+        )
+        assert check(None) == 0, ".env alone is a valid configuration"
+        assert check("https://other.example.com") == 0, (
+            "a deliberate non-empty override is not the failure mode and must not be blocked"
+        )
+    finally:
+        env_file.unlink()

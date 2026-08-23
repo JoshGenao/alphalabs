@@ -35,6 +35,24 @@ mkdir -p "${ATP_SSD_DATA_DIR:?}" "${ATP_NAS_DATA_DIR:?}"
 docker compose --env-file .env --profile phase1 up
 ```
 
+> **AFTER EVERY LATER EDIT TO `.env`, RE-SOURCE IT OR OPEN A NEW SHELL.**
+>
+> The `set -a` above exports `.env` into this shell, and **the shell wins over
+> `--env-file`**: compose resolves `${VAR:-default}` from the environment first.
+> So editing `.env` afterwards changes nothing until you re-source — the stale
+> exported value keeps being used through any number of
+> `up -d --force-recreate` runs, with no error and no warning.
+>
+> This has already cost real time twice: once binding ntfy to loopback while
+> `.env` said the LAN address, and once leaving the iOS upstream disabled while
+> `.env` said it was on. Both failed silently.
+>
+> Check what compose will actually use, rather than inferring it afterwards:
+>
+> ```bash
+> docker compose --env-file .env --profile notify config | grep -A4 'ports:'
+> ```
+
 **Credentials in staging/production (SRS-SEC-001).** The readiness gate
 **rejects** any catalogued secret (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`,
 `ATP_PUSH_TOPIC`, `ATP_PUSH_TOKEN`, `DATABENTO_API_KEY`, `SHARADAR_API_KEY`) supplied as a real
@@ -395,8 +413,11 @@ on iOS, with no upstream configured, messages arrive **only while the app is in
 the foreground**. That is useless for SN-1.12, whose whole purpose is reaching an
 operator who is not looking.
 
-Set `ATP_NTFY_UPSTREAM=https://ntfy.sh` in `.env` and recreate. On the compose
-path that is all — compose interpolates it. On the bare-Docker path `.env` is not
+Set `ATP_NTFY_UPSTREAM=https://ntfy.sh` in `.env`, **re-source `.env` or open a
+new shell** (see the warning under *Bring-up commands* — a stale exported value
+silently wins over the edited file, and this setting fails silently when it does
+not arrive), then recreate. On the compose path that is all — compose
+interpolates it. On the bare-Docker path `.env` is not
 read for you: export the variable and pass the `-e NTFY_UPSTREAM_BASE_URL` line
 shown above, or the setting silently never reaches ntfy. Your server then
 forwards a wake-up to ntfy.sh, which sends the APNs push, and the phone fetches
@@ -422,8 +443,12 @@ it up.
 **Nothing on the server tells you whether the upstream took.** Verified against
 2.27.0: empty, a valid URL and `not-a-url` all produce byte-identical startup
 logs, so a malformed value fails silently. `docker exec atp-ntfy env | grep
-NTFY_UPSTREAM` proves the variable reached the container; only a delivery to a
-locked phone proves it works.
+NTFY_UPSTREAM` proves the variable reached the container — run it every time you
+change the setting, because a stale shell export is the likeliest reason it did
+not. Only a delivery to a locked phone proves it actually works.
+
+`tools/deployment_check.py` refuses a malformed `ATP_NTFY_UPSTREAM` before ntfy
+starts, but it cannot tell you the value never arrived — an empty one is valid.
 
 Then prove the two halves separately, because they fail differently:
 

@@ -317,17 +317,41 @@ def assert_ntfy_upstream_well_formed(_config: dict, root: Path = ROOT) -> list[s
 
     from urllib.parse import urlparse
 
-    raw = os.environ.get("ATP_NTFY_UPSTREAM")
-    source = "the environment"
-    if raw is None:
+    def from_env_file() -> str | None:
         env_path = root / ".env"
-        if env_path.is_file():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("ATP_NTFY_UPSTREAM="):
-                    raw = stripped.partition("=")[2].strip().strip('"').strip("'")
-                    source = ".env"
-                    break
+        if not env_path.is_file():
+            return None
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ATP_NTFY_UPSTREAM="):
+                return stripped.partition("=")[2].strip().strip('"').strip("'")
+        return None
+
+    exported = os.environ.get("ATP_NTFY_UPSTREAM")
+    in_file = from_env_file()
+
+    # THE STALE-SHELL TRAP, caught mechanically rather than described.
+    # `set -a; . ./.env; set +a` exports the file into the shell, and the shell
+    # WINS over `--env-file` — compose resolves `${VAR:-default}` from the
+    # environment first. So editing `.env` afterwards changes nothing until the
+    # operator re-sources, and the stale value survives any number of
+    # `up -d --force-recreate` runs with no error.
+    #
+    # Only the HARMFUL direction is refused: an exported EMPTY value silently
+    # overriding a configured one, which disables the iOS wake-up while `.env`
+    # says it is on. An export to a different non-empty URL is a deliberate
+    # one-off override and is left alone.
+    if exported == "" and in_file:
+        fail(
+            "ATP_NTFY_UPSTREAM is exported EMPTY in this shell while .env sets it "
+            f"to {in_file!r}. The shell wins over --env-file, so ntfy would start "
+            "with the iOS wake-up DISABLED and a locked iPhone would receive "
+            "nothing, silently. Re-source .env (`set -a; . ./.env; set +a`) or "
+            "open a new shell."
+        )
+
+    raw = exported if exported is not None else in_file
+    source = "the environment" if exported is not None else ".env"
     if raw is None or raw == "":
         return ["ATP_NTFY_UPSTREAM is unset or empty (iOS wake-up disabled; valid)"]
 

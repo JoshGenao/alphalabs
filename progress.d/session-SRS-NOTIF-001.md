@@ -750,7 +750,7 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 12
+Adversarial rounds: 13
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -1055,9 +1055,26 @@ untouched. Docs + one compose knob; no behaviour change to any transport.
   that the password never appears as an argv literal. Both assertions verified
   to fire independently.
 
+## THE STALE-SHELL TRAP IS NOW A GATE, NOT A PARAGRAPH
+  `set -a; . ./.env; set +a` exports the file into the shell, and THE SHELL WINS
+  over `--env-file` — compose resolves `${VAR:-default}` from the environment
+  first. Editing .env afterwards changes nothing until you re-source, and the
+  stale value survives any number of `up -d --force-recreate` runs with no error.
+  Observed TWICE on the real VM: ntfy bound to loopback while .env said the LAN
+  address, and the iOS wake-up left disabled while .env said it was on. The
+  second is the dangerous one — it means SYS-46 records a delivered page the
+  operator never received.
+  The runbook had no warning about this at all. Now it has one at the point the
+  `set -a` is introduced, cross-referenced from the iOS section, plus the
+  `docker compose config` pre-flight that shows what compose will ACTUALLY use.
+  And deployment_check now REFUSES the harmful direction mechanically: an
+  exported EMPTY ATP_NTFY_UPSTREAM overriding a configured .env value. A
+  deliberate override to a different URL is left alone — only the silent
+  downgrade is blocked.
+
 ## Gate
   tools/run_ci_locally.sh --fast exit 0; cargo test --workspace 2336 passed / 0
-  failed; pytest -m "not integration and not e2e" 5249 passed / 5 pre-existing
+  failed; pytest -m "not integration and not e2e" 5250 passed / 5 pre-existing
   skips; config / deployment / network_binding / container_isolation /
   architecture / credential_security checks PASS; docs link check 25 passed.
   ONE pre-existing failure, not mine and proven so against a clean origin/main
