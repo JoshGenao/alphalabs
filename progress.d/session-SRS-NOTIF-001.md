@@ -1093,3 +1093,169 @@ untouched. Docs + one compose knob; no behaviour change to any transport.
   test_a_quoted_argument_survives_the_record_and_the_replay.
   NOT RUN, as always outside --fast: the Rust ci-rust scope and the 6 skipped
   mirror steps; e2e and integration are deselected.
+
+
+################################################################################
+# RESUME HERE — everything below is self-contained. Written 2026-08-25 for the
+# session that closes SRS-NOTIF-001. You do not need to read the 1,000 lines
+# above; they are the history of how each decision was reached.
+################################################################################
+
+## STATE IN ONE PARAGRAPH
+Both required channels are BUILT and the dispatcher, detection wiring, durable
+store and operator CLI all work. PUSH (IF-11, ntfy) is proven end to end on the
+real Proxmox VM to a real locked iPhone. EMAIL (IF-10) is proven only as far as a
+scripted relay on a loopback socket, because the relay it submits to —
+`phase1-notification-egress` — HAS NEVER BEEN BUILT. `REQUIRED_CHANNELS` is Email
+AND Push enforced fail-closed, so with email unconfigured NOTHING sends on either
+channel. That single missing container is what stands between here and a flip.
+
+## WHAT IS DONE, AND WHAT "PROVEN" MEANS FOR EACH
+
+  * Core dispatcher (`crates/atp-notification`) — detection -> dispatch -> record,
+    injected clock, required-channel fan-out fail-closed, SYS-75 suppression,
+    durable append-only store with a fail-closed checksummed codec at schema v2.
+  * Both transports (`crates/atp-adapters/src/notification/`) — std-only, no
+    vendor SDK. 34 L4 boundary tests over real loopback sockets, plus unit tests.
+  * Detection wiring (`crates/atp-orchestrator/src/connectivity_notification.rs`)
+    — binds the REAL ERR-2 / SRS-SAFE-003 gate to the notifier, with a cool-down,
+    independent outage/maintenance windows, and off-thread dispatch.
+  * Critical-failure path (`kill_switch_timeout.rs`) — now DURABLY STORES the
+    SYS-44b page and measures its real dispatch latency (both were broken).
+  * Operator CLI (`notif001_operator_alert_cli`) — every layer below the arg
+    parser is production.
+  * PUSH: PROVEN on hardware. Real gate -> real dispatcher -> real ntfy ->
+    real locked iPhone. The stored event carries ntfy's own message id.
+  * EMAIL: NOT PROVEN past the relay boundary. The adapter is correct and tested;
+    there is nothing on the other end of the socket.
+
+## THE ONE REMAINING BUILD: `phase1-notification-egress`
+
+WHY IT EXISTS. The Rust workspace carries ZERO external crates, so a std-only
+adapter has no TLS. Rather than break that invariant tree-wide, the TLS boundary
+was made a DEPLOYMENT component: `SmtpEmailChannel` speaks PLAINTEXT SMTP to a
+local relay, and the relay owns the authenticated TLS session to the provider.
+
+WHAT THE ADAPTER WILL DO TO IT (read out of smtp.rs, not from memory):
+    connect  phase1-notification-egress:1025   (ATP_SMTP_RELAY_HOST / _PORT)
+    EHLO atp-notification
+    AUTH PLAIN <base64>
+    MAIL FROM:<$ATP_SMTP_SENDER>
+    RCPT TO:<$ATP_OPERATOR_EMAIL>
+    DATA . QUIT
+
+THREE HARD CONSTRAINTS, all enforced in code — a relay that violates any of them
+is refused, so build to these or the send fails:
+  1. THE EHLO CAPABILITY LIST MUST ADVERTISE `AUTH`. smtp.rs:200 refuses outright
+     otherwise: an open relay would let any container that can route to it forge
+     operator alerts. This is the constraint most likely to be missed, because a
+     relay works fine for `swaks` without it.
+  2. `AUTH PLAIN` is the only mechanism implemented. Credential is
+     `ATP_SMTP_API_KEY`; the login defaults to `ATP_SMTP_SENDER` unless
+     `ATP_SMTP_RELAY_USER` is set.
+  3. The relay host must resolve to LOOPBACK or RFC 1918. `EgressEndpoint`
+     re-resolves and re-validates on EVERY connect, so it cannot be reached over
+     a public address and a DNS change between checks cannot move it.
+
+SUGGESTED SHAPE (Postfix as a relay-only satellite — conventional fit, not the
+only one):
+  * listens on 1025 with `smtpd_sasl_auth_enable = yes` so EHLO advertises AUTH,
+    one local SASL user whose password is ATP_SMTP_API_KEY
+  * `relayhost = [smtp-relay.brevo.com]:587`, `smtp_sasl_auth_enable = yes`,
+    `smtp_tls_security_level = encrypt`, provider credentials in sasl_passwd
+  * NO `permit_mynetworks` on the submission path — requiring AUTH is the point
+  * compose service on a dedicated network with the ATP services, publishing
+    NOTHING to the host
+
+ALSO REQUIRED, and easy to forget:
+  * `docker/notification-egress.Dockerfile`
+  * add `phase1-notification-egress` to `required_services` in
+    architecture/runtime_services.json. UNLIKE `phase1-ntfy`, this one IS
+    required — the alert path cannot work without it, so deployment_check should
+    enforce its presence.
+  * a runbook section in docs/DEPLOYMENT.md mirroring the ntfy one.
+
+PROVIDER: the operator chose Brevo (recorded 2026-07-31) for its free tier and
+no-card signup; Gmail works equally well as either the relay login or the
+destination inbox. Whichever you use needs sender verification done by the
+operator — that part cannot be automated from a session.
+
+## THE SEQUENCE THAT FLIPS THE FEATURE
+Verify in THIS order, because the steps fail differently and a later green can
+mask an earlier red:
+  1. Relay reachable from the ATP network and ADVERTISING AUTH (`swaks` or a raw
+     EHLO will show the capability list).
+  2. A real message reaches the operator's real inbox.
+  3. `notif001_operator_alert_cli outage --state unreachable --store <dir>`
+     exits 0 with BOTH `email=Delivered` and `push=Delivered`.
+  4. INSPECT THE STORED EVENT, not just the exit code: schema 2, channel tags
+     `E` and `P`, dispatch within 60,000 ms, and NO credential anywhere in the
+     file (grep for the topic, the push token and the SMTP key).
+  5. On the Proxmox host, stop the IB Gateway for a GENUINE outage and repeat 3
+     and 4 — until then the connectivity state is an operator assertion, not an
+     observation.
+
+## WHAT STILL BLOCKS A TRUTHFUL "COMPLETE" EVEN AFTER THAT
+These are NOT fixed by the relay, are owned elsewhere, and the operator will have
+to make a scope call on them:
+  * NO AUTOMATIC DISPATCHER RUNTIME. `phase1-notification-dispatcher` still runs
+    core-runtime.Dockerfile's `cargo test` CMD. Every alert to date has been
+    operator-invoked. Needs a live IB inbound surface to subscribe to — owner
+    SRS-EXE-001.
+  * DETECTION IS OBSERVATION-DRIVEN, NOT LOSS-DRIVEN. The trigger is a blocked
+    live submission, so a Gateway dying while no order is routed goes unnoticed,
+    and `detected_at_millis` is the OBSERVATION instant — reading the stored
+    latency as loss-to-dispatch would credit an NFR-P6 compliance not
+    demonstrated. Owners SRS-MD-003 (heartbeat) / SRS-EXE-001.
+  * THE GENERAL CRITICAL STREAM IS ONLY PARTLY ROUTED. SAFE-002's kill-switch
+    path dispatches; ORCH/LOG CRITICAL events do not. Owners SRS-LOG-001,
+    SRS-ORCH-003.
+  * CORRELATED FAILURE. With the iOS upstream enabled, an internet outage makes
+    IB unreachable, strands the email relay AND blocks the APNs wake-up — the
+    alert is detected, dispatched within SLA and durably stored while the
+    operator hears NOTHING on either required channel. An Android target on the
+    LAN removes the push half of this.
+
+## TWO OPEN QUESTIONS THE OPERATOR CAN CLOSE IN MINUTES
+  1. IS THE iOS UPSTREAM ACTUALLY REQUIRED? It was already set when the topic
+     was fixed, so the experiment cannot separate them. Empty ATP_NTFY_UPSTREAM,
+     recreate, re-add the subscription, lock the phone, publish. If it arrives,
+     ntfy.sh is not needed and the alert path is genuinely LAN-only — which
+     removes the metadata disclosure AND the push half of the correlated failure
+     above. Worth knowing before closing.
+  2. DOES iOS BACKGROUND DELIVERY SURVIVE A LONG IDLE? The locked test ran soon
+     after the app was active. iOS suspends background sockets aggressively.
+     Publish once in the morning before touching the phone; 2am after eight idle
+     hours is the case SN-1.12 actually cares about.
+
+## GOTCHAS ALREADY PAID FOR — DO NOT REDISCOVER THESE
+  * `.env` EDITS DO NOT TAKE UNTIL YOU RE-SOURCE. The shell wins over
+    `--env-file`. This burned two separate settings, silently, through repeated
+    `--force-recreate`. `deployment_check.py` now refuses the worst case and
+    docs/DEPLOYMENT.md warns at the point `set -a` is introduced. Use
+    `docker compose --env-file .env config` to see what compose will ACTUALLY
+    resolve.
+  * ntfy LOGS NOTHING about the upstream — empty, valid and `not-a-url` produce
+    identical startup output. `env | grep` proves arrival; only a locked-phone
+    delivery proves function.
+  * The ntfy TOPIC is a credential and is easy to truncate into a phone UI. A
+    nearly-right subscription looks healthy forever.
+  * Do not sign the phone in as `atpbot` — write-only cannot subscribe (403),
+    invisible from the publishing side.
+  * `init.sh` installs requirements.txt only, NOT requirements-dev.txt, so a
+    fresh worktree has no pytest.
+  * Concurrent `cargo test` runs collide on fixed-name scratch dirs and produce
+    phantom failures in unrelated crates. Re-run in isolation before chasing.
+  * `tests/unit/test_evidence.py::test_a_quoted_argument_survives_the_record_and
+    _the_replay` fails on a CLEAN origin/main (verified at 727272c). Not yours.
+
+## HOW TO CLOSE IT
+Flip only when step 5 above has actually happened. `--mode complete` runs
+close_feature.py --verified and folds this note away. If the operator decides the
+structural residuals are acceptable deferred scope with named owners, that is
+their call to record explicitly — the judgment critic's standing position across
+this feature has been that an observation-driven connectivity leg should not be
+described as satisfying SYS-46, and that disagreement should be resolved in the
+open rather than by omission.
+Downstream unblock when this flips: ERR-7, ERR-8, SRS-DATA-010, SRS-DATA-013,
+SRS-DATA-019, SRS-DATA-020. The board is at ready:0 / DEADLOCK until then.
