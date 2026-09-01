@@ -213,3 +213,26 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     value on the READ surface so it comes from the same look. Never default it: a default
     picks on the operator's behalf, which is the decision the command exists to ask them
     for. `(RESV-006 r25 — the same defect as r18, one layer out)`
+
+## A hand-off to something YOU operate is not a delivery (NOTIF-001 r15)
+
+- **"The transport accepted it" and "it reached a destination" are different facts, and a
+  stored record that conflates them lies in the direction that matters.** `SmtpEmailChannel`
+  returns success on Postfix's `250 Ok: queued as <id>`, and the dispatcher mapped every
+  `Ok` to `DeliveryOutcome::Delivered` — while the message was still inside
+  `phase1-notification-egress`, a queue THIS SYSTEM runs, able to fail entirely at the
+  provider on a rejected sender or a bad credential. The audit trail therefore said "the
+  operator was notified" for mail that never left the building. Observed in one live run:
+  `250 Ok: queued` followed by `status=deferred ... 535 Authentication failed`. Split the
+  outcome by **who holds the message when the adapter returns**, and keep the strict
+  predicate strict — `is_delivered()` false for queued, a separate `is_handed_off()` for
+  callers asking "did the alert get out", because holding a correctly-queued page to the
+  strict one reports every good dispatch as a failure. `(NOTIF-001 r15)`
+- **A single constructor makes the stronger claim the default.** `ChannelReceipt::new` let
+  every adapter and every fixture mint "delivered" without deciding anything; that is how
+  the defect arrived and how it survived. Delete it and give the type two named
+  constructors, so the choice is a compile error at each arm rather than a silent default.
+  Seven call sites, all found by the compiler. `(NOTIF-001 r15)`
+- **Then check the fixtures MIRROR the adapters.** Three tests asserted email ==
+  `Delivered`; they were encoding the bug, not pinning behaviour. And a fixture that always
+  returns the stronger claim hides the one case worth testing. `(NOTIF-001 r15)`

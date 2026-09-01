@@ -309,3 +309,19 @@ Read this whenever you write a test, and before you believe a green one.
     the other side of the contract (`abandoned[0] == provisional[0]`), not the count. If a
     mutation to production code leaves a suite green, the suite is describing the stub.
     `(RESV-006 r18)`
+
+40. **Verifying a fixture by EXIT CODE alone counts a harness crash as a working guard.** A
+    shell loop over `--fixture` cases checked only for exit 1. When a fixture's anchor moved,
+    `make_fixture_root` raised — exit 1 — and the loop printed a tick for a guard that had
+    examined nothing. The inert-fixture guard did its job; the verification wrapped around it
+    did not, and the pytest test asserting `SRS-ARCH-004 FAIL` in stderr was the only thing
+    that would have caught it. Assert the REASON the check failed, never that it failed.
+    Rule 28 one layer out: this time the harness that ran nothing was my own loop.
+    `(NOTIF-001 r17)`
+41. **`mutation_verify` counts Python tests only, so Rust properties are unverified unless you
+    mutate them by hand — and doing so found a real gap.** Making `SmtpEmailChannel` claim a
+    destination acknowledgement instead of a relay queue killed NO test: the boundary suite
+    asserted the receipt's REFERENCE but never its KIND, so the adapter could have silently
+    re-acquired the exact defect the round before had removed, with the whole file green. When
+    a fix introduces a new distinction, mutate ACROSS it in both directions and require each
+    to die. `(NOTIF-001 r15/r16)`

@@ -1,8 +1,26 @@
 {
   "created": "2026-09-01T03:04:00+00:00",
-  "critic": {},
+  "critic": {
+    "deterministic": {
+      "head": "3c6bab8274a3345f78e0b50877c7e6467ef2bae7",
+      "ts": "2026-09-01T04:43:05+00:00",
+      "verdict": "approve"
+    },
+    "judgment": {
+      "head": "3c6bab8274a3345f78e0b50877c7e6467ef2bae7",
+      "reviewer": "codex",
+      "rounds": 17,
+      "ts": "2026-09-01T04:43:05+00:00",
+      "verdict": "block"
+    }
+  },
   "feature": "SRS-NOTIF-001",
-  "gates": {},
+  "gates": {
+    "mutation_verify": {
+      "status": "pass",
+      "ts": "2026-09-01T04:43:05+00:00"
+    }
+  },
   "steps": [
     {
       "argv": [
@@ -76,5 +94,5 @@
       "ts": "2026-09-01T03:04:10+00:00"
     }
   ],
-  "updated": "2026-09-01T03:04:10+00:00"
+  "updated": "2026-09-01T04:43:05+00:00"
 }

@@ -750,7 +750,12 @@ not hit the same wall at the very end of a long run.
 Outcome: docs + deployment only. No behaviour change; SRS-NOTIF-001 stays
 passes:false and the flip still needs the operator's real ntfy and a real inbox.
 
-Adversarial rounds: 14
+Adversarial rounds (cumulative for the feature as of that session): 14
+  Re-worded, not revised: the count was accurate when written. The
+  integrator reconciles the FIRST `Adversarial rounds:` line in this file
+  against .harness/runs/SRS-NOTIF-001/review.jsonl, which is cumulative for
+  the whole feature, so that line has to be the current total. The live one
+  is in the 2026-08-31 section below.
 
 ## What landed
   * docker-compose.yml — `phase1-ntfy` (binwiederhier/ntfy) under a NEW `notify`
@@ -1259,3 +1264,184 @@ described as satisfying SYS-46, and that disagreement should be resolved in the
 open rather than by omission.
 Downstream unblock when this flips: ERR-7, ERR-8, SRS-DATA-010, SRS-DATA-013,
 SRS-DATA-019, SRS-DATA-020. The board is at ready:0 / DEADLOCK until then.
+
+=== SESSION 2026-08-31 (operator-directed: build the relay, finish the feature) ===
+Outcome: serialized (C: a Brevo account with a verified sender, and a genuine IB
+Gateway outage on the Proxmox VM. The relay itself is now BUILT and its handshake
+is proven against a real container.)
+Adversarial rounds: 17 (3 this session: 15, 16, 17 — all BLOCK, all real)
+
+## What changed: the one remaining build is done
+
+`phase1-notification-egress` existed in `.env.example`, `runtime_services.json`,
+four Rust files and the docs, and nowhere else. It is now real:
+
+  * `docker/notification-egress.Dockerfile` — Postfix relay-only satellite on a
+    digest-pinned Debian base.
+  * `docker/notification-egress-entrypoint.sh` — renders main.cf and sasl_passwd
+    from environment at start; no credential in an image layer, none in argv.
+  * `docker-compose.yml` — `phase1-notification-egress`, in the phase1 profile
+    (unlike ntfy this one IS required), explicit environment, no published port.
+  * `architecture/runtime_services.json` — registered required service + Dockerfile.
+  * `tools/deployment_check.py` — `assert_notification_egress_relay` with 7 new
+    `--fixture` negative self-tests, one per bypass class.
+
+## THREE DEFECTS THE FIRST REAL RUN CAUGHT — none visible to a scripted relay
+
+Worth the container. Every one passed the existing L4 boundary suite:
+
+  1. The debconf "No configuration" preseed never creates `/etc/postfix/main.cf`,
+     so every postfix tool dies with `fatal: open ... No such file or directory`.
+  2. Debian chroots the smtp client, which then cannot read `/etc/resolv.conf`.
+     The provider never resolves; every message sits `deferred` with what reads
+     as a DNS or network fault rather than a Postfix setting.
+  3. The same chroot hides `/etc/ssl/certs`, so `smtp_tls_security_level =
+     encrypt` would have failed to verify the provider — a second failure behind
+     the first.
+
+And the one that would have been worst, caught by writing the check rather than
+by running it: **Postfix's default `smtpd_tls_auth_only = yes` withholds AUTH
+from the EHLO capability list until STARTTLS**, which the adapter never issues.
+`smtp.rs:200` then refuses to submit, with every setting in the relay looking
+correct and every scripted test green. Pinned by the `egress-tls-auth-only`
+fixture.
+
+## Critic verdicts
+  deterministic (critic_check.py --staged): APPROVE — no findings, all 4 commits.
+  judgment (adversarial_review.py, reviewer=codex): rounds 15, 16, 17.
+
+  r15 BLOCK (2 critical, both real):
+    * "Queued mail is treated as delivered notification status". `SmtpEmailChannel`
+      returns Ok on `250 Ok: queued as <id>` while the message is still inside a
+      queue THIS SYSTEM operates, and the dispatcher mapped every Ok to
+      `Delivered`. Reproduced live: `250 Ok: queued` then `status=deferred ...
+      535 Authentication failed`. Class: a hand-off to a component you operate is
+      not delivery.
+    * "Notification provider secret bypasses the credential vault". Real; the
+      reasoning behind it was mine and was wrong — I borrowed the
+      ATP_NTFY_UPSTREAM precedent, which covers a URL, not a secret.
+  r16 BLOCK (1 high, 1 medium, both real): `env_file: .env` handed the Postfix
+    container every value in .env, contradicting the least-privilege comment
+    directly above it; and the round-15 guard scanned `environment:` keys only,
+    so it blessed the leak. Class: a guard shaped like a checklist.
+  r17 BLOCK (3): the credential-at-rest escalation (see below); the dev fallback
+    that could never start; and a stale `feature_list.json` (operator-owned).
+
+## ONE FINDING NOT RESOLVED — recorded verbatim, on operator authorization
+
+r17, severity high, confidence 0.94, title `deploy:provider-secret-not-encrypted`:
+  "Keep the provider SMTP password in the existing encrypted credential system,
+   or add an encrypted secret projection workflow for the relay; update
+   deployment_check to fail plaintext provider-password files as a supported
+   production path."
+
+NOT DONE. What was done instead: the credential moved out of the environment
+entirely, into a single-file read-only mount with no fallback in any ATP_ENV.
+
+Why the operator chose to stop there, recorded so the next session does not
+re-litigate it: `load_vault_into_env` accepts ONLY catalogued secret keys, and
+every catalogued key is a REQUIRED key for every ATP process — so vault-sealing
+this credential means a catalogue sweep plus a new init container to decrypt and
+project it onto a tmpfs (the relay is Postfix and cannot read the vault). And the
+vault KEY FILE lives in the same `./secrets/` directory the password file does,
+so sealing it there buys inventory consistency rather than protection against the
+threat that matters. The env-var exposure the finding started from IS closed.
+
+This is a defer with a named owner, not a dismissal. If the vault projection is
+wanted, it is SRS-SEC-001 territory and should be built there, once, for every
+non-ATP container that needs a secret — not bolted onto this relay.
+
+## FOR THE OPERATOR — two things a branch cannot do
+
+  1. `feature_list.json` external_blocker is now STALE and the reviewer flagged it
+     (r17, confidence 0.91). It still says the relay is unbuilt. It should read
+     approximately: "A Brevo account with a VERIFIED SENDER (the operator must do
+     the verification; providers refuse MAIL FROM otherwise and the refusal lands
+     at the relay, so ATP sees only a deferred message), plus a genuine IB Gateway
+     outage on the Proxmox VM for the acceptance criterion. The
+     phase1-notification-egress relay is BUILT as of 2026-08-31 and its handshake
+     is proven against a real container; ntfy is stood up and push is proven to a
+     real locked iPhone."
+  2. The credential-at-rest finding above, if it is to be closed rather than
+     carried.
+
+## What I tested (per step)
+  Step 1: PASS — ./init.sh → "Environment ready" (recorded via evidence.py run).
+  Step 2: PASS — the new L1 guard suite + L7 contract suite, 13 passed.
+  Step 3: PASS — tests/domain/test_notification_dispatch.py +
+    test_notification_transports.py, 23 passed. NOTE what this does and does not
+    show: it proves dispatch-within-60s and that the delivery status is stored,
+    over fixtures. It is not the live acceptance run.
+  Step 4: PASS — tools/deployment_check.py.
+
+  LIVE, against a real container built from this branch (the part that matters):
+    * EHLO advertises `AUTH PLAIN LOGIN` on the plaintext hop
+    * AUTH PLAIN accepted; a wrong credential → 535
+    * unauthenticated relay attempt → `554 5.7.1 Access denied` (no open relay)
+    * the REAL SmtpEmailChannel's full conversation accepted →
+      `250 2.0.0 Ok: queued as 73375202C915`
+    * outbound leg resolves `smtp-relay.brevo.com[1.179.118.1]:587`, negotiates
+      TLS, and fails ONLY at `535 Authentication failed` — the dummy provider
+      credential. Every hop but the account itself is proven.
+    * no password file → refuses to start; ATP_EGRESS_PROVIDER_PASSWORD set →
+      refuses to start; file only → starts.
+
+  Gate: pytest 5263 passed / 5 pre-existing skips; cargo test --workspace 2338
+  passed / 0 failed; clippy -D warnings CLEAN workspace-wide; ruff + cargo fmt
+  clean; local CI mirror complete, every step ran. mutation_verify: all 7 added
+  Python tests go red without the change; the Rust ones are hand-mutated (see
+  below). mypy advisory errors in python/atp_orchestration/hot_swap_triggers.py
+  are PRE-EXISTING and untouched by this diff.
+
+## Mutation verification, including one that found a real gap
+  `mutation_verify` only counts Python tests, so the Rust ones were mutated by
+  hand. Mutating `SmtpEmailChannel` to claim a destination acknowledgement
+  instead of a relay queue killed NOTHING — the boundary suite asserted the
+  receipt's REFERENCE but never its KIND, so the adapter could have silently
+  re-acquired the exact defect r15 removed with the whole file green. Both
+  directions are now pinned and both mutations verified to fail.
+
+  Four hand mutations on the L7 contract tests each kill exactly their intended
+  test and no other.
+
+## Two things fixed that were not mine
+  * `cargo clippy -D warnings` was RED on origin/main (unused `AtomicBool` import
+    at connectivity_notification.rs:470). Folded into the feat commit because the
+    critic requires a paired tests/domain/ diff for that path and removing an
+    unused import preserves all behaviour, so any test for it would be the
+    anti-pattern test-integrity rule 4 names.
+  * `access_journal::tests::tempdir()` never cleared its PID-keyed scratch dir.
+    Found live at 17,241 leaked directories (26,443 `atp-*` total), surfacing as
+    six failures in a crate this diff never touched, all passing in isolation.
+
+## Playbook updates
+  docs/playbooks/honest-surfaces.md — "accepted by a component you operate is not
+    delivered" (NOTIF-001 r15).
+  docs/playbooks/security-boundaries.md — env_file defeats an explicit
+    least-privilege environment; a compose bind with a missing source aborts
+    before the entrypoint runs, so an entrypoint-level fallback is unreachable
+    (NOTIF-001 r16/r17).
+  docs/playbooks/test-integrity.md — verifying a fixture by exit code alone counts
+    a harness crash as a working guard (NOTIF-001 r17).
+
+## Resume / next — the flip now needs ONE thing plus the live run
+  The relay is built and proven to the provider boundary. What remains:
+    1. OPERATOR: create the Brevo account, VERIFY THE SENDER, and write the key to
+       ./secrets/notification-egress-provider-password (0600). See the new
+       "Standing up the IF-10 email relay" section in docs/DEPLOYMENT.md.
+    2. Bring up `--profile phase1 --profile notify`, then
+       `notif001_operator_alert_cli outage --state unreachable --store <dir>` and
+       confirm email=QUEUED + push=DELIVERED, then read
+       `docker compose logs phase1-notification-egress | grep 'status='` for
+       `status=sent`, then check the real inbox. THE RELAY ACCEPTING IS NOT
+       DELIVERY — that distinction is now in the type system.
+    3. Stop the IB Gateway on the Proxmox host for a GENUINE outage and repeat.
+       Until then the connectivity state is an operator assertion.
+  STILL BLOCKING A TRUTHFUL "complete" AFTER ALL THAT, unchanged and owned
+  elsewhere: no automatic dispatcher runtime (SRS-EXE-001); detection is
+  observation-driven, not loss-driven (SRS-MD-003 / SRS-EXE-001); the general
+  CRITICAL stream is only partly routed (SRS-LOG-001, SRS-ORCH-003); and the
+  correlated failure where an internet outage takes IB, this relay and the APNs
+  wake-up together.
+  Downstream unblock when this flips: ERR-7, ERR-8, SRS-DATA-010, SRS-DATA-013,
+  SRS-DATA-019, SRS-DATA-020. Board is ready:0 / DEADLOCK until then.

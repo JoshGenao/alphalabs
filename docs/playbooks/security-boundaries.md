@@ -109,3 +109,31 @@ as PASS. A compose text-check must handle all of these or refuse:
   a test's clothes. Rewriting them through the shipped writers made them better tests and
   cost nothing. If a test genuinely needs an impossible record, write the BYTES, so it reads
   as the hand-built artefact it is. `(RESV-006 r24)`
+
+## A least-privilege claim is only as good as the stanza you did not read (NOTIF-001 r16/r17)
+
+- **`env_file:` defeats an explicit `environment:` block, and reads as harmless boilerplate.**
+  `phase1-notification-egress` carried a comment promising a third-party MTA got exactly one
+  catalogued secret, directly above an `env_file: .env` copied from the ATP services. Compose
+  applies the file FIRST, so the IB account, the data-vendor keys, the ntfy topic and token,
+  the vault passphrase and the provider password were all inside the container and readable
+  through `docker inspect`. Use `${...}` interpolation from the compose project environment
+  instead, and **refuse `env_file` on any service that claims restricted credentials.**
+  `(NOTIF-001 r16)`
+- **The guard missed it for the same reason a reader would**: it enumerated `environment:`
+  keys and reported "holds only ATP_SMTP_API_KEY", never looking at the stanza that actually
+  leaked. When a check asserts what a service HOLDS, enumerate every path a value can arrive
+  by — `environment`, `env_file`, anchors, `extends` — not the one you wrote. `(NOTIF-001 r16)`
+- **A secret for a non-ATP container belongs in a single-file read-only mount, never an
+  env var.** An env var is visible to `docker inspect`, inherited by every child process, and
+  swept into any `.env` that gets committed or backed up. Mount ONE file, not the secrets
+  directory — the directory holds the sealed vault and its key, so mounting it to deliver one
+  password hands over everything. State plainly what the file does and does not protect: it is
+  plaintext at rest beside the vault key, so it buys invisibility and blast radius, not
+  encryption. `(NOTIF-001 r15/r17)`
+- **A Compose bind mount with a missing source aborts the service BEFORE the entrypoint
+  runs**, so an entrypoint-level "fall back to the env var when the file is absent" can never
+  execute — the documented development path could not start at all. Do not repair it with
+  `create_host_path: true`: Compose then silently creates a DIRECTORY where the file belongs
+  and the failure moves to an unreadable credential. Require the file, and say so where the
+  create command already lives. `(NOTIF-001 r17)`
