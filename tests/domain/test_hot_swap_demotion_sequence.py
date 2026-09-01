@@ -211,8 +211,8 @@ def test_a_liquidation_timeout_pages_cancels_locks_out_and_blocks_promotion(
     # (a) the operator is paged. Per required channel, individually: "the dispatcher was
     # called" is not "the operator was paged".
     assert values["operator-pages"] == "1"
-    assert values["operator-page-delivered-email"] == "true"
-    assert values["operator-page-delivered-push"] == "true"
+    assert values["operator-page-handed-off-email"] == "true"
+    assert values["operator-page-handed-off-push"] == "true"
     assert values["event-operator-alert"] == "SUCCEEDED"
 
     # (c) the swap is held in demotion-pending — DURABLY, on disk.
@@ -341,9 +341,9 @@ def test_a_failed_page_and_a_failed_cancel_are_recorded_and_still_block(tmp_path
     # ...and each failure is observable rather than folded into a clean-looking event.
     assert values["event-liquidation-cancel"] == "FAILED"
     assert values["event-operator-alert"] == "FAILED"
-    assert values["operator-page-delivered-push"] == "false"
+    assert values["operator-page-handed-off-push"] == "false"
     # Email still went out: one bad channel must not suppress the others.
-    assert values["operator-page-delivered-email"] == "true"
+    assert values["operator-page-handed-off-email"] == "true"
     # The lockout still landed, so the block outlives the call.
     assert values["promotion-block-is-durable"] == "true"
 

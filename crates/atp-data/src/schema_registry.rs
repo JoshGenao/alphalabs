@@ -178,8 +178,17 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         // deliveries to a channel that no longer exists, so it could never pass
         // the store's required-channel symmetry check anyway, and refusing it by
         // VERSION reports that precisely instead of as a corrupt tag.
-        current_version: 2,
-        min_supported_version: 2,
+        //
+        // v3 (2026-08-31): DeliveryOutcome::Queued (tag "Q") split the successful
+        // hand-off in two, so the audit trail can tell "a destination outside
+        // this system acknowledged it" from "our own Postfix relay queued it and
+        // it may still fail at the provider". min_supported moves with it again,
+        // on the same reasoning: every email delivery in a v2 blob is tagged "D",
+        // asserting a destination acknowledgement the IF-10 path never
+        // established, so reading one forward would import exactly the false
+        // claim the split removes.
+        current_version: 3,
+        min_supported_version: 3,
         posture: EvolutionPosture::Ranged,
         legacy_unversioned: false,
     },

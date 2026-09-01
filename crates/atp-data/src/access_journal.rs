@@ -857,6 +857,17 @@ mod tests {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let base =
             std::env::temp_dir().join(format!("atp-access-journal-{}-{}", std::process::id(), seq));
+        // CLEAR IT FIRST. This path is keyed on the PID, macOS recycles PIDs
+        // within ~99k, and nothing here ever removes the directory — so a fresh
+        // process routinely inherits a POPULATED one. The failures then land on
+        // whichever tests assert absence or a specific corruption
+        // (`absent_journal_is_benign_empty`, `torn_tail_is_tolerated_not_corruption`,
+        // `corrupt_complete_line_fails_closed`), pass in isolation, and move
+        // between runs — a phantom that reads exactly like a real regression in
+        // a crate the diff never touched. Observed live at 17,241 leaked
+        // directories. Safe: a PID is unique among LIVE processes, and `seq` is
+        // unique within this one, so nothing running owns this path.
+        let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base
     }

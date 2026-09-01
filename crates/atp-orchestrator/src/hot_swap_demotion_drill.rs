@@ -346,9 +346,13 @@ impl OperatorAlertSink for DemotionNotifierAlertSink {
             })?;
         let mut undelivered = Vec::new();
         for channel in [NotificationChannel::Email, NotificationChannel::Push] {
+            // is_handed_off, not is_delivered: at dispatch time nothing can know
+            // more about the email leg than that our relay took it. Holding it
+            // to is_delivered would report every correctly-queued operator page
+            // as undelivered.
             let delivered = notification
                 .delivery_for(channel)
-                .is_some_and(|delivery| delivery.outcome().is_delivered());
+                .is_some_and(|delivery| delivery.outcome().is_handed_off());
             if !delivered {
                 undelivered.push(channel.as_str());
             }

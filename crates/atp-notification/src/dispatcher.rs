@@ -50,7 +50,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::channel::{NotificationChannelClient, NotificationMessage};
+use crate::channel::{ChannelHandoff, NotificationChannelClient, NotificationMessage};
 use crate::event::{
     ChannelDelivery, DeliveryOutcome, NotificationChannel, NotificationEvent, NotificationTrigger,
     TriggerKind, DISPATCH_SLA_MS, REQUIRED_CHANNELS,
@@ -331,8 +331,15 @@ impl OperatorNotifier {
     ) -> ChannelDelivery {
         let channel: NotificationChannel = client.channel();
         match client.send(message, self.channel_deadline) {
+            // The CHANNEL decides how strong its success is; the dispatcher
+            // must not assume. Mapping every Ok to Delivered is what recorded
+            // "the operator was notified" for mail still in our own queue.
             Ok(receipt) => {
-                ChannelDelivery::new(channel, DeliveryOutcome::Delivered, receipt.reference())
+                let outcome = match receipt.handoff() {
+                    ChannelHandoff::AcceptedByDestination => DeliveryOutcome::Delivered,
+                    ChannelHandoff::QueuedForRelay => DeliveryOutcome::Queued,
+                };
+                ChannelDelivery::new(channel, outcome, receipt.reference())
             }
             Err(error) => ChannelDelivery::new(
                 channel,

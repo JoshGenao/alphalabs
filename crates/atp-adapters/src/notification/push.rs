@@ -402,7 +402,12 @@ impl PushChannel {
                 // extracted value before it becomes the persisted reference.
                 match message_reference(&raw_payload) {
                     Some(reference) => {
-                        Ok(ChannelReceipt::new(redact_secrets(&reference, &secrets)))
+                        // Delivered: ntfy is a destination OUTSIDE this system and it
+                        // returned its own message id. Still not proof the phone rang — but
+                        // unlike the email leg, nothing of ours is still holding the message.
+                        Ok(ChannelReceipt::accepted_by_destination(redact_secrets(
+                            &reference, &secrets,
+                        )))
                     }
                     None => Err(ChannelError::TransportUnavailable {
                         detail: format!(

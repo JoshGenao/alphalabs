@@ -416,7 +416,8 @@ impl NotificationChannelClient for FixtureEmailChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(message.clone());
-        Ok(ChannelReceipt::new("fixture-email-accept"))
+        // Mirrors the real IF-10 path: a relay we operate queued it.
+        Ok(ChannelReceipt::queued_for_relay("fixture-email-accept"))
     }
 }
 
@@ -459,7 +460,9 @@ impl NotificationChannelClient for FixturePushChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(message.clone());
-        Ok(ChannelReceipt::new("fixture-push-accept"))
+        Ok(ChannelReceipt::accepted_by_destination(
+            "fixture-push-accept",
+        ))
     }
 }
 
@@ -582,9 +585,13 @@ impl KillSwitchOperatorAlertSink for NotifierAlertSink {
             })?;
         let mut undelivered = Vec::new();
         for channel in [NotificationChannel::Email, NotificationChannel::Push] {
+            // is_handed_off, not is_delivered: at dispatch time nothing can know
+            // more about the email leg than that our relay took it. Holding it
+            // to is_delivered would report every correctly-queued operator page
+            // as undelivered.
             let delivered = notification
                 .delivery_for(channel)
-                .is_some_and(|delivery| delivery.outcome().is_delivered());
+                .is_some_and(|delivery| delivery.outcome().is_handed_off());
             if !delivered {
                 undelivered.push(channel.as_str());
             }
@@ -953,7 +960,7 @@ mod notifier_alert_sink_tests {
             assert!(
                 event
                     .delivery_for(channel)
-                    .is_some_and(|d| d.outcome().is_delivered()),
+                    .is_some_and(|d| d.outcome().is_handed_off()),
                 "{channel:?} delivery status missing from the stored event"
             );
         }

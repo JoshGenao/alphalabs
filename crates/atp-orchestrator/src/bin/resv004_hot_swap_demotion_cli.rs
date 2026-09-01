@@ -616,12 +616,20 @@ fn emit_drill(outcome: &DemotionDrillOutcome) -> Result<(), String> {
         // Every required channel's delivery, individually — "the dispatcher was called" is not
         // "the operator was paged".
         for delivery in event.deliveries() {
+            // HANDED-OFF, not "delivered". The IF-10 leg hands to a Postfix
+            // queue this system operates, so `is_delivered` is false for a
+            // perfectly good operator page and a key named "delivered" would
+            // assert something no dispatch-time check can establish. The bool
+            // answers "did the page get out"; the outcome beside it carries the
+            // precise status the audit trail stores.
+            let channel_key = delivery.channel().as_str().to_lowercase();
             proof_bool(
-                &format!(
-                    "operator-page-delivered-{}",
-                    delivery.channel().as_str().to_lowercase()
-                ),
-                delivery.outcome().is_delivered(),
+                &format!("operator-page-handed-off-{channel_key}"),
+                delivery.outcome().is_handed_off(),
+            )?;
+            proof(
+                &format!("operator-page-outcome-{channel_key}"),
+                delivery.outcome().as_str(),
             )?;
         }
     }

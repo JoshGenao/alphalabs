@@ -54,26 +54,62 @@ impl NotificationMessage {
     }
 }
 
-/// A successful hand-off receipt from a channel adapter — the provider accepted
-/// the message for delivery (SMTP `250`, ntfy message id). The `reference` is
-/// the provider's opaque accept id (a message id / gateway ticket); it is
-/// non-secret and is stored on the notification event's delivery `detail` so an
-/// operator can correlate with the provider's own logs. It is NOT a proof of
-/// end-user receipt (out of the Phase-1 baseline).
+/// A successful hand-off receipt from a channel adapter. The `reference` is the
+/// provider's opaque accept id (a message id / gateway ticket); it is non-secret
+/// and is stored on the notification event's delivery `detail` so an operator can
+/// correlate with the provider's own logs. It is NOT a proof of end-user receipt
+/// (out of the Phase-1 baseline).
+///
+/// THERE IS NO `new`, AND THAT IS DELIBERATE. A receipt must say which KIND of
+/// hand-off it represents, because the two are not equally strong and the
+/// difference is what the stored audit trail is trusted for. A single
+/// constructor let every adapter — and every fixture — mint the stronger claim
+/// by default, which is how the IF-10 path came to record `DELIVERED` for mail
+/// still sitting in our own Postfix queue. Making the choice mandatory turns
+/// that into a compile error at each of the arms instead of a silent default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelReceipt {
     reference: String,
+    handoff: ChannelHandoff,
+}
+
+/// How far a message actually got when the adapter returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelHandoff {
+    /// A destination OUTSIDE this system acknowledged the message (an ntfy
+    /// message id). Maps to [`DeliveryOutcome::Delivered`].
+    AcceptedByDestination,
+    /// A queue THIS SYSTEM OPERATES accepted the message and final delivery has
+    /// not been observed (Postfix's `250 Ok: queued as <id>` from
+    /// `phase1-notification-egress`). Maps to [`DeliveryOutcome::Queued`].
+    QueuedForRelay,
 }
 
 impl ChannelReceipt {
-    pub fn new(reference: impl Into<String>) -> Self {
+    /// The message reached a destination outside this system and that
+    /// destination acknowledged it.
+    pub fn accepted_by_destination(reference: impl Into<String>) -> Self {
         Self {
             reference: reference.into(),
+            handoff: ChannelHandoff::AcceptedByDestination,
+        }
+    }
+
+    /// A relay this system operates queued the message; it can still fail
+    /// entirely downstream, so this is the weaker claim.
+    pub fn queued_for_relay(reference: impl Into<String>) -> Self {
+        Self {
+            reference: reference.into(),
+            handoff: ChannelHandoff::QueuedForRelay,
         }
     }
 
     pub fn reference(&self) -> &str {
         &self.reference
+    }
+
+    pub fn handoff(&self) -> ChannelHandoff {
+        self.handoff
     }
 }
 

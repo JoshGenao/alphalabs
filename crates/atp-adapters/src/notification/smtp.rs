@@ -252,7 +252,15 @@ impl SmtpEmailChannel {
         // AUTH PLAIN blob in its final 250 would write recoverable credential
         // material into the log along the happy path. The success path is not
         // safer than the failure path here; it is simply less obvious.
-        Ok(ChannelReceipt::new(session.redact(accepted.text())))
+        // QUEUED, not delivered. This 250 comes from
+        // phase1-notification-egress — a Postfix queue THIS SYSTEM operates —
+        // and the message can still fail entirely at the provider on a rejected
+        // sender, a bad provider credential, or a DNS fault. Recording it as
+        // Delivered wrote "the operator was notified" into the audit trail for
+        // mail that never left the building.
+        Ok(ChannelReceipt::queued_for_relay(
+            session.redact(accepted.text()),
+        ))
     }
 
     /// Build the RFC 5322 message.

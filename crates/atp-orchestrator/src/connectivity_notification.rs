@@ -525,6 +525,19 @@ mod tests {
         }
     }
 
+    /// Mint the receipt the REAL adapter for `channel` would mint.
+    ///
+    /// A fixture that always returns the stronger claim is the "fixture fabricates
+    /// provenance" trap: it would let the email leg look destination-acknowledged
+    /// in every test while production records it as queued, so the one behaviour
+    /// worth pinning is the one the tests could never see.
+    fn fixture_receipt(channel: NotificationChannel, reference: &str) -> ChannelReceipt {
+        match channel {
+            NotificationChannel::Email => ChannelReceipt::queued_for_relay(reference),
+            NotificationChannel::Push => ChannelReceipt::accepted_by_destination(reference),
+        }
+    }
+
     impl NotificationChannelClient for RecordingChannel {
         fn channel(&self) -> NotificationChannel {
             self.channel
@@ -536,7 +549,7 @@ mod tests {
                     detail: "relay down".into(),
                 })
             } else {
-                Ok(ChannelReceipt::new("accept-1"))
+                Ok(fixture_receipt(self.channel, "accept-1"))
             }
         }
     }
@@ -654,10 +667,27 @@ mod tests {
             [ConnectivityAlertOutcome::Dispatched(event)] => {
                 assert!(event.within_dispatch_sla());
                 assert_eq!(event.deliveries().len(), 2);
+                // Both legs got out; they are not equally strong. Push reached
+                // ntfy (Delivered); email reached a Postfix queue this system
+                // operates (Queued) and can still fail at the provider.
                 assert!(event
                     .deliveries()
                     .iter()
-                    .all(|d| d.outcome() == DeliveryOutcome::Delivered));
+                    .all(|d| d.outcome().is_handed_off()));
+                assert_eq!(
+                    event
+                        .delivery_for(NotificationChannel::Email)
+                        .unwrap()
+                        .outcome(),
+                    DeliveryOutcome::Queued
+                );
+                assert_eq!(
+                    event
+                        .delivery_for(NotificationChannel::Push)
+                        .unwrap()
+                        .outcome(),
+                    DeliveryOutcome::Delivered
+                );
             }
             other => panic!("expected one Dispatched, got {other:?}"),
         }
@@ -868,7 +898,7 @@ mod tests {
                 _deadline: Duration,
             ) -> ChannelSendResult {
                 std::thread::sleep(Duration::from_millis(600));
-                Ok(ChannelReceipt::new("slow-accept"))
+                Ok(fixture_receipt(self.0, "slow-accept"))
             }
         }
 

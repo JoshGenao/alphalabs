@@ -298,16 +298,34 @@ services:
       ATP_EGRESS_PROVIDER_HOST: ${ATP_EGRESS_PROVIDER_HOST:-}
       ATP_EGRESS_PROVIDER_PORT: ${ATP_EGRESS_PROVIDER_PORT:-587}
       ATP_EGRESS_PROVIDER_USER: ${ATP_EGRESS_PROVIDER_USER:-}
+      # DEVELOPMENT ONLY, and the entrypoint REFUSES it in staging/production.
+      # An env var is readable by `docker inspect` and inherited by every child
+      # process; the file projection below is not. Leave this empty and mount
+      # the file instead for any real deployment.
       ATP_EGRESS_PROVIDER_PASSWORD: ${ATP_EGRESS_PROVIDER_PASSWORD:-}
+      ATP_EGRESS_PROVIDER_PASSWORD_FILE: /run/egress-secrets/provider-password
     # NO `ports:` — PUBLISHING NOTHING TO THE HOST IS THE POINT. The submission
     # port is reachable only from peers on the compose network. Publishing it
     # would put an authenticated-relay endpoint on the host interface, and
     # `EgressEndpoint`'s private-address rule cannot help there: a host-published
     # port is still an RFC 1918 address.
     #
-    # NO `volumes:` — it must NOT mount the credential vault. It cannot read the
-    # SRS-SEC-001 vault format, and mounting it would hand every sealed secret to
-    # a container that needs exactly one of them.
+    # A SINGLE-FILE SECRET PROJECTION, not the vault. The relay must NOT mount
+    # `*atp-volumes` or the whole `/run/atp-secrets` directory: it cannot read
+    # the SRS-SEC-001 vault format, and either mount would hand a Postfix
+    # container every sealed secret to protect the one it needs. What it gets is
+    # exactly one file, read-only.
+    #
+    # `required: false` so a development bring-up without the file still starts
+    # and falls back to the env var; the entrypoint refuses that fallback in
+    # staging/production.
+    volumes:
+      - type: bind
+        source: ${ATP_EGRESS_PROVIDER_PASSWORD_FILE:-./secrets/notification-egress-provider-password}
+        target: /run/egress-secrets/provider-password
+        read_only: true
+        bind:
+          create_host_path: false
 
   # --- IF-11 push endpoint: self-hosted ntfy (SRS-NOTIF-001) ---
   #

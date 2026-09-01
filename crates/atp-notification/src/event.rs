@@ -185,10 +185,25 @@ impl NotificationTrigger {
     }
 }
 
-/// The outcome of a single channel send. `Delivered` means the channel adapter
-/// *accepted the message for delivery* (an SMTP `250 OK`, an ntfy message id
-/// receipt) — it is a hand-off acknowledgement, not a proof the operator's
-/// phone rang; end-to-end read receipts are out of the Phase-1 baseline.
+/// The outcome of a single channel send.
+///
+/// `Delivered` and `Queued` are BOTH successful hand-offs, and keeping them
+/// apart is the whole point of this enum. The distinction is *who holds the
+/// message when the adapter returns*:
+///
+///   * `Delivered` — the message reached a destination WE DO NOT OPERATE and
+///     that destination acknowledged it (an ntfy message id). Still not proof
+///     the operator's phone rang; end-to-end read receipts are out of the
+///     Phase-1 baseline.
+///   * `Queued` — the transport accepted the message into a queue THIS SYSTEM
+///     OPERATES, and final delivery has not been observed. The IF-10 email path
+///     is exactly this: `phase1-notification-egress` answers `250 Ok: queued as
+///     <id>` while the message is still inside our own container, and it can
+///     still fail entirely at the provider — a rejected sender, a bad provider
+///     credential, a DNS fault. Recording that as `Delivered` would write "the
+///     operator was notified" into the audit trail for mail that never left the
+///     building, which is the one thing this record exists to be trusted about.
+///
 /// `Failed` means the send attempt returned a transport error, and the paired
 /// detail names it. `Suppressed` means the channel was intentionally not sent
 /// (SYS-75 scheduled-restart-window suppression) — recorded so the stored event
@@ -196,6 +211,7 @@ impl NotificationTrigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeliveryOutcome {
     Delivered,
+    Queued,
     Failed,
     Suppressed,
 }
@@ -204,15 +220,29 @@ impl DeliveryOutcome {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Delivered => "DELIVERED",
+            Self::Queued => "QUEUED",
             Self::Failed => "FAILED",
             Self::Suppressed => "SUPPRESSED",
         }
     }
 
-    /// True only for a real, successful hand-off to the channel. The dispatcher
-    /// and dashboard use this to compute "did at least one channel deliver".
+    /// True ONLY when a destination outside this system acknowledged the
+    /// message. Deliberately false for `Queued`: a caller asking "was the
+    /// operator actually reached" must not be told yes by our own mail queue.
     pub const fn is_delivered(self) -> bool {
         matches!(self, Self::Delivered)
+    }
+
+    /// True when the transport accepted the message at all — `Delivered` or
+    /// `Queued`.
+    ///
+    /// This is the honest predicate AT DISPATCH TIME, and it is what a caller
+    /// asking "did the alert get out" wants. Nothing in the dispatch path can
+    /// know more than this about the email leg, so holding that leg to
+    /// `is_delivered` would report every correctly-queued operator page as
+    /// undelivered.
+    pub const fn is_handed_off(self) -> bool {
+        matches!(self, Self::Delivered | Self::Queued)
     }
 }
 
@@ -381,14 +411,26 @@ impl NotificationEvent {
             .find(|delivery| delivery.channel() == channel)
     }
 
-    /// True when at least one channel accepted the message for delivery. A
-    /// notification with every channel failed is still stored (the operator
-    /// needs the evidence), but this predicate lets a caller escalate.
+    /// True when at least one channel reached a destination outside this
+    /// system. STRICT: a message sitting in our own mail queue does not count.
     pub fn any_delivered(&self) -> bool {
         self.inner
             .deliveries
             .iter()
             .any(|delivery| delivery.outcome().is_delivered())
+    }
+
+    /// True when at least one channel accepted the message — delivered or
+    /// queued. A notification with every channel failed is still stored (the
+    /// operator needs the evidence), but this predicate lets a caller escalate.
+    ///
+    /// Callers asking "did the alert get out" want THIS one; `any_delivered`
+    /// answers the stricter question and is false for a queued email leg.
+    pub fn any_handed_off(&self) -> bool {
+        self.inner
+            .deliveries
+            .iter()
+            .any(|delivery| delivery.outcome().is_handed_off())
     }
 }
 

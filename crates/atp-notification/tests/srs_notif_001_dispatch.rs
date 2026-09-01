@@ -80,7 +80,16 @@ impl NotificationChannelClient for AcceptingChannel {
         self.sends.fetch_add(1, Ordering::SeqCst);
         self.last_deadline_millis
             .store(deadline.as_millis() as u64, Ordering::SeqCst);
-        Ok(ChannelReceipt::new(self.reference.clone()))
+        // Mirror the REAL adapters rather than always minting the stronger
+        // claim: IF-10 hands off to a relay we operate (Queued), IF-11 to ntfy
+        // (Delivered). A fixture that fabricated Delivered for email would hide
+        // the exact behaviour these tests exist to pin.
+        Ok(match self.channel {
+            NotificationChannel::Email => ChannelReceipt::queued_for_relay(self.reference.clone()),
+            NotificationChannel::Push => {
+                ChannelReceipt::accepted_by_destination(self.reference.clone())
+            }
+        })
     }
 }
 
@@ -120,6 +129,86 @@ fn channels(clients: Vec<SharedChannelClient>) -> Vec<SharedChannelClient> {
     clients
 }
 
+/// A channel that reports the STRONGER hand-off, whatever channel it is.
+///
+/// This is the shape the code had before the outcome split: every `Ok` became
+/// `Delivered`. Kept as a fixture so the regression below can prove the
+/// dispatcher, not the adapter, is what refuses to over-claim.
+struct OverClaimingChannel(NotificationChannel);
+
+impl NotificationChannelClient for OverClaimingChannel {
+    fn channel(&self) -> NotificationChannel {
+        self.0
+    }
+    fn send(&self, _message: &NotificationMessage, _deadline: Duration) -> ChannelSendResult {
+        Ok(ChannelReceipt::accepted_by_destination("over-claimed"))
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// AC property 0 — "delivery status is stored" means the REAL status
+// --------------------------------------------------------------------------- //
+
+/// A relay-queue acceptance must never be stored as `Delivered`.
+///
+/// `phase1-notification-egress` answers `250 Ok: queued as <id>` while the
+/// message is still inside a container this system operates, and it can still
+/// fail entirely at the provider — a rejected sender, a bad provider
+/// credential, a DNS fault. The stored event is the audit trail SRS-NOTIF-001
+/// exists to make trustworthy, so recording that as "the operator was notified"
+/// is the one failure that matters most here.
+#[test]
+fn a_relay_queue_acceptance_is_never_stored_as_delivered() {
+    let email = Arc::new(AcceptingChannel::new(
+        NotificationChannel::Email,
+        "250-queued",
+    ));
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "ntfy-7"));
+    let set = channels(vec![email, push]);
+    let notifier = OperatorNotifier::new();
+
+    let trigger = NotificationTrigger::connectivity_loss("IB Gateway unreachable", 1_000);
+    let event = notifier.dispatch(&trigger, 2_000, &set).unwrap();
+
+    let email_delivery = event.delivery_for(NotificationChannel::Email).unwrap();
+    assert_eq!(email_delivery.outcome(), DeliveryOutcome::Queued);
+    assert!(!email_delivery.outcome().is_delivered());
+    assert!(email_delivery.outcome().is_handed_off());
+    assert_eq!(email_delivery.outcome().as_str(), "QUEUED");
+
+    // The push leg is genuinely delivered — ntfy is not ours.
+    let push_delivery = event.delivery_for(NotificationChannel::Push).unwrap();
+    assert_eq!(push_delivery.outcome(), DeliveryOutcome::Delivered);
+
+    // And the two predicates answer DIFFERENT questions, which is the point.
+    assert!(event.any_handed_off());
+    assert!(
+        event.any_delivered(),
+        "the push leg did reach a destination"
+    );
+}
+
+/// The dispatcher must take the channel's word for how strong its success is,
+/// rather than deciding for it.
+#[test]
+fn the_dispatcher_records_the_handoff_the_channel_reports() {
+    let email = Arc::new(OverClaimingChannel(NotificationChannel::Email));
+    let push = Arc::new(OverClaimingChannel(NotificationChannel::Push));
+    let set = channels(vec![email, push]);
+    let notifier = OperatorNotifier::new();
+
+    let trigger = NotificationTrigger::critical_failure("disk full", 1_000);
+    let event = notifier.dispatch(&trigger, 2_000, &set).unwrap();
+
+    for channel in [NotificationChannel::Email, NotificationChannel::Push] {
+        assert_eq!(
+            event.delivery_for(channel).unwrap().outcome(),
+            DeliveryOutcome::Delivered,
+            "the dispatcher must not downgrade a destination acknowledgement either"
+        );
+    }
+}
+
 // --------------------------------------------------------------------------- //
 // AC property 1 — dispatch begins within 60 seconds of detection
 // --------------------------------------------------------------------------- //
@@ -143,10 +232,22 @@ fn dispatch_within_sla_records_both_channels_delivered() {
 
     assert_eq!(event.dispatch_latency_millis(), 42_000);
     assert!(event.within_dispatch_sla());
+    assert!(event.any_handed_off());
+    // any_delivered stays STRICT and is true only because of the push leg. If
+    // the email leg alone had run, this would be false — a 250 from our own
+    // relay queue is not a destination acknowledgement.
     assert!(event.any_delivered());
 
     let email_delivery = event.delivery_for(NotificationChannel::Email).unwrap();
-    assert_eq!(email_delivery.outcome(), DeliveryOutcome::Delivered);
+    assert_eq!(
+        email_delivery.outcome(),
+        DeliveryOutcome::Queued,
+        "IF-10 hands off to a Postfix queue this system operates; recording that \
+         as Delivered claims the operator was notified for mail that can still \
+         fail entirely at the provider"
+    );
+    assert!(email_delivery.outcome().is_handed_off());
+    assert!(!email_delivery.outcome().is_delivered());
     assert_eq!(email_delivery.detail(), "smtp-250-abc");
     let push_delivery = event.delivery_for(NotificationChannel::Push).unwrap();
     assert_eq!(push_delivery.outcome(), DeliveryOutcome::Delivered);
@@ -503,13 +604,13 @@ fn critical_failure_is_never_suppressed_even_when_requested() {
         "a critical failure must always dispatch, whatever suppression is requested"
     );
     assert_eq!(push.send_count(), 1);
-    assert!(event.any_delivered());
+    assert!(event.any_handed_off());
     assert_eq!(
         event
             .delivery_for(NotificationChannel::Email)
             .unwrap()
             .outcome(),
-        DeliveryOutcome::Delivered
+        DeliveryOutcome::Queued
     );
 }
 
@@ -545,7 +646,7 @@ fn detect_dispatch_store_and_read_back_the_delivery_status() {
             .delivery_for(NotificationChannel::Email)
             .unwrap()
             .outcome(),
-        DeliveryOutcome::Delivered
+        DeliveryOutcome::Queued
     );
     assert_eq!(
         stored

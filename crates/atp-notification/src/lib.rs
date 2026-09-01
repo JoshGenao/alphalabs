@@ -93,7 +93,8 @@ pub mod event;
 pub mod store;
 
 pub use channel::{
-    ChannelError, ChannelReceipt, ChannelSendResult, NotificationChannelClient, NotificationMessage,
+    ChannelError, ChannelHandoff, ChannelReceipt, ChannelSendResult, NotificationChannelClient,
+    NotificationMessage,
 };
 pub use dispatcher::{DispatchError, OperatorNotifier, SharedChannelClient, SuppressionReason};
 pub use event::{

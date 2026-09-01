@@ -58,6 +58,9 @@ def test_the_real_tree_satisfies_the_egress_relay_contract() -> None:
         ("egress-published-port", "publishes a host port"),
         # Merging *atp-env hands a third-party MTA every catalogued secret.
         ("egress-atp-env", "merges *atp-env"),
+        # An env-var secret is readable by `docker inspect` and inherited by
+        # every child process; the file projection exists so it need not be.
+        ("egress-plaintext-provider-password", "refuses an environment-sourced"),
     ],
 )
 def test_the_guard_rejects_each_bypass_class(fixture: str, expected_detail: str) -> None:

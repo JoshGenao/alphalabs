@@ -35,7 +35,31 @@ RELAY_PASSWORD="${ATP_SMTP_API_KEY:-}"
 PROVIDER_HOST="${ATP_EGRESS_PROVIDER_HOST:-}"
 PROVIDER_PORT="${ATP_EGRESS_PROVIDER_PORT:-587}"
 PROVIDER_USER="${ATP_EGRESS_PROVIDER_USER:-}"
-PROVIDER_PASSWORD="${ATP_EGRESS_PROVIDER_PASSWORD:-}"
+
+# THE PROVIDER PASSWORD IS A SECRET AND DOES NOT BELONG IN THE ENVIRONMENT.
+# An environment variable is readable by `docker inspect`, is inherited by every
+# child process, and sits in plaintext in the operator's .env — while the other
+# notification credentials are catalogued and sealed. Preferred form is a
+# single-file projection mounted read-only, which is visible to nothing but this
+# container and does not appear in `docker inspect`.
+#
+# The env form is kept for development only, and is REFUSED outright in
+# staging/production below. Cataloguing this key instead was the obvious
+# alternative and is wrong: every catalogue entry is a REQUIRED key
+# (python/atp_config/schema.py builds REQUIRED_KEYS from all of them), so it
+# would then have to reach every ATP process's environment — spraying the
+# provider password across the whole stack to protect it in one container.
+PROVIDER_PASSWORD_FILE="${ATP_EGRESS_PROVIDER_PASSWORD_FILE:-/run/egress-secrets/provider-password}"
+if [ -s "$PROVIDER_PASSWORD_FILE" ]; then
+    # `read` strips the trailing newline an editor adds; a password with a
+    # literal newline in it is not representable here, which is stated in the
+    # runbook rather than silently mangled.
+    IFS= read -r PROVIDER_PASSWORD < "$PROVIDER_PASSWORD_FILE" || true
+    PROVIDER_PASSWORD_SOURCE="file $PROVIDER_PASSWORD_FILE"
+else
+    PROVIDER_PASSWORD="${ATP_EGRESS_PROVIDER_PASSWORD:-}"
+    PROVIDER_PASSWORD_SOURCE="environment ATP_EGRESS_PROVIDER_PASSWORD"
+fi
 
 # --- configuration gate ------------------------------------------------------
 #
@@ -70,7 +94,17 @@ require "ATP_SMTP_RELAY_USER (or ATP_SMTP_SENDER)" "$RELAY_USER"
 require "ATP_SMTP_API_KEY" "$RELAY_PASSWORD"
 require "ATP_EGRESS_PROVIDER_HOST" "$PROVIDER_HOST"
 require "ATP_EGRESS_PROVIDER_USER" "$PROVIDER_USER"
-require "ATP_EGRESS_PROVIDER_PASSWORD" "$PROVIDER_PASSWORD"
+require "the provider password ($PROVIDER_PASSWORD_SOURCE)" "$PROVIDER_PASSWORD"
+
+# Refuse the environment form where it matters. In development it is a
+# convenience; in staging/production it is a plaintext credential on the alert
+# path, and the file projection exists precisely so it does not have to be.
+if is_production_env && [ "$PROVIDER_PASSWORD_SOURCE" != "file $PROVIDER_PASSWORD_FILE" ]; then
+    die "the provider password was read from the ENVIRONMENT and ATP_ENV is
+    '$ATP_ENV'. Mount it as a read-only file at $PROVIDER_PASSWORD_FILE (or set
+    ATP_EGRESS_PROVIDER_PASSWORD_FILE) instead: an environment variable is
+    readable by \`docker inspect\` and inherited by every child process."
+fi
 
 case "$RELAY_PORT" in
     ''|*[!0-9]*) die "ATP_SMTP_RELAY_PORT is not numeric: '$RELAY_PORT'" ;;
@@ -178,6 +212,7 @@ postconf -M -X "${RELAY_PORT}/inet" 2>/dev/null || true
 postconf -M -e "${RELAY_PORT}/inet=${RELAY_PORT} inet n - n - - smtpd"
 
 log "relay ready on :${RELAY_PORT}, forwarding to [${PROVIDER_HOST}]:${PROVIDER_PORT}"
+log "provider credential read from ${PROVIDER_PASSWORD_SOURCE}"
 log "inbound SASL user '${RELAY_USER}' in realm '${MYHOSTNAME}' (AUTH PLAIN over the private hop)"
 
 exec postfix start-fg

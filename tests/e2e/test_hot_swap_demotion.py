@@ -211,8 +211,8 @@ def test_resv_004_demotion_before_promotion_end_to_end(live_dashboard) -> None:
             )
             assert timeout.returncode == 0, f"{timeout.stdout}\n{timeout.stderr}"
             assert "unfilled-order-cancels:1" in timeout.stdout
-            assert "operator-page-delivered-email:true" in timeout.stdout
-            assert "operator-page-delivered-push:true" in timeout.stdout
+            assert "operator-page-handed-off-email:true" in timeout.stdout
+            assert "operator-page-handed-off-push:true" in timeout.stdout
             assert state.exists(), "the demotion-pending lockout must have reached disk"
 
             note = _await_note_tone(page, "error")

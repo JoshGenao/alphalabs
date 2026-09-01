@@ -580,8 +580,22 @@ ATP_SMTP_API_KEY=<a long random string YOU choose>
 ATP_EGRESS_PROVIDER_HOST=smtp-relay.brevo.com
 ATP_EGRESS_PROVIDER_PORT=587
 ATP_EGRESS_PROVIDER_USER=<the provider login>
-ATP_EGRESS_PROVIDER_PASSWORD=<the provider SMTP key>
+ATP_EGRESS_PROVIDER_PASSWORD_FILE=./secrets/notification-egress-provider-password
 ```
+
+The provider key goes in a **file**, not in `.env`:
+
+```bash
+install -m 600 /dev/null ./secrets/notification-egress-provider-password
+printf '%s' '<the provider SMTP key>' > ./secrets/notification-egress-provider-password
+```
+
+Compose mounts that single file read-only into the relay and nothing else. An
+environment variable would be readable by `docker inspect` and inherited by
+every child process; `ATP_EGRESS_PROVIDER_PASSWORD` still works for a
+development bring-up, and the relay **refuses to start** with it when `ATP_ENV`
+is `staging` or `production`. A password containing a literal newline is not
+representable in the file form.
 
 `ATP_SMTP_API_KEY` is **not** the provider's key. It is the password ATP uses to
 authenticate *to the relay*, on the private hop — you invent it, and it is

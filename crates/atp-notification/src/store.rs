@@ -48,7 +48,13 @@ pub const MAGIC: &str = "ATP-NOTIFICATION-EVENT-STORE";
 ///
 /// v2 (2026-08-17): the SMS channel became push, so the delivery channel tag
 /// `"S"` became `"P"`.
-pub const SCHEMA_VERSION: i64 = 2;
+///
+/// v3 (2026-08-31): `DeliveryOutcome::Queued` (tag `"Q"`) split the successful
+/// hand-off in two. A v2 blob is not merely missing a tag — every email
+/// delivery in it is tagged `"D"`, asserting a destination acknowledgement the
+/// SMTP path could never have established, because that path hands off to a
+/// Postfix queue this system operates.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The oldest schema version [`NotificationEventStore::restore`] still reads.
 ///
@@ -60,7 +66,12 @@ pub const SCHEMA_VERSION: i64 = 2;
 /// have surfaced the same blob as the vaguer `unknown channel tag` several
 /// hundred bytes later. No production store exists to migrate — SRS-NOTIF-001
 /// has never run against a real provider.
-pub const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 2;
+///
+/// Raised to 3 for the v2 -> v3 outcome split on exactly the same reasoning: a
+/// v2 blob records `DELIVERED` on an email leg that only ever reached our own
+/// relay queue, so reading it forward would import precisely the false claim
+/// the split exists to remove. Refusing by VERSION says so plainly.
+pub const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 3;
 
 /// The file an atomic save publishes under the store directory.
 pub const STORE_FILENAME: &str = "notification_events.store";
@@ -600,6 +611,7 @@ fn channel_from_tag(tag: &str) -> Result<NotificationChannel, NotificationStoreE
 const fn outcome_tag(outcome: DeliveryOutcome) -> &'static str {
     match outcome {
         DeliveryOutcome::Delivered => "D",
+        DeliveryOutcome::Queued => "Q",
         DeliveryOutcome::Failed => "F",
         DeliveryOutcome::Suppressed => "X",
     }
@@ -608,6 +620,7 @@ const fn outcome_tag(outcome: DeliveryOutcome) -> &'static str {
 fn outcome_from_tag(tag: &str) -> Result<DeliveryOutcome, NotificationStoreError> {
     match tag {
         "D" => Ok(DeliveryOutcome::Delivered),
+        "Q" => Ok(DeliveryOutcome::Queued),
         "F" => Ok(DeliveryOutcome::Failed),
         "X" => Ok(DeliveryOutcome::Suppressed),
         _ => Err(NotificationStoreError::Corrupt {

@@ -545,7 +545,10 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
             "catalogued secret — the IB account, the data-vendor keys, the ntfy topic "
             "and token — when it needs exactly one."
         )
-    if _service_has_vault_mount(block):
+    # `body`, not `block`: this service's own comment says the words
+    # `*atp-volumes` and `/run/atp-secrets` while explaining why it uses
+    # NEITHER, and the raw block reads those as the settings themselves.
+    if _service_has_vault_mount(body):
         fail(
             f"{_EGRESS_SERVICE} mounts the SRS-SEC-001 credential vault. It cannot "
             "read the vault format, and mounting it exposes every sealed secret to a "
@@ -563,6 +566,37 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
             + ", ".join(sorted(leaked))
         )
 
+    # Rule 5 — the provider password is a secret and must not live in the
+    # environment where `docker inspect` and every child process can read it.
+    if "ATP_EGRESS_PROVIDER_PASSWORD_FILE" not in body:
+        fail(
+            f"{_EGRESS_SERVICE} does not point at a provider-password FILE. An "
+            "environment variable is readable by `docker inspect` and inherited by "
+            "every child process, while every other notification credential is "
+            "catalogued and sealed."
+        )
+    if "/run/atp-secrets" in body:
+        fail(
+            f"{_EGRESS_SERVICE} mounts the shared secrets directory. It needs one "
+            "file; mounting the directory hands a Postfix container the sealed "
+            "vault and its key as well."
+        )
+    # Match the REFUSAL ITSELF, not the two tokens somewhere in the file.
+    # `is_production_env` is also the name of a helper used by the placeholder
+    # rule, so a presence check passed happily while the guard was disabled —
+    # the "checklist-shaped guard" weakness in
+    # docs/playbooks/adversarial-precheck.md rule 0.
+    guards_env_form = any(
+        "is_production_env" in line and "PROVIDER_PASSWORD_SOURCE" in line
+        for line in entrypoint.splitlines()
+    )
+    if not guards_env_form:
+        fail(
+            f"{_EGRESS_ENTRYPOINT} no longer refuses an environment-sourced provider "
+            "password in staging/production. The env form is a development "
+            "convenience only."
+        )
+
     dockerfile = (root / _EGRESS_DOCKERFILE).read_text(encoding="utf-8")
     if not re.search(r"^FROM\s+\S+@sha256:[0-9a-f]{64}", dockerfile, re.MULTILINE):
         fail(
@@ -577,6 +611,9 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
         f"{_EGRESS_SERVICE} requires SASL on both restriction lists and never permits mynetworks",
         f"{_EGRESS_SERVICE} publishes no host port, merges no ATP environment, "
         f"mounts no vault, and holds only {_EGRESS_PERMITTED_SECRET}",
+        f"{_EGRESS_SERVICE} takes its provider password from a single-file "
+        "read-only projection, and the entrypoint refuses the environment form "
+        "in staging/production",
         f"{_EGRESS_DOCKERFILE} pins its base image by digest",
     ]
 
@@ -607,6 +644,10 @@ _EGRESS_ENTRYPOINT_FIXTURES = {
     "egress-tls-auth-only": (
         'postconf -e "smtpd_tls_auth_only = no"',
         'postconf -e "smtpd_tls_auth_only = yes"',
+    ),
+    "egress-plaintext-provider-password": (
+        'if is_production_env && [ "$PROVIDER_PASSWORD_SOURCE" !=',
+        'if false && [ "$PROVIDER_PASSWORD_SOURCE" !=',
     ),
     "egress-permit-mynetworks": (
         'postconf -e "smtpd_relay_restrictions = permit_sasl_authenticated, reject"',
