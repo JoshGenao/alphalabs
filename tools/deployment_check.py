@@ -598,9 +598,15 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
     # rule, so a presence check passed happily while the guard was disabled —
     # the "checklist-shaped guard" weakness in
     # docs/playbooks/adversarial-precheck.md rule 0.
+    # The entrypoint must refuse an environment-supplied provider password
+    # OUTRIGHT. Matched on the refusal itself rather than on a token: an earlier
+    # version checked that two identifiers appeared somewhere in the file, and
+    # `is_production_env` is also the name of a helper the placeholder rule uses,
+    # so the check passed happily while the guard was disabled — the
+    # "checklist-shaped guard" weakness in
+    # docs/playbooks/adversarial-precheck.md rule 0.
     guards_env_form = any(
-        "is_production_env" in line and "PROVIDER_PASSWORD_SOURCE" in line
-        for line in entrypoint.splitlines()
+        "ATP_EGRESS_PROVIDER_PASSWORD" in line and "-n " in line for line in entrypoint.splitlines()
     )
     if not guards_env_form:
         fail(
@@ -625,8 +631,8 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
         f"merges no ATP environment, "
         f"mounts no vault, and holds only {_EGRESS_PERMITTED_SECRET}",
         f"{_EGRESS_SERVICE} takes its provider password from a single-file "
-        "read-only projection, and the entrypoint refuses the environment form "
-        "in staging/production",
+        "read-only mount, and the entrypoint refuses an environment-supplied one "
+        "in every ATP_ENV",
         f"{_EGRESS_DOCKERFILE} pins its base image by digest",
     ]
 
@@ -659,8 +665,8 @@ _EGRESS_ENTRYPOINT_FIXTURES = {
         'postconf -e "smtpd_tls_auth_only = yes"',
     ),
     "egress-plaintext-provider-password": (
-        'if is_production_env && [ "$PROVIDER_PASSWORD_SOURCE" !=',
-        'if false && [ "$PROVIDER_PASSWORD_SOURCE" !=',
+        'if [ -n "${ATP_EGRESS_PROVIDER_PASSWORD:-}" ]; then',
+        "if false; then",
     ),
     "egress-permit-mynetworks": (
         'postconf -e "smtpd_relay_restrictions = permit_sasl_authenticated, reject"',

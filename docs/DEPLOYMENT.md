@@ -592,10 +592,21 @@ printf '%s' '<the provider SMTP key>' > ./secrets/notification-egress-provider-p
 
 Compose mounts that single file read-only into the relay and nothing else. An
 environment variable would be readable by `docker inspect` and inherited by
-every child process; `ATP_EGRESS_PROVIDER_PASSWORD` still works for a
-development bring-up, and the relay **refuses to start** with it when `ATP_ENV`
-is `staging` or `production`. A password containing a literal newline is not
+every child process, so there is **no environment fallback in any `ATP_ENV`** -
+the relay refuses to start if `ATP_EGRESS_PROVIDER_PASSWORD` is set, and refuses
+to start if the file is missing or empty.
+
+Create the file **before** `docker compose up`. Compose resolves the bind mount
+before the container starts, so a missing file aborts the service rather than
+falling back to anything. A password containing a literal newline is not
 representable in the file form.
+
+What this does and does not give you: the file is plaintext at rest, protected
+by `0600` and by whatever protects `./secrets/` - which is also where the vault
+key lives, so anyone who can read one can read the other. What it buys over an
+environment variable is that the value is invisible to `docker inspect`, is not
+inherited by child processes, and cannot be swept into a `.env` that gets
+committed or backed up.
 
 `ATP_SMTP_API_KEY` is **not** the provider's key. It is the password ATP uses to
 authenticate *to the relay*, on the private hop — you invent it, and it is

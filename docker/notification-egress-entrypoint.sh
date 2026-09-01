@@ -50,16 +50,19 @@ PROVIDER_USER="${ATP_EGRESS_PROVIDER_USER:-}"
 # would then have to reach every ATP process's environment — spraying the
 # provider password across the whole stack to protect it in one container.
 PROVIDER_PASSWORD_FILE="${ATP_EGRESS_PROVIDER_PASSWORD_FILE:-/run/egress-secrets/provider-password}"
-if [ -s "$PROVIDER_PASSWORD_FILE" ]; then
-    # `read` strips the trailing newline an editor adds; a password with a
-    # literal newline in it is not representable here, which is stated in the
-    # runbook rather than silently mangled.
-    IFS= read -r PROVIDER_PASSWORD < "$PROVIDER_PASSWORD_FILE" || true
-    PROVIDER_PASSWORD_SOURCE="file $PROVIDER_PASSWORD_FILE"
-else
-    PROVIDER_PASSWORD="${ATP_EGRESS_PROVIDER_PASSWORD:-}"
-    PROVIDER_PASSWORD_SOURCE="environment ATP_EGRESS_PROVIDER_PASSWORD"
+if [ ! -s "$PROVIDER_PASSWORD_FILE" ]; then
+    die "the provider password file $PROVIDER_PASSWORD_FILE is missing or empty.
+    There is NO environment fallback, deliberately: an env var is readable by
+    \`docker inspect\` and inherited by every child process. Create it first:
+      install -m 600 /dev/null ./secrets/notification-egress-provider-password
+      printf '%s' '<the provider SMTP key>' \\
+          > ./secrets/notification-egress-provider-password"
 fi
+# `read` strips the trailing newline an editor adds; a password with a literal
+# newline in it is not representable here, which the runbook states rather than
+# silently mangling.
+IFS= read -r PROVIDER_PASSWORD < "$PROVIDER_PASSWORD_FILE" || true
+PROVIDER_PASSWORD_SOURCE="file $PROVIDER_PASSWORD_FILE"
 
 # --- configuration gate ------------------------------------------------------
 #
@@ -96,14 +99,13 @@ require "ATP_EGRESS_PROVIDER_HOST" "$PROVIDER_HOST"
 require "ATP_EGRESS_PROVIDER_USER" "$PROVIDER_USER"
 require "the provider password ($PROVIDER_PASSWORD_SOURCE)" "$PROVIDER_PASSWORD"
 
-# Refuse the environment form where it matters. In development it is a
-# convenience; in staging/production it is a plaintext credential on the alert
-# path, and the file projection exists precisely so it does not have to be.
-if is_production_env && [ "$PROVIDER_PASSWORD_SOURCE" != "file $PROVIDER_PASSWORD_FILE" ]; then
-    die "the provider password was read from the ENVIRONMENT and ATP_ENV is
-    '$ATP_ENV'. Mount it as a read-only file at $PROVIDER_PASSWORD_FILE (or set
-    ATP_EGRESS_PROVIDER_PASSWORD_FILE) instead: an environment variable is
-    readable by \`docker inspect\` and inherited by every child process."
+# Belt and braces: refuse an environment-supplied provider password even if some
+# future edit reintroduces one. There is no ATP_ENV in which this is acceptable.
+if [ -n "${ATP_EGRESS_PROVIDER_PASSWORD:-}" ]; then
+    die "ATP_EGRESS_PROVIDER_PASSWORD is set. This credential has no environment
+    path in any ATP_ENV — an environment variable is readable by
+    \`docker inspect\` and inherited by every child process. Unset it and use
+    $PROVIDER_PASSWORD_FILE."
 fi
 
 case "$RELAY_PORT" in

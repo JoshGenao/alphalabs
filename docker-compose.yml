@@ -305,11 +305,10 @@ services:
       ATP_EGRESS_PROVIDER_HOST: ${ATP_EGRESS_PROVIDER_HOST:-}
       ATP_EGRESS_PROVIDER_PORT: ${ATP_EGRESS_PROVIDER_PORT:-587}
       ATP_EGRESS_PROVIDER_USER: ${ATP_EGRESS_PROVIDER_USER:-}
-      # DEVELOPMENT ONLY, and the entrypoint REFUSES it in staging/production.
-      # An env var is readable by `docker inspect` and inherited by every child
-      # process; the file projection below is not. Leave this empty and mount
-      # the file instead for any real deployment.
-      ATP_EGRESS_PROVIDER_PASSWORD: ${ATP_EGRESS_PROVIDER_PASSWORD:-}
+      # NO ATP_EGRESS_PROVIDER_PASSWORD. There is no environment path for this
+      # credential at all, in any ATP_ENV. An env var is readable by
+      # `docker inspect` and inherited by every child process; the file below is
+      # neither. The entrypoint refuses to start without the file.
       ATP_EGRESS_PROVIDER_PASSWORD_FILE: /run/egress-secrets/provider-password
     # NO `ports:` — PUBLISHING NOTHING TO THE HOST IS THE POINT. The submission
     # port is reachable only from peers on the compose network. Publishing it
@@ -323,9 +322,14 @@ services:
     # container every sealed secret to protect the one it needs. What it gets is
     # exactly one file, read-only.
     #
-    # `required: false` so a development bring-up without the file still starts
-    # and falls back to the env var; the entrypoint refuses that fallback in
-    # staging/production.
+    # THE FILE MUST EXIST BEFORE `up`, in every environment. An earlier version
+    # promised a development fallback to ATP_EGRESS_PROVIDER_PASSWORD, which
+    # could never have worked: Compose resolves a bind mount BEFORE the container
+    # starts, so a missing source aborts the service and the entrypoint never
+    # runs to read any fallback. Rather than paper that over with a
+    # `create_host_path: true` that would silently mount an empty DIRECTORY
+    # where a password file belongs, the fallback is gone and the requirement is
+    # stated: create the file (docs/DEPLOYMENT.md), then bring the stack up.
     volumes:
       - type: bind
         source: ${ATP_EGRESS_PROVIDER_PASSWORD_FILE:-./secrets/notification-egress-provider-password}
