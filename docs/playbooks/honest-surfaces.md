@@ -236,3 +236,13 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
 - **Then check the fixtures MIRROR the adapters.** Three tests asserted email ==
   `Delivered`; they were encoding the bug, not pinning behaviour. And a fixture that always
   returns the stronger claim hides the one case worth testing. `(NOTIF-001 r15)`
+- **A `_ =>` wildcard on a safety decision silently absorbs the variant you add
+  next.** The r15 outcome split swept every `is_delivered()` CALLER and missed
+  `notif001_operator_alert_cli`, which compared the enum directly under
+  `_ => false`. `Queued` fell through it, so a healthy operator page — the email
+  leg correctly handed to the relay — exited 1 and read as "the alert never got
+  out". The grep that would have caught it is for the TYPE
+  (`DeliveryOutcome::Delivered`), not for the predicate. When you add a variant
+  to a vocabulary that drives a safety verdict, grep the type name, and delete
+  the wildcard so the compiler names each site the next time.
+  `(NOTIF-001, found on the operator's first live run)`

@@ -65,6 +65,66 @@ def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> 
     )
 
 
+def _run_cli_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
+    """Shell the operator CLI's own unit tests.
+
+    A second target, because the CLI decides the operator-facing VERDICT
+    (exit 0 = "the page got out") separately from the dispatcher that produces
+    the outcomes. That seam is where the regression below lived.
+    """
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
+    return subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            "notif001_operator_alert_cli",
+            test_name,
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_relay_queued_email_is_a_successful_operator_page() -> None:
+    # FOUND ON THE FIRST REAL RUN, on the operator's VM. When DeliveryOutcome
+    # gained `Queued` (a 250 from a relay THIS SYSTEM operates is not a
+    # destination acknowledgement), the sweep covered every `is_delivered()`
+    # caller but missed this CLI, which compared the enum directly under a
+    # `_ => false` wildcard. `Queued` fell through it, so a healthy alert — the
+    # email leg correctly handed to phase1-notification-egress — exited 1 and
+    # reported that the operator had NOT been paged.
+    #
+    # This is the safety post-condition: reaching the relay counts as the page
+    # getting out. Whether the provider then delivered is a separate question,
+    # answered by `status=` in the relay log (docs/DEPLOYMENT.md).
+    _assert_one_passed(
+        _run_cli_cargo_test("alert_outcome_tests::a_queued_email_is_a_successful_operator_page"),
+        "SRS-NOTIF-001 queued-email operator page",
+    )
+
+
+def test_suppression_counts_only_inside_the_scheduled_restart_window() -> None:
+    # SYS-75 sanctions suppressing a CONNECTIVITY alert only during the restart
+    # window. Outside it, a suppressed channel is not a page that got out, and
+    # the CLI must not report success.
+    _assert_one_passed(
+        _run_cli_cargo_test(
+            "alert_outcome_tests::suppression_counts_only_inside_the_restart_window"
+        ),
+        "SRS-NOTIF-001 suppression window",
+    )
+
+
 def test_dispatch_begins_within_60s_and_records_both_channels() -> None:
     # NFR-P6 / SYS-46: dispatch begins within 60 seconds of detection over email
     # AND push; the stored event records the detection->dispatch latency and each

@@ -100,6 +100,28 @@ EXIT CODES:
     2  bad invocation / unusable configuration
 ";
 
+/// Did this channel's outcome mean the operator page got out?
+///
+/// EXHAUSTIVE ON PURPOSE — no `_` arm. The wildcard this replaces silently
+/// absorbed `Queued` as a failure the moment that variant was added, so a
+/// perfectly good operator page (the IF-10 leg handed to the relay) exited 1 and
+/// read as "the alert did not get out". A wildcard on a safety decision hides
+/// exactly the case nobody thought about; without it the compiler names this
+/// site the next time the vocabulary grows.
+///
+/// `Queued` counts: at dispatch time nothing can know more about the email leg
+/// than that the relay accepted it. Whether the provider then delivered is a
+/// separate question, answered by `status=` in the relay log (docs/DEPLOYMENT.md).
+/// `Suppressed` counts ONLY for the scheduled restart window — the one case
+/// SYS-75 sanctions.
+fn channel_outcome_is_ok(outcome: DeliveryOutcome, state: ConnectivityState) -> bool {
+    match outcome {
+        DeliveryOutcome::Delivered | DeliveryOutcome::Queued => true,
+        DeliveryOutcome::Suppressed => state == ConnectivityState::ScheduledRestartWindow,
+        DeliveryOutcome::Failed => false,
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
@@ -385,16 +407,22 @@ fn report<K: atp_orchestrator::connectivity_notification::AlertClock>(
                             delivery.outcome(),
                             delivery.detail()
                         );
-                        // Suppressed counts as success ONLY for the scheduled
-                        // restart window, which is the one case SYS-75 sanctions.
-                        let ok = match delivery.outcome() {
-                            DeliveryOutcome::Delivered => true,
-                            DeliveryOutcome::Suppressed => {
-                                state == ConnectivityState::ScheduledRestartWindow
-                            }
-                            _ => false,
-                        };
-                        all_terminal_ok &= ok;
+                        // EXHAUSTIVE ON PURPOSE — no `_` arm. The wildcard this
+                        // replaces silently absorbed `Queued` as a failure the
+                        // moment that variant was added, so a perfectly good
+                        // operator page (the IF-10 leg handed to the relay)
+                        // exited 1 and read as "the alert did not get out". A
+                        // wildcard on a safety decision hides exactly the case
+                        // nobody thought about; without it the compiler names
+                        // this site the next time the vocabulary grows.
+                        //
+                        // Queued counts: at dispatch time nothing can know more
+                        // about the email leg than that the relay accepted it.
+                        // Whether the provider then delivered is a separate
+                        // question, answered by `status=` in the relay log — see
+                        // docs/DEPLOYMENT.md. Suppressed counts ONLY for the
+                        // scheduled restart window, the one case SYS-75 sanctions.
+                        all_terminal_ok &= channel_outcome_is_ok(delivery.outcome(), state);
                     }
                     None => {
                         println!("{channel:?}=MISSING");
@@ -433,6 +461,53 @@ fn report<K: atp_orchestrator::connectivity_notification::AlertClock>(
             eprintln!("the gate reported a healthy state; nothing was alerted");
             Ok(ExitCode::from(1))
         }
+    }
+}
+
+#[cfg(test)]
+mod alert_outcome_tests {
+    use super::*;
+
+    /// The regression: a relay-queued email is a page that GOT OUT. Before the
+    /// outcome split this site matched `Delivered` with a `_ => false` wildcard,
+    /// so the new variant fell through and the CLI exited 1 on a healthy run.
+    #[test]
+    fn a_queued_email_is_a_successful_operator_page() {
+        assert!(channel_outcome_is_ok(
+            DeliveryOutcome::Queued,
+            ConnectivityState::Unreachable
+        ));
+    }
+
+    #[test]
+    fn a_delivered_channel_is_a_successful_operator_page() {
+        assert!(channel_outcome_is_ok(
+            DeliveryOutcome::Delivered,
+            ConnectivityState::Unreachable
+        ));
+    }
+
+    #[test]
+    fn a_failed_channel_is_never_a_successful_page() {
+        for state in [
+            ConnectivityState::Unreachable,
+            ConnectivityState::ScheduledRestartWindow,
+        ] {
+            assert!(!channel_outcome_is_ok(DeliveryOutcome::Failed, state));
+        }
+    }
+
+    /// SYS-75: suppression is sanctioned ONLY inside the restart window.
+    #[test]
+    fn suppression_counts_only_inside_the_restart_window() {
+        assert!(channel_outcome_is_ok(
+            DeliveryOutcome::Suppressed,
+            ConnectivityState::ScheduledRestartWindow
+        ));
+        assert!(!channel_outcome_is_ok(
+            DeliveryOutcome::Suppressed,
+            ConnectivityState::Unreachable
+        ));
     }
 }
 
