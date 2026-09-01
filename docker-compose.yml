@@ -247,11 +247,22 @@ services:
   # SMTP to this relay over the compose network, and this relay owns the
   # authenticated TLS session to the real provider (Brevo / Gmail / ...).
   #
-  # IN THE phase1 PROFILE, unlike phase1-ntfy. That difference is deliberate:
-  # ntfy is optional because the operator may already run one on the LAN, but
-  # `REQUIRED_CHANNELS` is Email AND Push enforced fail-closed, so without this
-  # container NOTHING sends on EITHER channel. It is required, and
-  # deployment_check.py enforces its presence.
+  # IN THE `notify` PROFILE, ALONGSIDE phase1-ntfy — not in `phase1`.
+  #
+  # An earlier version put it in `phase1`, reasoning that `REQUIRED_CHANNELS` is
+  # fail-closed so the alert path needs this container. True, and still the wrong
+  # profile: this service mounts an OPERATOR-SUPPLIED credential file that a
+  # fresh checkout does not have, and Compose resolves a bind mount before the
+  # container starts. `docker compose --profile phase1 up` therefore died on
+  # `bind source path does not exist` for everyone without a provider account —
+  # CI included, which is how it was found. Both alert endpoints need operator
+  # credentials, and both are now brought up deliberately:
+  #
+  #   docker compose --env-file .env --profile phase1 --profile notify up -d
+  #
+  # `deployment_check.py` still enforces that this service EXISTS and is
+  # registered in required_services; the profile governs when it starts, not
+  # whether the deployment is complete without it.
   #
   # HOW ATP REACHES IT — and why this differs from ntfy. By SERVICE NAME, over
   # the compose network: `phase1-notification-egress:1025` is smtp.rs's
@@ -268,7 +279,7 @@ services:
   # reject` with NO permit_mynetworks, so a peer that can route here still
   # cannot forge an operator alert without ATP_SMTP_API_KEY.
   phase1-notification-egress:
-    profiles: ["phase1"]
+    profiles: ["notify"]
     build:
       context: .
       dockerfile: docker/notification-egress.Dockerfile

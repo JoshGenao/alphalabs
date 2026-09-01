@@ -578,6 +578,20 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
             + ", ".join(sorted(leaked))
         )
 
+    # Rule 4b — a service that mounts an OPERATOR-SUPPLIED file must not be in
+    # the phase1 profile. Compose resolves a bind mount before the container
+    # starts, so `docker compose --profile phase1 up` on a checkout without that
+    # file dies on `bind source path does not exist` — it took CI red, because
+    # the profile decides what a bare bring-up tries to start, and a secret file
+    # is by definition not in the repo.
+    if re.search(r'^\s*profiles:\s*\[\s*["\']phase1["\']', body, re.MULTILINE):
+        fail(
+            f"{_EGRESS_SERVICE} is in the phase1 profile, but it mounts an "
+            "operator-supplied credential file that a fresh checkout does not "
+            "have. `docker compose --profile phase1 up` then fails for everyone "
+            "without a provider account. It belongs in `notify`, with phase1-ntfy."
+        )
+
     # Rule 5 — the provider password is a secret and must not live in the
     # environment where `docker inspect` and every child process can read it.
     if "ATP_EGRESS_PROVIDER_PASSWORD_FILE" not in body:
@@ -627,6 +641,8 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
         f"{_EGRESS_SERVICE} advertises AUTH on the plaintext hop "
         "(smtpd_sasl_auth_enable=yes, smtpd_tls_auth_only=no) as smtp.rs requires",
         f"{_EGRESS_SERVICE} requires SASL on both restriction lists and never permits mynetworks",
+        f"{_EGRESS_SERVICE} is in the notify profile (it mounts an "
+        "operator-supplied secret, so a bare phase1 bring-up must not start it)",
         f"{_EGRESS_SERVICE} declares no env_file, publishes no host port, "
         f"merges no ATP environment, "
         f"mounts no vault, and holds only {_EGRESS_PERMITTED_SECRET}",
@@ -674,14 +690,18 @@ _EGRESS_ENTRYPOINT_FIXTURES = {
     ),
 }
 _EGRESS_COMPOSE_FIXTURES = {
-    "egress-env-file": (
+    "egress-phase1-profile": (
+        '  phase1-notification-egress:\n    profiles: ["notify"]\n',
         '  phase1-notification-egress:\n    profiles: ["phase1"]\n',
-        '  phase1-notification-egress:\n    profiles: ["phase1"]\n'
+    ),
+    "egress-env-file": (
+        '  phase1-notification-egress:\n    profiles: ["notify"]\n',
+        '  phase1-notification-egress:\n    profiles: ["notify"]\n'
         "    env_file:\n      - path: .env\n        required: false\n",
     ),
     "egress-published-port": (
-        '  phase1-notification-egress:\n    profiles: ["phase1"]\n',
-        '  phase1-notification-egress:\n    profiles: ["phase1"]\n'
+        '  phase1-notification-egress:\n    profiles: ["notify"]\n',
+        '  phase1-notification-egress:\n    profiles: ["notify"]\n'
         '    ports:\n      - "127.0.0.1:1025:1025"\n',
     ),
     "egress-atp-env": (

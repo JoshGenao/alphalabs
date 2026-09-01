@@ -64,6 +64,10 @@ def test_the_real_tree_satisfies_the_egress_relay_contract() -> None:
         # env_file injects the WHOLE .env before the explicit environment is
         # applied, which is the leak an environment-key scan cannot see.
         ("egress-env-file", "declares env_file"),
+        # Compose resolves a bind mount before the container starts, so a
+        # phase1-profile service mounting an operator-supplied secret file
+        # takes a bare `--profile phase1 up` down. This one took CI red.
+        ("egress-phase1-profile", "is in the phase1 profile"),
     ],
 )
 def test_the_guard_rejects_each_bypass_class(fixture: str, expected_detail: str) -> None:

@@ -625,9 +625,14 @@ docker compose --env-file .env config | grep -A12 'phase1-notification-egress:'
 ### 2. Bring it up
 
 ```bash
-docker compose --env-file .env --profile phase1 up -d phase1-notification-egress
+docker compose --env-file .env --profile phase1 --profile notify up -d
 docker compose logs phase1-notification-egress | tail -5
 ```
+
+`--profile notify` is required: this relay sits in the `notify` profile beside
+`phase1-ntfy`, because both alert endpoints need operator-supplied credentials
+that a fresh checkout does not have. A bare `--profile phase1 up` deliberately
+does not start it.
 
 A healthy start prints the endpoint and the SASL identity, and **never a
 credential**:
