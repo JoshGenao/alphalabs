@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use atp_adapters::notification::{PushChannel, PushConfig, SmtpEmailChannel, SmtpRelayConfig};
 use atp_notification::{
-    ChannelError, NotificationChannel, NotificationChannelClient, NotificationMessage,
+    ChannelError, ChannelHandoff, NotificationChannel, NotificationChannelClient,
+    NotificationMessage,
 };
 
 const SENDER: &str = "atp@example.com";
@@ -142,6 +143,16 @@ fn an_accepted_email_returns_the_relays_queue_id_as_the_receipt() {
         "receipt should carry the relay's queue id, got {:?}",
         receipt.reference()
     );
+    // THE KIND OF HAND-OFF, not just its reference. A 250 from
+    // phase1-notification-egress means a queue THIS SYSTEM operates took the
+    // message; it can still fail entirely at the provider. Without this
+    // assertion the adapter could claim a destination acknowledgement and every
+    // other test in this file would still pass — verified by mutation.
+    assert_eq!(
+        receipt.handoff(),
+        ChannelHandoff::QueuedForRelay,
+        "the IF-10 relay hop is a queue we operate, never a destination ack"
+    );
 
     let received = server.handle.join().expect("server thread");
     let conversation = received.join("\n");
@@ -264,6 +275,8 @@ fn an_echoing_relay_cannot_get_the_credential_into_a_successful_receipt() {
         .send(&alert(), Duration::from_secs(5))
         .expect("relay accepted the message");
 
+    // Still the EMAIL channel: a relay queue id, so still the weaker hand-off.
+    assert_eq!(receipt.handoff(), ChannelHandoff::QueuedForRelay);
     assert!(
         receipt.reference().contains("Q-1"),
         "the queue id must survive: {:?}",
@@ -620,6 +633,14 @@ fn an_accepted_publish_returns_ntfys_message_id_and_posts_the_ntfy_contract() {
         .send(&alert(), Duration::from_secs(5))
         .expect("ntfy accepted the publish");
     assert_eq!(receipt.reference(), "b19RmMeCXTYy");
+    // ntfy is a destination OUTSIDE this system, so the push leg legitimately
+    // claims the stronger hand-off. Pinned so the two channels cannot silently
+    // converge on one meaning — the email leg must stay QueuedForRelay.
+    assert_eq!(
+        receipt.handoff(),
+        ChannelHandoff::AcceptedByDestination,
+        "ntfy acknowledged the message itself; nothing of ours still holds it"
+    );
 
     let request = server.handle.join().expect("server thread");
     // The topic is the URL PATH on ntfy — there is no relay path to post to.
