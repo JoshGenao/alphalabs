@@ -539,6 +539,18 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
             "port is still an RFC 1918 address, so EgressEndpoint's private-address "
             "rule does not constrain who reaches it."
         )
+    # env_file BEFORE the explicit environment keys, because it is the path that
+    # actually leaks. Scanning `environment:` alone reported "holds only
+    # ATP_SMTP_API_KEY" while `env_file: .env` injected the entire file — the
+    # guard blessed exactly the configuration it claimed to prevent.
+    if re.search(r"^\s*env_file:", body, re.MULTILINE):
+        fail(
+            f"{_EGRESS_SERVICE} declares env_file. That injects EVERY value in "
+            ".env into a third-party MTA before the explicit environment is "
+            "applied — the IB account, the data-vendor keys, the vault passphrase "
+            "and the provider password all become readable via `docker inspect`. "
+            "Use ${...} interpolation from the compose project environment instead."
+        )
     if "*atp-env" in body:
         fail(
             f"{_EGRESS_SERVICE} merges *atp-env. That hands a third-party MTA every "
@@ -609,7 +621,8 @@ def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[st
         f"{_EGRESS_SERVICE} advertises AUTH on the plaintext hop "
         "(smtpd_sasl_auth_enable=yes, smtpd_tls_auth_only=no) as smtp.rs requires",
         f"{_EGRESS_SERVICE} requires SASL on both restriction lists and never permits mynetworks",
-        f"{_EGRESS_SERVICE} publishes no host port, merges no ATP environment, "
+        f"{_EGRESS_SERVICE} declares no env_file, publishes no host port, "
+        f"merges no ATP environment, "
         f"mounts no vault, and holds only {_EGRESS_PERMITTED_SECRET}",
         f"{_EGRESS_SERVICE} takes its provider password from a single-file "
         "read-only projection, and the entrypoint refuses the environment form "
@@ -655,6 +668,11 @@ _EGRESS_ENTRYPOINT_FIXTURES = {
     ),
 }
 _EGRESS_COMPOSE_FIXTURES = {
+    "egress-env-file": (
+        '  phase1-notification-egress:\n    profiles: ["phase1"]\n',
+        '  phase1-notification-egress:\n    profiles: ["phase1"]\n'
+        "    env_file:\n      - path: .env\n        required: false\n",
+    ),
     "egress-published-port": (
         '  phase1-notification-egress:\n    profiles: ["phase1"]\n',
         '  phase1-notification-egress:\n    profiles: ["phase1"]\n'

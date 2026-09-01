@@ -61,6 +61,9 @@ def test_the_real_tree_satisfies_the_egress_relay_contract() -> None:
         # An env-var secret is readable by `docker inspect` and inherited by
         # every child process; the file projection exists so it need not be.
         ("egress-plaintext-provider-password", "refuses an environment-sourced"),
+        # env_file injects the WHOLE .env before the explicit environment is
+        # applied, which is the leak an environment-key scan cannot see.
+        ("egress-env-file", "declares env_file"),
     ],
 )
 def test_the_guard_rejects_each_bypass_class(fixture: str, expected_detail: str) -> None:

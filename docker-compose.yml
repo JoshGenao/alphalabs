@@ -273,9 +273,16 @@ services:
       context: .
       dockerfile: docker/notification-egress.Dockerfile
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
+    # NO `env_file:`, unlike every ATP service above — and this is the whole
+    # isolation, not a detail. `env_file` injects EVERY value in .env into the
+    # container before the explicit `environment` below is applied, so the
+    # least-privilege claim in that block would have been false: the IB account,
+    # the data-vendor keys, the vault passphrase and the provider password would
+    # all have been readable in this third-party MTA via `docker inspect`.
+    # The `${...}` interpolation below reads from the COMPOSE PROJECT
+    # environment (`docker compose --env-file .env ...`, which is what the
+    # runbook prescribes), so the values still arrive — but only the named ones.
+    # deployment_check refuses an env_file here, with a fixture.
     # EXPLICIT environment, NOT `*atp-env`. This is a Postfix container, not an
     # ATP process: it neither reads the ARCH-005 catalogue nor opens the vault,
     # so merging the full ATP environment would hand a third-party MTA every
