@@ -1,0 +1,80 @@
+{
+  "created": "2026-09-01T03:04:00+00:00",
+  "critic": {},
+  "feature": "SRS-NOTIF-001",
+  "gates": {},
+  "steps": [
+    {
+      "argv": [
+        "./init.sh"
+      ],
+      "command": "./init.sh",
+      "executed": true,
+      "exit_code": 0,
+      "head": "62b773e3b3f00f0281339b99399ef6f77d952ac7",
+      "n": 1,
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-NOTIF-001/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
+      "status": "pass",
+      "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "steps_digest": "5833a80f49689e38",
+      "ts": "2026-09-01T03:04:00+00:00"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/unit/test_deployment_egress_relay.py",
+        "tests/domain/test_notification_egress_contract.py",
+        "-q"
+      ],
+      "command": "python -m pytest tests/unit/test_deployment_egress_relay.py tests/domain/test_notification_egress_contract.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "62b773e3b3f00f0281339b99399ef6f77d952ac7",
+      "n": 2,
+      "observed": "...........                                                              [100%]\n11 passed in 0.36s",
+      "status": "pass",
+      "step_text": "Step 2: Exercise SRS-NOTIF-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "steps_digest": "5833a80f49689e38",
+      "ts": "2026-09-01T03:04:01+00:00"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/domain/test_notification_dispatch.py",
+        "tests/domain/test_notification_transports.py",
+        "-q"
+      ],
+      "command": "python -m pytest tests/domain/test_notification_dispatch.py tests/domain/test_notification_transports.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "62b773e3b3f00f0281339b99399ef6f77d952ac7",
+      "n": 3,
+      "observed": ".......................                                                  [100%]\n23 passed in 3.15s",
+      "status": "pass",
+      "step_text": "Step 3: Verify acceptance criteria: Notification dispatch begins within 60 seconds of detection and delivery status is stored as a notification event.",
+      "steps_digest": "5833a80f49689e38",
+      "ts": "2026-09-01T03:04:10+00:00"
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/deployment_check.py"
+      ],
+      "command": "python3 tools/deployment_check.py",
+      "executed": true,
+      "exit_code": 0,
+      "head": "62b773e3b3f00f0281339b99399ef6f77d952ac7",
+      "n": 4,
+      "observed": "SRS-ARCH-004 PASS\n- SRS-ARCH-004 Phase 1 deployment evidence:\n- compose declares 13 Phase 1 services under profile 'phase1'\n- phase1-dashboard-api binds 127.0.0.1 (SRS-SEC-002)\n- compose passes 24 env vars to Phase 1 services\n- SSD primary tier and NAS archive tier mounted via ATP_SSD_DATA_DIR / ATP_NAS_DATA_DIR\n- 6 Dockerfiles present (core-runtime, strategy-python, dashboard-api, jupyter, ib-gateway, notification-egress)\n- .env.example enumerates all 24 required env vars\n- docs/DEPLOYMENT.md documents Phase 1 target, cloud VPS as future target, and portability constraints\n- compose delivers the SRS-SEC-001 vault + credentials to all 9 credential-consuming services and blanks both from 3 isolated services (jupyter / strategy / IB Gateway)\n- ATP_NTFY_UPSTREAM is unset or empty (iOS wake-up disabled; valid)\n- phase1-notification-egress advertises AUTH on the plaintext hop (smtpd_sasl_auth_enable=yes, smtpd_tls_auth_only=no) as smtp.rs requires\n- phase1-notification-egress requires SASL on both restriction lists and never permits mynetworks\n- phase1-notification-egress publishes no host port, merges no ATP environment, mounts no vault, and holds only ATP_SMTP_API_KEY\n- docker/notification-egress.Dockerfile pins its base image by digest",
+      "status": "pass",
+      "step_text": "Step 4: Record objective evidence from fault injection, integration test and leave passes false until the evidence proves the requirement end to end.",
+      "steps_digest": "5833a80f49689e38",
+      "ts": "2026-09-01T03:04:10+00:00"
+    }
+  ],
+  "updated": "2026-09-01T03:04:10+00:00"
+}

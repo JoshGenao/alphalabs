@@ -239,6 +239,76 @@ services:
     # SRS-SEC-001: SMTP/push credential consumer — needs the read-only vault mount.
     volumes: *atp-volumes
 
+  # --- IF-10 email egress relay (SRS-NOTIF-001) ---
+  #
+  # WHY THIS EXISTS. The Rust workspace carries ZERO external crates, so a
+  # std-only adapter has no TLS. Rather than break that invariant tree-wide, the
+  # TLS boundary is a DEPLOYMENT component: `SmtpEmailChannel` speaks PLAINTEXT
+  # SMTP to this relay over the compose network, and this relay owns the
+  # authenticated TLS session to the real provider (Brevo / Gmail / ...).
+  #
+  # IN THE phase1 PROFILE, unlike phase1-ntfy. That difference is deliberate:
+  # ntfy is optional because the operator may already run one on the LAN, but
+  # `REQUIRED_CHANNELS` is Email AND Push enforced fail-closed, so without this
+  # container NOTHING sends on EITHER channel. It is required, and
+  # deployment_check.py enforces its presence.
+  #
+  # HOW ATP REACHES IT — and why this differs from ntfy. By SERVICE NAME, over
+  # the compose network: `phase1-notification-egress:1025` is smtp.rs's
+  # DEFAULT_RELAY_HOST/PORT. A name is acceptable here (where PushConfig refuses
+  # one) because `EgressEndpoint` re-resolves and re-validates EVERY address on
+  # EVERY connect, so the loopback/RFC 1918 guarantee is checked against what it
+  # actually connects to rather than against a name resolved once at startup.
+  #
+  # ON THE DEFAULT NETWORK, not a dedicated single-member bridge like ntfy's.
+  # ntfy can be isolated because ATP reaches it at the HOST's address; this relay
+  # must be reachable by name from the alert producers AND needs outbound
+  # internet to reach the provider. What keeps it safe is not network isolation
+  # but mandatory AUTH: `smtpd_relay_restrictions = permit_sasl_authenticated,
+  # reject` with NO permit_mynetworks, so a peer that can route here still
+  # cannot forge an operator alert without ATP_SMTP_API_KEY.
+  phase1-notification-egress:
+    profiles: ["phase1"]
+    build:
+      context: .
+      dockerfile: docker/notification-egress.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    # EXPLICIT environment, NOT `*atp-env`. This is a Postfix container, not an
+    # ATP process: it neither reads the ARCH-005 catalogue nor opens the vault,
+    # so merging the full ATP environment would hand a third-party MTA every
+    # catalogued secret — the IB account, the Databento and Sharadar keys, the
+    # ntfy topic and token — for no reason. It gets exactly one catalogued
+    # secret, ATP_SMTP_API_KEY, which is the password the adapter authenticates
+    # with, plus the provider credentials below.
+    environment:
+      ATP_ENV: ${ATP_ENV:-development}
+      ATP_SMTP_API_KEY: ${ATP_SMTP_API_KEY:-placeholder-set-in-environment}
+      ATP_SMTP_SENDER: ${ATP_SMTP_SENDER:-atp-alerts@example.invalid}
+      ATP_SMTP_RELAY_USER: ${ATP_SMTP_RELAY_USER:-}
+      ATP_SMTP_RELAY_PORT: ${ATP_SMTP_RELAY_PORT:-1025}
+      # The provider leg. DELIBERATELY NOT IN THE ARCH-005 CATALOGUE, for the
+      # same reason as ATP_NTFY_UPSTREAM: every catalogue entry is a REQUIRED
+      # key (python/atp_config/schema.py builds REQUIRED_KEYS from all of them),
+      # and no ATP process reads these — only Postfix does. Cataloguing them
+      # would make an unrelated service's readiness check fail on a variable it
+      # never uses.
+      ATP_EGRESS_PROVIDER_HOST: ${ATP_EGRESS_PROVIDER_HOST:-}
+      ATP_EGRESS_PROVIDER_PORT: ${ATP_EGRESS_PROVIDER_PORT:-587}
+      ATP_EGRESS_PROVIDER_USER: ${ATP_EGRESS_PROVIDER_USER:-}
+      ATP_EGRESS_PROVIDER_PASSWORD: ${ATP_EGRESS_PROVIDER_PASSWORD:-}
+    # NO `ports:` — PUBLISHING NOTHING TO THE HOST IS THE POINT. The submission
+    # port is reachable only from peers on the compose network. Publishing it
+    # would put an authenticated-relay endpoint on the host interface, and
+    # `EgressEndpoint`'s private-address rule cannot help there: a host-published
+    # port is still an RFC 1918 address.
+    #
+    # NO `volumes:` — it must NOT mount the credential vault. It cannot read the
+    # SRS-SEC-001 vault format, and mounting it would hand every sealed secret to
+    # a container that needs exactly one of them.
+
   # --- IF-11 push endpoint: self-hosted ntfy (SRS-NOTIF-001) ---
   #
   # DELIBERATELY NOT IN THE phase1 PROFILE. Two reasons:

@@ -539,9 +539,136 @@ still returns `HTTP 200` with a valid message id:
 
 Push reaching ntfy is not push reaching the operator: acceptance is not receipt,
 and it does not prove the phone was subscribed, online, or that the notification
-was displayed. Email is a separate gap — it still needs the
-`phase1-notification-egress` relay, which is not built. Until that exists an
-operator alert run shows `email=Failed` and exits non-zero while push delivers.
+was displayed. Email is a separate gap, and a narrower one than it was: the
+`phase1-notification-egress` relay now exists (see the next section), so what
+remains is a provider account with a verified sender.
+
+## Standing up the IF-10 email relay (phase1-notification-egress)
+
+### Why a relay at all
+
+The Rust workspace carries zero external crates, so a std-only adapter has no
+TLS. Rather than break that invariant tree-wide for one channel, the TLS boundary
+is a deployment component: `SmtpEmailChannel` speaks **plaintext** SMTP to this
+relay over the compose network, and the relay owns the authenticated TLS session
+to the real provider.
+
+Unlike `phase1-ntfy`, this service is **required** and is in the `phase1`
+profile. `REQUIRED_CHANNELS` is Email AND Push enforced fail-closed, so without
+this container nothing sends on *either* channel — including a push channel that
+is otherwise proven end to end.
+
+### 1. What the operator must do first, and cannot delegate
+
+Create a provider account and **verify the sender address**. Brevo is the
+recorded choice (free tier, no card); Gmail works equally well. Whichever you
+use, `ATP_SMTP_SENDER` must be an address the provider has verified — providers
+refuse `MAIL FROM` for an unverified sender, **the refusal arrives at the relay,
+not at ATP**, and ATP sees only a message that never arrives. Symptom in
+`docker compose logs phase1-notification-egress`:
+
+```
+status=deferred (host smtp-relay.brevo.com said: 550 5.7.1 Sender not verified)
+```
+
+Then set, in `.env`:
+
+```
+ATP_SMTP_SENDER=<the verified sender address>
+ATP_OPERATOR_EMAIL=<where alerts should land>
+ATP_SMTP_API_KEY=<a long random string YOU choose>
+ATP_EGRESS_PROVIDER_HOST=smtp-relay.brevo.com
+ATP_EGRESS_PROVIDER_PORT=587
+ATP_EGRESS_PROVIDER_USER=<the provider login>
+ATP_EGRESS_PROVIDER_PASSWORD=<the provider SMTP key>
+```
+
+`ATP_SMTP_API_KEY` is **not** the provider's key. It is the password ATP uses to
+authenticate *to the relay*, on the private hop — you invent it, and it is
+catalogued secret. The provider's key is `ATP_EGRESS_PROVIDER_PASSWORD`. Keeping
+them separate is what lets the relay reject an unauthenticated peer without ever
+handing the provider credential to an ATP process.
+
+**`.env` EDITS DO NOT TAKE UNTIL YOU RE-SOURCE.** The shell wins over
+`--env-file`, and this has silently burned two separate settings across repeated
+`--force-recreate`. Confirm what compose will actually resolve:
+
+```bash
+docker compose --env-file .env config | grep -A12 'phase1-notification-egress:'
+```
+
+### 2. Bring it up
+
+```bash
+docker compose --env-file .env --profile phase1 up -d phase1-notification-egress
+docker compose logs phase1-notification-egress | tail -5
+```
+
+A healthy start prints the endpoint and the SASL identity, and **never a
+credential**:
+
+```
+phase1-notification-egress: relay ready on :1025, forwarding to [smtp-relay.brevo.com]:587
+phase1-notification-egress: inbound SASL user '<sender>' in realm 'phase1-notification-egress'
+```
+
+The relay refuses to start half-configured. A missing provider host, user or
+password is fatal; a value still set to the catalogue placeholder is fatal in
+`staging`/`production` and a loud warning in `development`.
+
+### 3. Prove the capability list advertises AUTH
+
+This is the constraint most likely to be wrong, because a relay works fine for
+`swaks` without it — and `smtp.rs` refuses to submit through a relay that does
+not advertise AUTH, since an open relay would let any container that can route
+to it forge operator alerts.
+
+```bash
+docker compose exec phase1-notification-egress \
+    sh -c 'printf "EHLO probe\r\nQUIT\r\n" | nc 127.0.0.1 1025'
+```
+
+You want `250-AUTH PLAIN LOGIN` in the reply. If AUTH is absent, the cause is
+almost always Postfix's default `smtpd_tls_auth_only = yes`: it withholds AUTH
+until STARTTLS, which the adapter never issues. The entrypoint sets it to `no`
+and `tools/deployment_check.py` fails if that is ever removed.
+
+### 4. Drive the real adapter against it
+
+```bash
+ATP_EGRESS_LIVE_HOST=127.0.0.1 ATP_EGRESS_LIVE_PORT=<published port> \
+ATP_EGRESS_LIVE_USER=$ATP_SMTP_SENDER ATP_EGRESS_LIVE_KEY=$ATP_SMTP_API_KEY \
+ATP_EGRESS_LIVE_SENDER=$ATP_SMTP_SENDER ATP_EGRESS_LIVE_RECIPIENT=$ATP_OPERATOR_EMAIL \
+    cargo test -p atp-adapters --test srs_notif_001_egress_relay_live -- --ignored --nocapture
+```
+
+Two tests: the adapter's full conversation is accepted, and a *wrong* credential
+is rejected. The second matters as much as the first — AUTH must be enforced, not
+merely advertised.
+
+### 5. Confirm the provider actually delivered
+
+**The relay accepting a message is not delivery.** Postfix queues it and forwards
+asynchronously, so the adapter reports success the moment the relay says
+`250 Ok: queued as <id>`. Read the outbound leg:
+
+```bash
+docker compose logs phase1-notification-egress | grep 'status='
+```
+
+`status=sent` is delivery. `status=deferred` with `535 5.7.8 Authentication
+failed` means `ATP_EGRESS_PROVIDER_USER` / `_PASSWORD` are wrong. `status=deferred`
+with a name-service error means the container cannot resolve the provider.
+
+Then check the actual inbox. Until a message lands there, the email channel is
+proven only to the relay boundary.
+
+### What this does not give you
+
+Delivery to an inbox does not make SRS-NOTIF-001 complete. Detection is still
+observation-driven, there is no automatic dispatcher runtime, and an internet
+outage takes IB, this relay and the iOS push wake-up together — see
+`progress.d/session-SRS-NOTIF-001.md`.
 
 ## Portability constraints for future deployment
 

@@ -467,7 +467,7 @@ fn dispatch_and_store(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
     use atp_notification::{

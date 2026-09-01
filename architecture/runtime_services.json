@@ -2590,6 +2590,7 @@
       "phase1-data-layer",
       "phase1-factor-pipeline",
       "phase1-notification-dispatcher",
+      "phase1-notification-egress",
       "phase1-dashboard-api",
       "phase1-jupyter",
       "phase1-ib-gateway",
@@ -2600,7 +2601,8 @@
       "docker/strategy-python.Dockerfile",
       "docker/dashboard-api.Dockerfile",
       "docker/jupyter.Dockerfile",
-      "docker/ib-gateway.Dockerfile"
+      "docker/ib-gateway.Dockerfile",
+      "docker/notification-egress.Dockerfile"
     ],
     "required_env_vars": [
       "ATP_ENV",

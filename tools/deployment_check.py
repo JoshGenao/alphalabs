@@ -108,10 +108,16 @@ def assert_dockerfiles_present(config: dict, root: Path = ROOT) -> list[str]:
     ]
     if missing:
         fail("required Dockerfiles are missing: " + ", ".join(missing))
-    return [
-        f"{len(deployment['required_dockerfiles'])} Dockerfiles present "
-        "(core-runtime, strategy-python, dashboard-api, jupyter, ib-gateway)"
-    ]
+    # DERIVED, not restated. The hardcoded name list this replaces said
+    # "(core-runtime, strategy-python, dashboard-api, jupyter, ib-gateway)" while
+    # the count beside it read 6 the moment a sixth Dockerfile was registered —
+    # an evidence string that outruns its own subject
+    # (docs/playbooks/adversarial-precheck.md rule 12).
+    names = ", ".join(
+        Path(dockerfile).name.removesuffix(".Dockerfile")
+        for dockerfile in deployment["required_dockerfiles"]
+    )
+    return [f"{len(deployment['required_dockerfiles'])} Dockerfiles present ({names})"]
 
 
 def assert_env_example(config: dict, root: Path = ROOT) -> list[str]:
@@ -418,6 +424,163 @@ def assert_ntfy_upstream_well_formed(_config: dict, root: Path = ROOT) -> list[s
     return evidence
 
 
+# The IF-10 egress relay (SRS-NOTIF-001). Its settings are a CONTRACT with
+# crates/atp-adapters/src/notification/smtp.rs, which refuses a relay that
+# violates any of them — so a drifted relay is a silently dead alert path.
+_EGRESS_SERVICE = "phase1-notification-egress"
+_EGRESS_ENTRYPOINT = "docker/notification-egress-entrypoint.sh"
+_EGRESS_DOCKERFILE = "docker/notification-egress.Dockerfile"
+# The one catalogued secret the relay legitimately holds: the password the
+# adapter authenticates with. Every other catalogued secret in its environment
+# is an over-exposure.
+_EGRESS_PERMITTED_SECRET = "ATP_SMTP_API_KEY"
+
+
+def _strip_yaml_comments(block: str) -> str:
+    """Drop comment text so a rule is not satisfied (or broken) by prose.
+
+    The egress service's own comments say the words ``ports``,
+    ``permit_mynetworks`` and ``atp-env`` while EXPLAINING why they are absent.
+    A substring check over the raw block reads those as the settings themselves —
+    the same trap ``_service_has_vault_mount`` documents for ``/run/atp-secrets``.
+    """
+
+    kept = []
+    for line in block.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        kept.append(re.sub(r"\s+#.*$", "", line))
+    return "\n".join(kept)
+
+
+def _catalogued_secret_names(config: dict) -> list[str]:
+    """Every ``secret: true`` key, read from the catalogue rather than restated.
+
+    Enumerating from the source is what makes this rule survive a new secret
+    being added: a hardcoded list would silently stop covering it
+    (docs/playbooks/adversarial-precheck.md rule 0).
+    """
+
+    keys = config.get("configuration", {}).get("keys", [])
+    return [key["name"] for key in keys if key.get("secret")]
+
+
+def assert_notification_egress_relay(config: dict, root: Path = ROOT) -> list[str]:
+    """The IF-10 relay must match what ``smtp.rs`` will accept, and hold no more.
+
+    Four rules, each with a fixture proving the check can fail. The first three
+    are the constraints the adapter enforces at runtime; the fourth is the
+    isolation that keeps a Postfix container from holding the whole vault.
+    """
+
+    compose_text = (root / deployment_config(config)["compose_file"]).read_text(encoding="utf-8")
+    block = _service_block(compose_text, _EGRESS_SERVICE)
+    if block is None:
+        fail(f"compose file is missing the IF-10 egress relay service: {_EGRESS_SERVICE}")
+    body = _strip_yaml_comments(block)
+
+    entrypoint_path = root / _EGRESS_ENTRYPOINT
+    if not entrypoint_path.exists():
+        fail(f"egress relay entrypoint is missing: {_EGRESS_ENTRYPOINT}")
+    entrypoint = _strip_yaml_comments(entrypoint_path.read_text(encoding="utf-8"))
+
+    # Rule 1 — the EHLO capability list must advertise AUTH (smtp.rs:200).
+    if "smtpd_sasl_auth_enable = yes" not in entrypoint:
+        fail(
+            f"{_EGRESS_ENTRYPOINT} does not set `smtpd_sasl_auth_enable = yes`. "
+            "The adapter refuses a relay whose EHLO does not advertise AUTH, "
+            "because an open relay lets any container that can route to it forge "
+            "operator alerts (smtp.rs:200)."
+        )
+
+    # Rule 2 — AUTH must be offered on a PLAINTEXT connection. Postfix's default
+    # withholds it until STARTTLS, which the adapter never issues.
+    if "smtpd_tls_auth_only = no" not in entrypoint:
+        fail(
+            f"{_EGRESS_ENTRYPOINT} does not set `smtpd_tls_auth_only = no`. Postfix "
+            "then withholds AUTH from the capability list until STARTTLS, which the "
+            "adapter never issues — so every alert fails Unconfigured while the "
+            "relay configuration looks correct."
+        )
+
+    # Rule 3 — no permit_mynetworks on the submission path.
+    restriction_lines = [
+        line
+        for line in entrypoint.splitlines()
+        if "smtpd_relay_restrictions" in line or "smtpd_recipient_restrictions" in line
+    ]
+    if len(restriction_lines) < 2:
+        fail(
+            f"{_EGRESS_ENTRYPOINT} must set BOTH smtpd_relay_restrictions and "
+            "smtpd_recipient_restrictions; found: " + "; ".join(restriction_lines)
+        )
+    for line in restriction_lines:
+        if "permit_mynetworks" in line:
+            fail(
+                f"{_EGRESS_ENTRYPOINT} permits mynetworks on the submission path "
+                f"({line.strip()}). Requiring AUTH is the point: with this, any peer "
+                "that can route to the relay can forge an operator alert without the "
+                "credential."
+            )
+        if "permit_sasl_authenticated" not in line:
+            fail(
+                f"{_EGRESS_ENTRYPOINT} restriction does not require SASL "
+                f"authentication: {line.strip()}"
+            )
+
+    # Rule 4 — isolation. The relay is not an ATP process: it publishes no host
+    # port, merges no ATP environment, mounts no vault, and holds exactly one
+    # catalogued secret.
+    if re.search(r"^\s*ports:", body, re.MULTILINE):
+        fail(
+            f"{_EGRESS_SERVICE} publishes a host port. The submission endpoint must "
+            "be reachable only from peers on the compose network; a host-published "
+            "port is still an RFC 1918 address, so EgressEndpoint's private-address "
+            "rule does not constrain who reaches it."
+        )
+    if "*atp-env" in body:
+        fail(
+            f"{_EGRESS_SERVICE} merges *atp-env. That hands a third-party MTA every "
+            "catalogued secret — the IB account, the data-vendor keys, the ntfy topic "
+            "and token — when it needs exactly one."
+        )
+    if _service_has_vault_mount(block):
+        fail(
+            f"{_EGRESS_SERVICE} mounts the SRS-SEC-001 credential vault. It cannot "
+            "read the vault format, and mounting it exposes every sealed secret to a "
+            "container that needs one of them."
+        )
+    leaked = [
+        name
+        for name in _catalogued_secret_names(config)
+        if name != _EGRESS_PERMITTED_SECRET
+        and re.search(rf"^\s*{re.escape(name)}:", body, re.MULTILINE)
+    ]
+    if leaked:
+        fail(
+            f"{_EGRESS_SERVICE} receives catalogued secrets it does not need: "
+            + ", ".join(sorted(leaked))
+        )
+
+    dockerfile = (root / _EGRESS_DOCKERFILE).read_text(encoding="utf-8")
+    if not re.search(r"^FROM\s+\S+@sha256:[0-9a-f]{64}", dockerfile, re.MULTILINE):
+        fail(
+            f"{_EGRESS_DOCKERFILE} does not pin its base image by digest. This "
+            "container sits on the alert path with `restart: unless-stopped`, so a "
+            "floating tag lets a later pull swap the base underneath it."
+        )
+
+    return [
+        f"{_EGRESS_SERVICE} advertises AUTH on the plaintext hop "
+        "(smtpd_sasl_auth_enable=yes, smtpd_tls_auth_only=no) as smtp.rs requires",
+        f"{_EGRESS_SERVICE} requires SASL on both restriction lists and never permits mynetworks",
+        f"{_EGRESS_SERVICE} publishes no host port, merges no ATP environment, "
+        f"mounts no vault, and holds only {_EGRESS_PERMITTED_SECRET}",
+        f"{_EGRESS_DOCKERFILE} pins its base image by digest",
+    ]
+
+
 def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence: list[str] = [
         "SRS-ARCH-004 Phase 1 deployment evidence:",
@@ -429,7 +592,39 @@ def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence.extend(assert_deployment_doc(config, root))
     evidence.extend(assert_credential_vault_wiring(config, root))
     evidence.extend(assert_ntfy_upstream_well_formed(config, root))
+    evidence.extend(assert_notification_egress_relay(config, root))
     return evidence
+
+
+# Each entry rewrites ONE line into a violation of exactly one rule. Every one
+# of these produces a relay that starts cleanly, so none is caught by anything
+# but the check itself (docs/playbooks/security-boundaries.md rule 22).
+_EGRESS_ENTRYPOINT_FIXTURES = {
+    "egress-no-auth": (
+        'postconf -e "smtpd_sasl_auth_enable = yes"',
+        'postconf -e "smtpd_sasl_auth_enable = no"',
+    ),
+    "egress-tls-auth-only": (
+        'postconf -e "smtpd_tls_auth_only = no"',
+        'postconf -e "smtpd_tls_auth_only = yes"',
+    ),
+    "egress-permit-mynetworks": (
+        'postconf -e "smtpd_relay_restrictions = permit_sasl_authenticated, reject"',
+        'postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject"',
+    ),
+}
+_EGRESS_COMPOSE_FIXTURES = {
+    "egress-published-port": (
+        '  phase1-notification-egress:\n    profiles: ["phase1"]\n',
+        '  phase1-notification-egress:\n    profiles: ["phase1"]\n'
+        '    ports:\n      - "127.0.0.1:1025:1025"\n',
+    ),
+    "egress-atp-env": (
+        "    environment:\n      ATP_ENV: ${ATP_ENV:-development}\n"
+        "      ATP_SMTP_API_KEY: ${ATP_SMTP_API_KEY:-placeholder-set-in-environment}\n",
+        "    environment: *atp-env\n",
+    ),
+}
 
 
 def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
@@ -443,14 +638,14 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
     shutil.copy2(ROOT / "docker-compose.yml", temp_root / "docker-compose.yml")
     shutil.copy2(ROOT / ".env.example", temp_root / ".env.example")
     shutil.copy2(ROOT / "docs" / "DEPLOYMENT.md", temp_root / "docs" / "DEPLOYMENT.md")
-    for dockerfile in (
-        "core-runtime.Dockerfile",
-        "strategy-python.Dockerfile",
-        "dashboard-api.Dockerfile",
-        "jupyter.Dockerfile",
-        "ib-gateway.Dockerfile",
-    ):
-        shutil.copy2(ROOT / "docker" / dockerfile, temp_root / "docker" / dockerfile)
+    # DERIVED from the manifest, not restated. The hardcoded tuple this replaces
+    # would have silently stopped copying a newly registered Dockerfile, and the
+    # fixture run would then fail for the wrong reason — a check reporting on its
+    # own blind spot (docs/playbooks/test-integrity.md rule 8).
+    config = json.loads((ROOT / "architecture" / "runtime_services.json").read_text("utf-8"))
+    for dockerfile in config["deployment"]["required_dockerfiles"]:
+        shutil.copy2(ROOT / dockerfile, temp_root / dockerfile)
+    shutil.copy2(ROOT / _EGRESS_ENTRYPOINT, temp_root / _EGRESS_ENTRYPOINT)
 
     compose_path = temp_root / "docker-compose.yml"
     if fixture == "missing-jupyter":
@@ -469,6 +664,31 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         (temp_root / "docs" / "DEPLOYMENT.md").write_text(
             "# Deployment\n\nTBD.\n", encoding="utf-8"
         )
+    elif fixture in _EGRESS_ENTRYPOINT_FIXTURES:
+        # One bypass class each, all four expressible in a relay that starts
+        # cleanly and passes every scripted-relay test.
+        entrypoint_path = temp_root / _EGRESS_ENTRYPOINT
+        text = entrypoint_path.read_text(encoding="utf-8")
+        old_line, new_line = _EGRESS_ENTRYPOINT_FIXTURES[fixture]
+        if old_line not in text:
+            temp_dir.cleanup()
+            raise ValueError(
+                f"fixture {fixture!r} cannot find its anchor {old_line!r} in "
+                f"{_EGRESS_ENTRYPOINT} — the fixture is inert, which reads exactly "
+                "like the check passing"
+            )
+        entrypoint_path.write_text(text.replace(old_line, new_line), encoding="utf-8")
+    elif fixture in _EGRESS_COMPOSE_FIXTURES:
+        compose = temp_root / "docker-compose.yml"
+        text = compose.read_text(encoding="utf-8")
+        old_line, new_line = _EGRESS_COMPOSE_FIXTURES[fixture]
+        if old_line not in text:
+            temp_dir.cleanup()
+            raise ValueError(
+                f"fixture {fixture!r} cannot find its anchor {old_line!r} in "
+                "docker-compose.yml — the fixture is inert"
+            )
+        compose.write_text(text.replace(old_line, new_line, 1), encoding="utf-8")
     else:
         temp_dir.cleanup()
         raise ValueError(f"unknown fixture: {fixture}")
@@ -484,6 +704,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "missing-jupyter",
             "missing-ssd",
             "missing-portability-doc",
+            *_EGRESS_ENTRYPOINT_FIXTURES,
+            *_EGRESS_COMPOSE_FIXTURES,
         ],
         help="Run the check against a temporary workspace containing a known violation.",
     )
