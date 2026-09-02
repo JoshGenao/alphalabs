@@ -21,10 +21,17 @@
 //! Run it:
 //! ```text
 //! docker build -f docker/notification-egress.Dockerfile -t atp-notification-egress:dev .
+//! # The provider password is a FILE, never an env var. The entrypoint refuses
+//! # to start if ATP_EGRESS_PROVIDER_PASSWORD is set, and refuses to start if
+//! # the file is missing or empty — so the older `-e ...PASSWORD=` recipe that
+//! # stood here could not have worked.
+//! install -m 600 /dev/null /tmp/atp-egress-probe-password
+//! printf '%s' '<provider key>' > /tmp/atp-egress-probe-password
 //! docker run -d --name atp-egress-probe -p 127.0.0.1:21025:1025 \
+//!     -v /tmp/atp-egress-probe-password:/run/egress-secrets/provider-password:ro \
 //!     -e ATP_SMTP_SENDER=... -e ATP_SMTP_RELAY_USER=... -e ATP_SMTP_API_KEY=... \
 //!     -e ATP_EGRESS_PROVIDER_HOST=... -e ATP_EGRESS_PROVIDER_USER=... \
-//!     -e ATP_EGRESS_PROVIDER_PASSWORD=... atp-notification-egress:dev
+//!     atp-notification-egress:dev
 //! ATP_EGRESS_LIVE_HOST=127.0.0.1 ATP_EGRESS_LIVE_PORT=21025 \
 //! ATP_EGRESS_LIVE_USER=... ATP_EGRESS_LIVE_KEY=... \
 //! ATP_EGRESS_LIVE_SENDER=... ATP_EGRESS_LIVE_RECIPIENT=... \
