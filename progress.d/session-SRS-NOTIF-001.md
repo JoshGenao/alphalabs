@@ -1445,3 +1445,58 @@ non-ATP container that needs a secret — not bolted onto this relay.
   wake-up together.
   Downstream unblock when this flips: ERR-7, ERR-8, SRS-DATA-010, SRS-DATA-013,
   SRS-DATA-019, SRS-DATA-020. Board is ready:0 / DEADLOCK until then.
+
+## LIVE RUN ON THE PROXMOX VM, 2026-09-01 — BOTH CHANNELS REACHED THE OPERATOR
+
+The first time this feature has delivered to a human on both required channels
+through the real dispatcher. Run by the operator on the VM; recorded here
+because it is the evidence a future session would otherwise re-derive.
+
+  * `notif001_operator_alert_cli outage --state unreachable --store /ssd/notifications`
+    → `dispatched=true`, `within-sla=true`, `stored=true`,
+      `email=Queued detail=2.0.0 Ok: queued as 6E3551688C3`,
+      `push=Delivered`, `alert-path-ok=true`.
+  * The email arrived in the operator's real inbox via Brevo; the push arrived
+    on the phone.
+  * Relay outbound leg: `status=sent`.
+  * STORED-EVENT INSPECTION PASSED, including the leak check against the REAL
+    provider's reply text (the SMTP reply is written into the durable record
+    verbatim, so an echoing relay would put recoverable secret material on
+    disk): no catalogued secret — topic, push token, SMTP key, provider user —
+    appears anywhere in the store.
+
+### Defects the live run found, both fixed before they could mislead
+  1. `notif001_operator_alert_cli` compared `DeliveryOutcome` directly under a
+     `_ => false` wildcard, so the new `Queued` variant fell through it and a
+     HEALTHY page exited 1 reporting "the operator was not paged". The r15 sweep
+     covered every `is_delivered()` CALLER and missed this because the grep that
+     finds it is for the TYPE. Now an exhaustive match with no wildcard, so the
+     compiler names the site next time. See honest-surfaces.md.
+  2. The relay was put in the `phase1` profile. Compose resolves a bind mount
+     before the container starts, so a service mounting an OPERATOR-SUPPLIED
+     secret file takes the whole `--profile phase1 up` down on any checkout
+     without that file — it turned CI red. Moved to `notify` beside
+     phase1-ntfy; guarded by the `egress-phase1-profile` fixture.
+
+### Deployment gotchas the operator hit — worth not rediscovering
+  * `.env` carried the NAS EXPORT path (`/mnt/pool1/securities_data`, the path on
+    the NAS box) instead of the LOCAL mount point (`/mnt/nas/data`). Docker binds
+    host paths. Pre-existing; nothing had exercised that bind before.
+  * A named volume with `driver_opts: device:` BAKES THE PATH IN AT CREATION.
+    Fixing `.env` alone changes nothing — `docker volume rm atp_atp_nas` first.
+    (Never remove `atp_atp_ntfy`: it holds the ntfy users, ACLs and token.)
+  * Naming a service on `docker compose up` OVERRIDES the profile selection, so
+    `--profile notify up -d phase1-notification-egress` does NOT start ntfy.
+  * The phase1 images are built once and never rebuilt: the orchestrator image
+    predated the notif CLI by months and reported `no bin target named
+    notif001_operator_alert_cli`. Add `--build` before trusting that stack.
+
+### WHAT THIS STILL DOES NOT CLOSE
+  `--state unreachable` is an operator ASSERTION of connectivity loss, not an
+  observation. The acceptance criterion's remaining leg is a GENUINE IB Gateway
+  outage on the VM, repeating the same command. Until then `detected_at_millis`
+  is the instant the operator asserted, and reading the stored latency as
+  loss-to-dispatch would credit an NFR-P6 compliance not demonstrated.
+  The four structural residuals (no dispatcher runtime; observation-driven
+  detection; the partly-routed CRITICAL stream; the correlated internet-outage
+  failure) are unchanged and owned elsewhere. passes STAYS false.
