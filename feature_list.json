@@ -1453,10 +1453,9 @@
       "Step 3: Verify acceptance criteria: Notification dispatch begins within 60 seconds of detection and delivery status is stored as a notification event.",
       "Step 4: Record objective evidence from fault injection, integration test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false,
-    "verification_method": "integration",
-    "external_blocker": "The operator's self-hosted ntfy reachable on the LAN (ATP_PUSH_HOST/PORT/TOPIC/TOKEN, phone subscribed over VPN; see the runbook in docs/DEPLOYMENT.md) + the unbuilt phase1-notification-egress relay, which is now needed for EMAIL ONLY \u2014 push posts to ntfy directly with no relay hop. NO SMS PROVIDER IS NEEDED: push replaced SMS as IF-11 on 2026-08-17 and the push transport is verified end to end against a real ntfy."
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SAFE-001",
