@@ -22,8 +22,9 @@ path = "src/bin/resv003_hot_swap_trigger_cli.rs"
 # gate over the REAL durable demotion-pending lockout, and the REAL SRS-NOTIF-001
 # OperatorNotifier — with FIXTURE IB and SMTP/SMS transports, which the outcome
 # self-labels. Also serves the operator's status read and the SYS-49c (d) manual
-# resolution. The python/atp_hotswap client shells this binary; the live IB cancel and
-# the real SMTP/SMS transports are the deferred atp-adapters / SRS-NOTIF-001 legs.
+# resolution. The python/atp_hotswap client shells this binary; the live IB cancel is
+# the deferred atp-adapters leg. The SMTP/push transports LANDED with SRS-NOTIF-001
+# (SMS was replaced by push as IF-11 on 2026-08-17).
 [[bin]]
 name = "resv004_hot_swap_demotion_cli"
 path = "src/bin/resv004_hot_swap_demotion_cli.rs"

@@ -1,6 +1,6 @@
 """L1 unit — the UI-1 critical-alerts provider (pure builder, no I/O).
 
-The pane's honesty contract: while the SRS-NOTIF-001 alert feed is deferred the
+The pane's honesty contract: while no producer is wired into the alert feed the
 snapshot must carry the feed as one explicit deferred cell (never a fabricated
 alert, never a bare empty list that could render as "0 active alerts"), and the
 per-alert schema must be pinned to the ``ALERTS`` channel / ``GET /api/v1/alerts``
@@ -27,7 +27,9 @@ def test_snapshot_is_honest_and_well_formed() -> None:
     assert snap["srs_ref"] == "UI-1"
     # The feed is one explicit deferred cell naming its producer feature.
     assert snap["feed"] == {"value": None, "data_source": f"deferred:{ALERT_FEED_OWNER}"}
-    assert ALERT_FEED_OWNER == "SRS-NOTIF-001"
+    # UI-1, not SRS-NOTIF-001: that feature closed 2026-09-01, and naming a DONE
+    # feature as the thing being awaited is the contradiction this pins against.
+    assert ALERT_FEED_OWNER == "UI-1"
     # Unknown alert state is None, NOT an empty list — an all-clear-shaped
     # payload at the JSON boundary would read as "zero active alerts".
     assert snap["alerts"] is None

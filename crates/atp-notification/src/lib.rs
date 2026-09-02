@@ -26,31 +26,33 @@
 //! * [`store`] — [`NotificationEventStore`], the durable append-only audit log
 //!   (atomic write + checksummed fail-closed codec).
 //!
-//! ## Scope (this is the core dispatcher; live delivery is deferred)
+//! ## Scope (this is the core dispatcher; the automatic runtime is deferred)
 //!
 //! This crate is the complete, fault-injection-testable core: it proves — with
 //! in-process stub channels and an injected clock — that dispatch begins within
 //! the 60-second SLA and that the delivery status of every channel is recorded
-//! and durably stored. What is **deferred** (and why SRS-NOTIF-001 stays
-//! `passes:false` until an operator finishes the integration):
+//! and durably stored.
 //!
-//!   * a REAL destination behind the transports. Both adapters exist in
-//!     `atp-adapters::notification` and are verified over real sockets, but the
-//!     two now fall short in DIFFERENT ways and the difference matters for what
-//!     may be claimed:
-//!       * **email (IF-10)** submits to the `phase1-notification-egress`
-//!         sidecar, which owns the TLS session to the real SMTP provider.
-//!         Neither that sidecar nor a provider account has been stood up, so
-//!         email is proven only to the relay boundary.
-//!       * **push (IF-11)** posts DIRECTLY to a self-hosted ntfy on the LAN —
-//!         there is no relay in the path. It has been driven end to end against
-//!         a real ntfy, which accepted the publish and returned its message id.
-//!         That is a genuinely stronger hand-off than email's, but acceptance is
-//!         still not receipt: it does not prove the operator's phone was
-//!         subscribed, online, or that the notification was displayed.
+//! **Live delivery is no longer deferred.** On 2026-09-01 an operator ran the
+//! real dispatcher on the Proxmox VM and BOTH required channels reached them:
+//! email through `phase1-notification-egress` to Brevo (`status=sent`) and into
+//! the inbox, push through the LAN ntfy to the phone. The stored event carried
+//! the delivery status and no catalogued secret. SRS-NOTIF-001 closed on that
+//! run plus an operator attestation for the connectivity-loss leg.
 //!
-//!     So "email and push are sent" is not yet proven to the OPERATOR on
-//!     either channel, for two different reasons;
+//! Read the two channels' receipts precisely, because they are NOT equally
+//! strong and [`DeliveryOutcome`] keeps them apart:
+//!   * **email (IF-10)** hands off to `phase1-notification-egress`, a Postfix
+//!     queue THIS SYSTEM operates, and records [`DeliveryOutcome::Queued`]. The
+//!     provider can still reject it afterwards; `status=` in the relay log is
+//!     the only place that answers whether it was delivered.
+//!   * **push (IF-11)** posts DIRECTLY to the LAN ntfy and records
+//!     [`DeliveryOutcome::Delivered`] — a destination outside this system
+//!     acknowledged it. Still not receipt: it does not prove the phone was
+//!     subscribed, online, or that the notification was displayed.
+//!
+//! What is **still deferred**, owned elsewhere:
+//!
 //!   * an automatic runtime that dispatches without an operator invoking it.
 //!     Both detection bindings below are composed and driven by operator CLIs;
 //!     `phase1-notification-dispatcher` still runs `core-runtime.Dockerfile`'s

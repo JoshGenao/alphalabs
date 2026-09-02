@@ -507,7 +507,7 @@ def check_ports(config: dict, orch_src: str) -> str:
     # codex critic adapter:error-surface — WorkloadEventSink::record
     # must return Result so concrete sink implementations and any
     # wrapping caller (a retry logger, a dropped-alert counter, the
-    # deferred SRS-NOTIF-001 dispatcher) can observe publication
+    # SRS-NOTIF-001 dispatcher, which has landed) can observe publication
     # failure. The orchestrator's admit_workload gate itself emits
     # alerts on a best-effort basis — the typed surface lives outside
     # the gate, not inside it.

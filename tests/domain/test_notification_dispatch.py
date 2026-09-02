@@ -12,9 +12,10 @@ layer so the deterministic critic recognizes the diff as having a paired
 
 This is the notification half of the connectivity/critical-failure safety path
 (SyRS SYS-46, NFR-P6; StRS SN-1.12, SN-2.04, SC-9). The end-to-end proof over
-real SMTP / push providers (IF-10 / IF-11) is the deferred integration that keeps
-SRS-NOTIF-001 ``passes:false``; these tests prove the core dispatch + storage
-properties deterministically.
+real providers (IF-10 / IF-11) was completed by the operator on 2026-09-01 —
+both channels reached them on the Proxmox VM — and SRS-NOTIF-001 closed on that
+run. These tests prove the core dispatch + storage properties DETERMINISTICALLY,
+which is what keeps them runnable without a provider account.
 """
 
 from __future__ import annotations

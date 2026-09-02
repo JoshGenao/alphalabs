@@ -242,7 +242,7 @@ def test_safe_001_stays_unflipped() -> None:
         "SRS-SAFE-001 must stay passes:false (serialized) -- the activation runtime slice is built "
         "over the mocked-IB fixture transport its own verification steps prescribe, but the LIVE "
         "path (real SRS-EXE-006 IB transport, live SRS-EXE-001/005 state producers, SRS-EXE-002 "
-        "hosting, SRS-NOTIF-001 notifications) is still deferred"
+        "hosting; SRS-NOTIF-001 notifications landed) is still deferred"
     )
 
 

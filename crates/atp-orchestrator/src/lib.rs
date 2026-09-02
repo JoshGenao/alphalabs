@@ -368,7 +368,8 @@ impl std::error::Error for WorkloadTerminationError {}
 /// implementations are responsible for durable delivery semantics
 /// (bounded queue + retry, persistent journal, fan-out to a
 /// secondary channel, etc.) — those concerns belong on the
-/// SRS-LOG-001 / SRS-NOTIF-001 / SYS-13 dispatcher block (deferred).
+/// SRS-LOG-001 / SYS-13 dispatcher block (deferred; SRS-NOTIF-001's own
+/// dispatcher landed, so what is missing is a runtime that subscribes).
 /// The typed `WorkloadEventSinkError` exists so a future caller
 /// wrapping the orchestrator can observe sink failures separately
 /// from admission outcomes without retrofitting the trait.
@@ -384,8 +385,9 @@ pub trait WorkloadEventSink {
 /// itself capture or surface these errors — the typed surface exists
 /// so concrete sink implementations and wrapping callers (a logger
 /// that retries, a metrics adapter that counts dropped alerts, the
-/// deferred SRS-NOTIF-001 dispatcher with its own durable-delivery
-/// semantics) can observe and act on them.
+/// SRS-NOTIF-001 dispatcher with its own durable-delivery semantics) can
+/// observe and act on them. That dispatcher exists; what is still deferred is
+/// a RUNTIME that subscribes to this sink without an operator invoking a CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkloadEventSinkError {
     pub reason: String,
@@ -873,8 +875,9 @@ pub struct RollbackOutcome {
 //     (the runtime is the timing source of truth).
 //
 //   * `HealthCheckEventSink` — the structured-event publication
-//     channel. Concrete sinks (deferred to SRS-LOG-001 + SRS-NOTIF-001 +
-//     SYS-13 dashboard clause) route events to the audit log, the
+//     channel. Concrete sinks (SRS-NOTIF-001's dispatcher has landed; the
+//     SRS-LOG-001 audit sink and the SYS-13 dashboard clause are deferred)
+//     route events to the audit log, the
 //     dashboard WebSocket alert pane (STRATEGY_STATE / ALERTS channel),
 //     and the notification dispatcher.
 //
@@ -960,8 +963,8 @@ pub trait HealthCheckEventSink {
 //     notification fan-out. Fire-and-forget (mirrors `HealthCheckEventSink`):
 //     the demotion-pending decision is irreversible once the timeout fires,
 //     so an alert-dispatch failure does not roll it back. The concrete
-//     email/push transport is the deferred SRS-NOTIF-001 SMTP/push adapter
-//     pair — kept behind this port so the demotion gate itself never sees
+//     email/push transport is the SRS-NOTIF-001 SMTP/push adapter pair, which
+//     LANDED and is proven end to end — kept behind this port so the demotion gate itself never sees
 //     the dispatcher (the SRS-SAFE-002 composition in `kill_switch_timeout`
 //     is where the orchestrator binds `atp-notification`'s OperatorNotifier).
 //
@@ -1009,7 +1012,8 @@ pub trait OperatorAlertSink {
     /// (the demotion-pending decision is irreversible once the timeout
     /// fires); it records the outcome on
     /// `HotSwapDemotionEvent::operator_alert`. The concrete email/push
-    /// transport is the deferred SRS-NOTIF-001 dispatcher.
+    /// transport is the SRS-NOTIF-001 dispatcher, which landed; binding one to
+    /// this port at a composition root is what remains.
     fn dispatch(&self, event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError>;
 }
 
@@ -2638,7 +2642,8 @@ impl StrategyOrchestrator {
                     // abort or roll back the decision. A future wrapping
                     // caller can observe sink errors through the typed
                     // WorkloadEventSinkError surface; durable delivery
-                    // belongs to the deferred SRS-NOTIF-001 dispatcher.
+                    // belongs to the SRS-NOTIF-001 dispatcher, which landed;
+                    // a runtime that invokes it without a CLI has not.
                     let _ = sink.record(WorkloadAdmissionEvent::Refused {
                         workload_id: new_workload_id,
                         priority: new_workload_priority,

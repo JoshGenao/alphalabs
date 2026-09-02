@@ -888,7 +888,7 @@ def main(argv: list[str] | None = None) -> int:
         "tools/log_persistence_check.py; GET /api/v1/logs + LOGS WebSocket + admin logs "
         "registered on the operator-interface-runtime registry by "
         "atp_logs_service.wire_logs; ERROR/CRITICAL notification fan-out deferred to "
-        "SRS-NOTIF-001; strategy-side logging helper deferred to SRS-SDK-007)"
+        "SRS-NOTIF-001 landed; strategy-side logging helper deferred to SRS-SDK-007)"
     )
     for line in evidence:
         print(f"  * {line}")

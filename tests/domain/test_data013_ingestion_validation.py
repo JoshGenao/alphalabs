@@ -22,7 +22,8 @@ operator is told how many were rejected and why. This test proves the invariant 
 
   3. Scope honesty — it pins that ``feature_list.json`` keeps SRS-DATA-013 ``passes:false``: the
      data-layer validation core is verified here, but the AC's "dashboard and notification alerts"
-     display is deferred to the unbuilt SRS-UI-001 / SRS-NOTIF-001 (per the contract's ``deferred``),
+     display is deferred to the unbuilt SRS-UI-001 pane (SRS-NOTIF-001's notifier
+     landed; per the contract's ``deferred``),
      so this slice cannot silently over-claim the requirement end to end.
 """
 

@@ -20,7 +20,9 @@
 //! [`crate::hot_swap_demotion::complete_demotion_to_paper`] (the flat-only paper transition).
 //!
 //! **Fixture:** the IB socket (order cancels, liquidation submissions, the position view) and the
-//! SMTP/push transports. Those are the deferred `atp-adapters` and SRS-NOTIF-001 legs.
+//! SMTP/push transports. The IB socket is the deferred `atp-adapters` leg; the
+//! transports LANDED with SRS-NOTIF-001 and are fixtures here so the drill stays
+//! deterministic and sends nothing.
 //!
 //! The distinction is not left to a reader of this file: [`DemotionDrillOutcome::transports`]
 //! self-labels the tier as `FIXTURE`, and the CLI prints it, so the tier travels into any

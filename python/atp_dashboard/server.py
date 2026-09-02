@@ -123,7 +123,9 @@ HEARTBEAT_SNAPSHOT_PATH = "/dashboard/api/heartbeat"
 #: REST path the dashboard SPA polls for the UI-1 critical-alerts pane (served
 #: only when an alerts provider is mounted). This is a dashboard-namespaced
 #: first-paint poll, NOT the contract route ``GET /api/v1/alerts`` (owner
-#: SRS-NOTIF-001), which stays a 501 deferred handler until the notifier lands.
+#: SRS-NOTIF-001), which stays a 501 deferred handler. The notifier LANDED and
+#: closed on 2026-09-01; what this route still needs is the SRS-API-001 handler
+#: serving the notification store it writes.
 ALERTS_SNAPSHOT_PATH = "/dashboard/api/alerts"
 
 #: REST path the dashboard SPA polls for the UI-4 kill-switch status pane
@@ -226,7 +228,7 @@ def mount_dashboard(
     ``alerts`` (optional — the UI-1 critical-alerts provider) adds the
     ``GET /dashboard/api/alerts`` poll route the alerts pane reads. It is
     REST-served (the event-driven ``ALERTS`` WS channel stays unpublished until
-    its SRS-NOTIF-001 producer lands — deferred non-events would drift that
+    a producer is wired into it — deferred non-events would drift that
     contract), so it adds no publisher channel; without it the pane renders its
     explicit "not mounted" state. The feed is an honest deferred cell — the pane
     never renders "0 active alerts" while detection is unwired.

@@ -3474,7 +3474,7 @@ mod resv003_trigger_config_tests {
 // outcome mirroring `HotSwapDemotionOutcome` (ERR-7). The 30 s async wait
 // loop, the real SRS-SAFE-001 liquidate sequence, the real IB cancel /
 // disconnect (SRS-EXE-006 adapter), and the real email/push transport
-// (SRS-NOTIF-001) are the deferred runtime, enumerated in
+// (SRS-NOTIF-001) landed; the subscribing runtime has not. Enumerated in
 // `architecture/runtime_services.json` `kill_switch_timeout_contract
 // .deferred[]`. The execution engine's `resolve_kill_switch_timeout` gate
 // (in `atp-execution`, which owns kill-switch behavior per SRS-ARCH-001)

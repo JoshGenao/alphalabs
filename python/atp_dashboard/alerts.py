@@ -11,15 +11,17 @@ Honesty (no fabrication — the SRS-UI-001 convention)
 ----------------------------------------------------
 Alert events are produced by the SRS-NOTIF-001 operator notifier
 (``crates/atp-notification``: ``OperatorNotifier`` + ``NotificationEventStore``).
-That feature is not yet delivered: its SMTP/push adapters, its detection wiring
-(IB connectivity loss, critical failures), and its store-path configuration are
-all deferred, so **no honest live alert data exists today**. Crucially, an empty
+That feature CLOSED on 2026-09-01 — adapters, detection wiring and the durable
+store all landed and delivered to a real operator. What is still missing is
+**this pane reading that store**: nothing wires ``notification_events.store``
+into the dashboard, so no honest live alert data reaches it today. Crucially, an empty
 alert list must NOT render as "0 active alerts" — with detection unwired,
 "no alerts observed" is not "no alerts occurring". The pane therefore carries an
-explicit ``{"value": None, "data_source": "deferred:SRS-NOTIF-001"}`` feed cell
+explicit ``{"value": None, "data_source": "deferred:UI-1"}`` feed cell
 (the account-panel convention) and the UI renders an "awaiting producer" state,
-never an empty-but-reassuring table. When SRS-NOTIF-001 lands this becomes a
-provider swap reading the real ``notification_events.store``.
+never an empty-but-reassuring table. The remaining work is exactly that provider
+swap: read the real ``notification_events.store``, which now exists and carries
+real events.
 
 No ``ALERTS`` WebSocket publishing happens here either: that channel's declared
 payload is per-alert events (``alert_id``, …); publishing deferred non-events
@@ -33,7 +35,7 @@ SRS trace
 ---------
 ``UI-1`` (primary operations view: critical alerts), SyRS ``SYS-46`` (operator
 notification), ``SYS-58`` (resource threshold alerts), consuming the
-``SRS-NOTIF-001`` notification-event seam when it lands.
+``SRS-NOTIF-001`` notification-event store, which exists and holds real events.
 """
 
 from __future__ import annotations
@@ -49,9 +51,16 @@ __all__ = [
     "CriticalAlertsProvider",
 ]
 
-#: The feature that owns the live alert feed: the SRS-NOTIF-001 operator
-#: notifier (detection wiring + notification-event store + delivery adapters).
-ALERT_FEED_OWNER = "SRS-NOTIF-001"
+#: The feature that owns the live alert feed.
+#:
+#: WAS "SRS-NOTIF-001" until that feature closed on 2026-09-01. Its dispatcher,
+#: both transports, the detection wiring and the durable store all landed and
+#: were proven end to end, so naming it here would point every "awaiting"
+#: state at a DONE feature — a contradiction the operator would read on the
+#: dashboard itself. What is genuinely missing is this pane READING the store
+#: that already exists (`notification_events.store`), which is UI-1's own live
+#: feed. The remaining work is a provider swap, not a producer build.
+ALERT_FEED_OWNER = "UI-1"
 
 #: The six per-alert fields the pane renders — exactly the ``ALERTS`` channel's
 #: declared ``payload_fields`` (and the ``GET /api/v1/alerts`` response fields),

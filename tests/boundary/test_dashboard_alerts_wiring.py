@@ -62,7 +62,7 @@ def test_alerts_route_serves_an_honest_deferred_snapshot(running_dashboard) -> N
     assert status == 200 and ctype.startswith("application/json")
     snap = json.loads(body)
     assert snap["ok"] is True and snap["srs_ref"] == "UI-1"
-    assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
+    assert snap["feed"] == {"value": None, "data_source": "deferred:UI-1"}
     # Unknown alert state must NOT be all-clear-shaped at the JSON boundary:
     # a caller keying off ok+alerts would read [] as "zero active alerts".
     assert snap["alerts"] is None
@@ -100,7 +100,7 @@ def test_default_composition_serves_the_route() -> None:
     mount_default_dashboard(runtime, {})
     status, snap = runtime.dispatch_rest("GET", "/dashboard/api/alerts")
     assert status == 200
-    assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
+    assert snap["feed"] == {"value": None, "data_source": "deferred:UI-1"}
 
 
 def test_default_composition_serves_live_strategy_status_when_configured(tmp_path) -> None:

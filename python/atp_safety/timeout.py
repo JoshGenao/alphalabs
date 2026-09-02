@@ -7,8 +7,9 @@ binary*. The backend here shells ``safe002_liquidation_timeout_cli resolve``
 — the orchestrator composition that drives the REAL
 ``atp-execution`` timeout gate through the REAL ``PollingLiquidationProbe``
 (full wait window on a simulated clock), the REAL SRS-NOTIF-001
-``OperatorNotifier`` (fixture email/push transports; the concrete SMTP/push
-adapters are the deferred SRS-NOTIF-001 leg) and the REAL
+``OperatorNotifier`` (fixture email/push transports — the concrete SMTP/push
+adapters LANDED with SRS-NOTIF-001 and are fixtures here so the drill sends
+nothing) and the REAL
 ``IbGatewayLiquidationCleanup`` (fixture IB gateway; the live transport is
 the deferred SRS-EXE-006 leg).
 
@@ -466,7 +467,7 @@ def resolve_liquidation_timeout(
             "liquidation-timeout outcome ran over FIXTURE transports (mocked IB "
             "gateway + fixture email/push) but fixture_drill=True was not passed "
             "— refusing to durably log drill evidence as SYS-44b history; the "
-            "live runtime is the deferred SRS-EXE-006 + SRS-NOTIF-001 legs"
+            "live runtime is the deferred SRS-EXE-006 leg (SRS-NOTIF-001 landed)"
         )
     if not outcome.timed_out:
         return outcome, None

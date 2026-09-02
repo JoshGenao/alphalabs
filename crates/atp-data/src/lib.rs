@@ -448,8 +448,8 @@ impl DataLayer {
 //     cannot accidentally dispatch the job through the probe call.
 //
 //   * `PacingBudgetEventSink` — the structured-event publication
-//     channel. Concrete sinks (deferred to SRS-NOTIF-001 +
-//     SRS-LOG-001 + dashboard alert pane) fan the events into the
+//     channel. Concrete sinks (SRS-NOTIF-001's dispatcher has landed; the
+//     SRS-LOG-001 sink and the dashboard alert pane are deferred) fan the events into the
 //     dashboard's scheduling view and into the notification dispatcher
 //     so the operator can reduce scope or widen the window per SYS-55's
 //     "until scope or window configuration is reduced" clause.

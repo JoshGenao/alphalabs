@@ -4,8 +4,9 @@
 //! Drives the REAL `atp-execution` timeout gate through the REAL
 //! `PollingLiquidationProbe` (the full wait window on a simulated clock — a
 //! 30 s drill completes instantly), the REAL SRS-NOTIF-001 `OperatorNotifier`
-//! (over fixture email/push transports; the concrete SMTP/push adapters are the
-//! deferred SRS-NOTIF-001 leg) and the REAL `IbGatewayLiquidationCleanup`
+//! (over fixture email/push transports — the concrete SMTP/push adapters LANDED
+//! with SRS-NOTIF-001 and are fixtures here so the drill sends nothing) and the
+//! REAL `IbGatewayLiquidationCleanup`
 //! (over the fixture IB gateway; the live transport binding is the deferred
 //! SRS-EXE-006 leg) — the mocked-IB fault-injection workflow the feature's
 //! own verification Step 2 prescribes.
@@ -378,7 +379,8 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
     // gate/probe/dispatcher but FIXTURE transports (mocked IB gateway,
     // fixture email/push channels) — the consumer must never be able to
     // mistake a drill outcome for live SYS-44b evidence. The live runtime
-    // (deferred SRS-EXE-006 + SRS-NOTIF-001 legs) will label itself LIVE.
+    // (the deferred SRS-EXE-006 leg; SRS-NOTIF-001's transports landed) will
+    // label itself LIVE.
     let common = format!(
         "\"disposition\":\"{disposition}\",\"transports\":\"FIXTURE\",\
          \"notification\":{notification},\

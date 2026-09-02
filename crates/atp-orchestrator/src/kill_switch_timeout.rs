@@ -375,7 +375,9 @@ impl<C: IbGatewayConnection + IbConnectionControl> IbLiquidationCleanup
 
 /// Fixture email transport: records every accepted message (subject + body)
 /// so evidence can assert the page content; injectable failure. The concrete
-/// SMTP adapter is the deferred SRS-NOTIF-001 leg.
+/// SMTP adapter LANDED with SRS-NOTIF-001
+/// (`atp-adapters::notification::SmtpEmailChannel`); this fixture stands in for
+/// it so the test stays deterministic and sends nothing.
 #[derive(Debug, Default)]
 pub struct FixtureEmailChannel {
     pub fail: bool,

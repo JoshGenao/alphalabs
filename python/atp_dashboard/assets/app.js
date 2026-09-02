@@ -1108,13 +1108,13 @@
     return span;
   }
 
-  // ----- UI-1 critical alerts (REST poll; feed deferred to SRS-NOTIF-001) - //
+  // ----- UI-1 critical alerts (REST poll; feed deferred to UI-1) ---------- //
   // The alert vocabulary is the ALERTS channel / GET /api/v1/alerts contract.
   // While the feed cell is deferred the pane renders an honest awaiting state —
   // NEVER "0 active alerts": with detection unwired, "no alerts observed" is
   // not "no alerts occurring".
   // The alerts pane's freshness dot is driven HERE, not by monitorFreshness:
-  // while the SRS-NOTIF-001 producer is deferred, a poll-cadence "fresh" would
+  // while no producer is wired into this pane, a poll-cadence "fresh" would
   // overstate alert-monitoring health (only the placeholder route is healthy).
   function setAlertsDot(state, title) {
     const dot = $("fresh-alerts");
@@ -1135,17 +1135,18 @@
     const feed = cellValue(snap && snap.feed);
     if (feed === null || feed === undefined) {
       if (summary) {
-        const owner = shortSource((snap && snap.feed && snap.feed.data_source) || "deferred:SRS-NOTIF-001");
+        const owner = shortSource((snap && snap.feed && snap.feed.data_source) || "deferred:UI-1");
         summary.textContent = "alert feed awaiting " + owner +
           " (operator notifier) — IB connectivity loss and critical failures will surface here";
         summary.dataset.tone = "warn";
       }
       if (beacon) beacon.dataset.state = "deferred";
       if (table) table.hidden = true;
-      setAlertsDot("wait", "alert feed deferred — awaiting SRS-NOTIF-001");
+      setAlertsDot("wait", "alert feed deferred — no producer wired into this pane");
       return;
     }
-    // Real feed (renders when SRS-NOTIF-001 lands): one row per alert event.
+    // Real feed (renders once this pane reads the notification store): one row
+    // per alert event.
     // A live feed cell whose alert list is missing/malformed must fail closed
     // to the unavailable state — coercing to [] would render a false all-clear.
     if (!Array.isArray(snap.alerts)) {

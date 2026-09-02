@@ -133,3 +133,35 @@ the reviewer will block until every source agrees.
 - The auto-picked feature contradicts the standing "build foundational, highest-impact"
   directive.
 - You are about to stop a non-convergent loop and commit on authorization.
+
+## Closing a widely-referenced feature: measure it, then ratchet (NOTIF-001)
+
+21. **The drift is repo-wide and pre-existing, not something your close creates.** A
+    proximity scan on 2026-09-01 found **274 contradiction-shaped lines across 38 of the
+    58 closed features** — every one of them a "deferred SRS-X" naming a feature that is
+    already done. Rule 18 says grep first; this is what the grep actually returns, and it
+    is why DATA-007's seven rounds of whack-a-mole were a symptom rather than bad luck.
+    Budget for it, or scope the guard so it does not demand a 274-line sweep nobody has
+    agreed to. `(NOTIF-001)`
+22. **Make the guard a RATCHET, not a repo-wide gate.** `tests/unit/test_closed_feature_references.py`
+    enforces only ids in `SWEPT_FEATURES`; closing a feature and adding it there is the
+    moment the sweep gets done, while the measured backlog stays visible in the docstring.
+    A gate that fails on 274 pre-existing lines gets an exemption list so long it means
+    nothing — which is the same as no gate. `(NOTIF-001)`
+23. **Not every match is a contradiction, and the matcher's SHAPE is where the work is.**
+    Four iterations, each fixing the previous one's blind spot: per-line windows missed a
+    wrapped comment whose "landed" sat on the next line; a character window spanning line
+    breaks pushed 7 findings to 56 because `runtime_services.json` packs unrelated contract
+    blocks within 140 characters; searching the whole line re-found 13 for the same reason.
+    The shape that works is **asymmetric** — the CLAIM must be near the id AND on its line,
+    the EXONERATION may wrap. State a contradiction on one line and you are flagged; answer
+    it anywhere nearby and you are not. `(NOTIF-001)`
+24. **"Deferred to SRS-X" is often still TRUE after X closes** — it usually means *that
+    consumer's own wiring* is deferred, not that X is missing. Rewriting to name the missing
+    PART ("SRS-NOTIF-001's dispatcher landed; a runtime that subscribes has not") is both
+    more accurate than deleting the word and more useful than leaving it. `(NOTIF-001)`
+25. **Re-point the contract VALUES, not just the prose.** The dashboard's alert feed carried
+    `data_source: "deferred:SRS-NOTIF-001"` — a shipped payload value asserted in three
+    tests. After the close it named a DONE feature as the thing being awaited, visible to
+    the operator on the dashboard itself. Find the feature that genuinely owes the surface
+    (here UI-1, whose own pane it is) and move the value there. `(NOTIF-001)`

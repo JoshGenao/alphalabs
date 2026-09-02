@@ -357,7 +357,9 @@ def test_alerts_mount_is_read_only_and_never_fabricates_an_alert() -> None:
     # UI-1 critical alerts: a monitoring pane over the operator-notification
     # domain must never invent an alert (a fabricated "all clear" or a phantom
     # CRITICAL both mislead the operator) and must never mutate. With the feed
-    # deferred (SRS-NOTIF-001 unbuilt) the snapshot carries the feed as an
+    # deferred (SRS-NOTIF-001's dispatcher landed, but nothing PRODUCES into
+    # this pane yet — see the data_source note in atp_dashboard/alerts.py) the
+    # snapshot carries the feed as an
     # explicit value-None cell, an EMPTY alerts list, and the pane's poll route
     # rejects every mutating verb. The event-driven ALERTS WS channel stays
     # UNPUBLISHED — deferred non-events on the contract channel would be
@@ -371,12 +373,13 @@ def test_alerts_mount_is_read_only_and_never_fabricates_an_alert() -> None:
     publisher.start()
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
-        # The ALERTS channel has no publisher until SRS-NOTIF-001 lands.
+        # The ALERTS channel has no publisher: SRS-NOTIF-001's store exists,
+        # but nothing reads it into this channel.
         assert not runtime.is_publisher_registered("ALERTS")
 
         status, snap = _request(host, port, "GET", "/dashboard/api/alerts")
         assert status == 200
-        assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
+        assert snap["feed"] == {"value": None, "data_source": "deferred:UI-1"}
         # No fabricated alert rows, ever — and unknown state is None, not an
         # all-clear-shaped empty list.
         assert snap["alerts"] is None

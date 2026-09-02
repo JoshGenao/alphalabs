@@ -7,8 +7,9 @@ Nothing here is faked. A real ``resv004_hot_swap_demotion_cli`` runs a real demo
 SYS-49b sequence, the real flat-confirmation probe, the real ``resolve_demotion`` gate, the real
 SRS-NOTIF-001 dispatcher — and writes a real durable demotion-pending lockout. The production
 ``mount_default_dashboard`` composition reads that same file through the shipped env knob, and a
-real headless browser renders the result. The only fixtures are the IB socket and the SMTP/push
-transports (the deferred ``atp-adapters`` / SRS-NOTIF-001 legs).
+real headless browser renders the result. The only fixtures are the IB socket (the deferred
+``atp-adapters`` leg) and the SMTP/push transports, which LANDED with SRS-NOTIF-001 and are
+fixtures here so the test sends nothing.
 
 Driving the SHIPPED composition matters: a fixture that mounted the provider by hand would prove
 its own wiring rather than the one an operator gets. ``serve()`` failing to mount a route is a

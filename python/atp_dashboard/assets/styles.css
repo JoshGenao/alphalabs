@@ -682,8 +682,9 @@ body {
 /* =========================================================================
    UI-1 — Critical-alerts pane (SYS-46 + SYS-58).
    Scoped to .alerts so the SRS-UI-001/002/003/UI-3 panels do not regress.
-   The feed is an honest deferred cell until SRS-NOTIF-001 lands; the pane
-   never renders "0 active alerts" while detection is unwired.
+   The feed is an honest deferred cell until this pane reads the notification
+   store (SRS-NOTIF-001 closed 2026-09-01; the store exists, the wiring does
+   not); the pane never renders "0 active alerts" while it has no producer.
    ========================================================================= */
 .alerts { display: flex; flex-direction: column; gap: 12px; }
 .alerts__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }

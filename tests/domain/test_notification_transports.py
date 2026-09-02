@@ -16,10 +16,12 @@ critic does not demand this pairing — but the AGENTS.md hard rule is about the
 connectivity/critical-failure path, which this is, so the pairing is written
 anyway (the same call made for ``test_notification_dispatch.py``).
 
-The end-to-end proof over REAL providers — a genuine IB connectivity loss
-dispatching a real email and a real push — is the operator integration that keeps
-SRS-NOTIF-001 ``passes:false``. These tests prove the transport properties
-deterministically, without a provider account.
+The end-to-end proof over REAL providers was completed by the operator on
+2026-09-01: the real dispatcher delivered to a real inbox and a real phone.
+The connectivity-loss leg was run as an operator ASSERTION (``--state
+unreachable``), not an observed outage, and closed on that attestation. These
+tests prove the transport properties deterministically, without a provider
+account.
 """
 
 from __future__ import annotations

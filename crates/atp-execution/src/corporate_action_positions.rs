@@ -682,12 +682,13 @@ pub trait PositionCorpActionAlertSink {
     /// missed page on a delisting or a review is itself a safety event, so a transport
     /// failure is surfaced rather than silently swallowed (the exact reason
     /// [`crate::KillSwitchOperatorAlertSink::dispatch`] is fallible). The concrete
-    /// email/push binding is the deferred composition-root wiring (SRS-NOTIF-001).
+    /// email/push binding is deferred composition-root wiring: SRS-NOTIF-001's
+    /// notifier landed, but nothing binds it to this port yet.
     fn dispatch(&self, alert: PositionCorpActionAlert) -> Result<(), PositionAlertError>;
 }
 
 /// A failure to dispatch a position corporate-action alert to the operator — carries a
-/// short reason (the typed transport taxonomy lands with SRS-NOTIF-001).
+/// short reason (the typed transport taxonomy landed with SRS-NOTIF-001).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionAlertError {
     pub reason: String,

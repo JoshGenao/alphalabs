@@ -88,9 +88,17 @@ vendor data-provider keys — are treated as secrets end to end (NFR-S1, NFR-S4)
   never reach the logs. Committed secrets are independently blocked by
   `tools/critic_check.py` + `.gitleaks.toml`.
 
-The concrete Rust SMTP/push channel adapters (which will read these vault-sealed
-keys) remain deferred to the SRS-NOTIF-001 adapter work; this feature provides
-the at-rest + redaction mechanism they consume.
+The concrete Rust SMTP/push channel adapters LANDED with SRS-NOTIF-001
+(`atp-adapters::notification`) and read these vault-sealed keys; this feature
+provides the at-rest + redaction mechanism they consume.
+
+ONE credential is deliberately NOT vault-sealed: the `phase1-notification-egress`
+relay's provider password. The relay is a Postfix container that cannot read the
+vault format, and the vault admits only catalogued secret keys — which are
+required keys for every ATP process. It is a single-file read-only mount instead,
+with no environment path in any ATP_ENV. The judgment reviewer's standing
+objection to that trade, and the named owner for closing it, are recorded in
+`progress.d/session-SRS-NOTIF-001.md`.
 
 ## Network binding (SRS-SEC-002)
 

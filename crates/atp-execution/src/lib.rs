@@ -315,7 +315,9 @@ pub trait KillSwitchOperatorAlertSink {
     /// silently dropped — a missed page on a liquidation timeout is itself a
     /// safety event. The gate does NOT abort on failure; it records the
     /// outcome on `KillSwitchTimeoutEvent::operator_alert`. The concrete
-    /// SMTP/push transports are the deferred SRS-NOTIF-001 leg.
+    /// SMTP/push transports LANDED with SRS-NOTIF-001
+    /// (`atp-adapters::notification`); what is deferred here is the
+    /// composition-root wiring that binds one to this port.
     fn dispatch(&self, event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError>;
 }
 
@@ -349,7 +351,8 @@ pub trait IbLiquidationCleanup {
 /// carries a short reason string for now; the typed CONNECTIVITY_BLOCKED /
 /// transport-timeout taxonomy is added when the concrete IB-cancel/disconnect
 /// (`atp-adapters`, SRS-EXE-006) and email/push (`atp-notification`,
-/// SRS-NOTIF-001) runtimes land (named in the contract's `deferred[]`). The
+/// SRS-NOTIF-001's dispatcher landed; the LOG-001 sink and a subscribing
+/// runtime have not) (named in the contract's `deferred[]`). The
 /// gate maps an `Err` into `SideEffectOutcome::Failed { reason }` on the
 /// audit event so the failure is observable end to end.
 #[derive(Debug, Clone, PartialEq, Eq)]

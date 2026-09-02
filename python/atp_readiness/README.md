@@ -21,8 +21,9 @@ It does **not** ship:
   authentication, SSD data layer access, ingestion freshness within one
   trading day, system service health, and NAS reachability (deferred to
   SRS-MD-006);
-- the persistent operator-override audit log + notification dispatch
-  (deferred to SRS-LOG-001 + SRS-NOTIF-001).
+- the persistent operator-override audit log (deferred to SRS-LOG-001) plus its
+  notification dispatch (SRS-NOTIF-001's dispatcher has landed; what is missing
+  is a runtime that invokes it without an operator CLI).
 
 Because those four surfaces are not yet built, `ERR-9` stays
 `passes:false` in `feature_list.json`. The contract here is what they will

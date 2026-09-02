@@ -37,7 +37,8 @@
 //! string). It never carries an SMTP password, push access token, or message
 //! body that could embed one — NFR-S4 keeps channel credentials out of logs and
 //! out of the stored event. The credential lives only inside the concrete
-//! channel adapter (deferred to the SRS-NOTIF-001 transport adapters).
+//! channel adapter — the SRS-NOTIF-001 transport adapters in
+//! `atp-adapters::notification`.
 
 use core::fmt;
 
