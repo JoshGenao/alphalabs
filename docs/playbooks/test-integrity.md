@@ -325,3 +325,24 @@ Read this whenever you write a test, and before you believe a green one.
     re-acquired the exact defect the round before had removed, with the whole file green. When
     a fix introduces a new distinction, mutate ACROSS it in both directions and require each
     to die. `(NOTIF-001 r15/r16)`
+
+42. **A guard whose subject list comes from `git ls-files` is blind to the file you are
+    adding.** `test_closed_feature_references` scans tracked files; it passed locally
+    because the new test file was still UNTRACKED, so the scan could not see its own
+    planted-contradiction fixtures — and CI failed on the first commit that tracked it.
+    The green was real and meaningless. Re-run any tree-scanning check AFTER `git add`,
+    and give the check an explicit self-exclusion with a stated reason rather than
+    relying on it never seeing itself. `(NOTIF-001, found by CI)`
+43. **Changing a UI string breaks the e2e that asserts on it, and the default local gate
+    never runs it.** `pytest -m "not integration and not e2e"` is the parallel-safe suite,
+    so a sweep that rewrote dashboard copy passed everything locally and turned `main` red
+    on `integration`. When the diff touches what a gated suite ASSERTS on — copy, a payload
+    value, a selector — run that directory once (`ATP_RUN_E2E=1 pytest tests/e2e/`) before
+    integrating. Rule 35's lesson, arriving from the other direction: there it was a
+    signature change, here a string. `(NOTIF-001, found by CI)`
+44. **When an e2e asserts a literal that is about to change, ask what PROPERTY it was
+    pinning.** The dashboard e2e asserted the alerts pane names `SRS-NOTIF-001`; the
+    property was "the pane says WHO owes this feed". The wrong fix is deleting the
+    assertion, and the second-wrong fix is hardcoding the new id — the right one is
+    deriving the owner from the payload so the property survives the next re-owning.
+    `(NOTIF-001)`

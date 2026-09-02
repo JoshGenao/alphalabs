@@ -1134,15 +1134,19 @@
     }
     const feed = cellValue(snap && snap.feed);
     if (feed === null || feed === undefined) {
+      // Hoisted: the DOT must name the owner too. It used to hardcode the
+      // feature id, which went stale the moment that feature closed — the
+      // honest property is "the pane says who owes this feed", so derive it
+      // once from the payload and use it in both places.
+      const owner = shortSource((snap && snap.feed && snap.feed.data_source) || "deferred:UI-1");
       if (summary) {
-        const owner = shortSource((snap && snap.feed && snap.feed.data_source) || "deferred:UI-1");
         summary.textContent = "alert feed awaiting " + owner +
-          " (operator notifier) — IB connectivity loss and critical failures will surface here";
+          " — IB connectivity loss and critical failures will surface here";
         summary.dataset.tone = "warn";
       }
       if (beacon) beacon.dataset.state = "deferred";
       if (table) table.hidden = true;
-      setAlertsDot("wait", "alert feed deferred — no producer wired into this pane");
+      setAlertsDot("wait", "alert feed deferred — awaiting " + owner);
       return;
     }
     // Real feed (renders once this pane reads the notification store): one row

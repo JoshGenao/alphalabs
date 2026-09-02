@@ -16,6 +16,12 @@ So: `SWEPT_FEATURES` lists the ids whose references have actually been audited.
 Closing a feature and adding it here is the moment the sweep gets done. The set
 only grows, and the backlog above is the honest measure of what is left.
 
+THIS GUARD PASSED LOCALLY FOR THE WRONG REASON, once. ``_scannable_files()``
+reads ``git ls-files``, and this file was still UNTRACKED when the local suite
+ran — so the scan could not see its own planted fixtures, and CI failed on the
+first commit that tracked it. A scan whose subject list comes from git is blind
+to exactly the file you are adding. Re-run it after ``git add``.
+
 Not every match is a real contradiction — that is why this is an audit, not a
 regex applied blindly. "the deferred SRS-LOG-001 / SRS-UI-001 consumers" can be
 TRUE about a closed feature when it means *that consumer's own wiring* is
@@ -47,6 +53,13 @@ EXCLUDED_PREFIXES = (
     ".harness/",
     "feature_list.json",
     "docs/verification-queue.md",
+    # THIS FILE. Its parametrized fixtures are contradictions BY DESIGN — the
+    # only way to prove the matcher fires at all. Scanning itself made the
+    # guard indict its own evidence.
+    "tests/unit/test_closed_feature_references.py",
+    # The playbooks describe defect classes by quoting them. A rule that says
+    # 'never write "deferred SRS-NOTIF-001"' has to write it once to say so.
+    "docs/playbooks/",
 )
 
 SCANNED_SUFFIXES = (

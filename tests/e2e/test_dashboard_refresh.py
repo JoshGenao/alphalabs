@@ -595,14 +595,15 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
             assert page.eval_on_selector("#resv-window", "e => e.value") == "30"
 
             # Active critical alerts: the pane reaches its explicit awaiting
-            # state naming SRS-NOTIF-001 — and never claims "0 active alerts"
+            # state naming its OWNER (UI-1 — that owner moved when SRS-NOTIF-001
+            # closed) — and never claims "0 active alerts"
             # while the detection feed is unwired.
             page.wait_for_function(
                 "document.getElementById('alerts-summary').dataset.tone === 'warn'",
                 timeout=5_000,
             )
             alerts_summary = page.locator("#alerts-summary").inner_text()
-            assert "SRS-NOTIF-001" in alerts_summary
+            assert "UI-1" in alerts_summary
             assert "active critical alert" not in alerts_summary
             assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
             assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "deferred"
@@ -610,7 +611,7 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
             # deferred — placeholder-poll health is not alert-monitoring
             # health. It holds the honest awaiting state naming the owner.
             assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "wait"
-            assert "SRS-NOTIF-001" in (page.eval_on_selector("#fresh-alerts", "e => e.title") or "")
+            assert "UI-1" in (page.eval_on_selector("#fresh-alerts", "e => e.title") or "")
 
             # The stylesheet actually APPLIES (a malformed rule earlier in the
             # sheet would silently drop these): the deferred beacon renders its
@@ -681,7 +682,7 @@ def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
             page.unroute("**/dashboard/api/alerts")
             page.wait_for_function(
                 "document.getElementById('alerts-summary').dataset.tone === 'warn'"
-                " && document.getElementById('alerts-summary').textContent.includes('SRS-NOTIF-001')",
+                " && document.getElementById('alerts-summary').textContent.includes('UI-1')",
                 timeout=7_000,
             )
         finally:
@@ -691,7 +692,7 @@ def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
 def test_ui_1_alerts_real_feed_counts_string_false_ack_as_active(
     operations_view_url: str,
 ) -> None:
-    """UI-1 real-feed semantics (pinned ahead of the SRS-NOTIF-001 provider
+    """UI-1 real-feed semantics (pinned ahead of the UI-1 provider
     swap): the contract types alert fields as strings, so acknowledgement must
     be parsed FAIL-CLOSED — ``"false"`` (and any unknown shape) counts as an
     ACTIVE alert; only an explicit true acknowledges. A truthiness check would
