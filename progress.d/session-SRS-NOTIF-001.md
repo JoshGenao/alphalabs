@@ -1269,7 +1269,14 @@ SRS-DATA-019, SRS-DATA-020. The board is at ready:0 / DEADLOCK until then.
 Outcome: serialized (C: a Brevo account with a verified sender, and a genuine IB
 Gateway outage on the Proxmox VM. The relay itself is now BUILT and its handshake
 is proven against a real container.)
-Adversarial rounds: 17 (3 this session: 15, 16, 17 — all BLOCK, all real)
+Adversarial rounds: 18 (4 this session: 15, 16, 17, 18 — all BLOCK, all real)
+  r18 re-reviewed the SHIPPED tree (62b773e..HEAD) because the earlier rounds
+  predated the profile fix, the CLI fix and the live run. Findings: the standing
+  credential-at-rest deferral; feature_list.json still saying the relay is
+  unbuilt (operator-owned, see below); evidence not covering HEAD (re-recorded);
+  and a real one — the live-test module docs still showed the pre-r17 recipe
+  passing the provider password as an env var, which the entrypoint now refuses,
+  so the documented way to run that test could not work. Fixed in c8cbe20.
 
 ## What changed: the one remaining build is done
 
