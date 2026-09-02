@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .compose_project import compose_project
+
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +61,7 @@ def created_strategy_container():
     nas = data_root / "nas"
     ssd.mkdir()
     nas.mkdir()
-    project = f"atpsec003{data_root.name.replace('-', '')[:20]}"
+    project = compose_project("atpsec003", data_root.name)
 
     env = {
         **os.environ,

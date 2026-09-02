@@ -286,3 +286,25 @@ one `main`. Most of this playbook is about that sharing.
     human-reviewed branch and re-run on the product diff — which is what the reviewer's own
     recommendation says — and record the guard you wanted in the session note so it is not
     lost. `(RESV-006 r1/r3)`
+
+## A flake fixed at one call site comes back from the other (2026-09-02)
+
+- **The Compose project-name bug turned `main` red TWICE, months apart, from two
+  byte-identical copies.** `tempfile.mkdtemp` draws from `[a-z0-9_]`; a suffix ending in
+  `_` makes the image reference `<project>_-<service>`, which the daemon rejects as
+  `invalid reference format`. It was fixed in `test_jupyter_isolation_inspect.py` and
+  guarded by a unit test — and its sibling `test_strategy_container_inspect.py` kept the
+  old expression and failed the same way on a commit that changed one line of
+  `feature_list.json`. CLAUDE.md rule 1 with a delay fuse: the sweep for peer call sites
+  is not optional just because the fix looks local. `(2026-09-02)`
+- **A random-draw flake is invisible to "re-run it".** It passes on most draws, so a retry
+  reads as "fixed". Diagnose the DRAW, not the run: the failing name is in the log verbatim
+  and tells you which character class did it. `(2026-09-02)`
+- **Extract the shared helper and guard the CLASS by enumerating from the source.** The new
+  guard requires every integration test that shells `docker compose -p` to import the one
+  builder — so a file nobody has written yet is covered, which a checklist naming the two
+  known files is not. `(2026-09-02)`
+- **Tighten a source-scanning guard until its false positives are zero, or it gets ignored.**
+  The first version matched a bare `"-p"` and flagged nine innocent files running
+  `cargo test -p <crate>`. Give such a guard tests in BOTH directions plus a planted
+  offender, so "found nothing" is distinguishable from "scanned nothing". `(2026-09-02)`
