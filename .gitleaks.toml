@@ -54,3 +54,44 @@ regexTarget = "secret"
 regexes = [
   '''^phase1-[a-z0-9-]+$''',
 ]
+
+# gitleaks' curl-auth-* rules fire on DOCUMENTED COMMAND RECIPES, where the
+# credential position holds a placeholder the reader is meant to replace. Both
+# live in git HISTORY, so editing the current tree cannot clear them — a
+# full-history scan sees every commit that ever contained them. An allowlist is
+# the only remedy short of rewriting history, which is not worth doing for a
+# placeholder.
+#
+# This is why the NIGHTLY scan had never once succeeded: 20+ consecutive failures
+# back to 2026-08-09, with zero successes, while every push stayed green (push
+# scans cover the diff only). A guard that always fires is a guard everyone
+# learns to ignore — CLAUDE.md rule 9 — and a real leaked credential would have
+# landed in that report looking exactly like this noise.
+
+# docs/DEPLOYMENT.md teaches `curl -sS -u operator:'<operator-password>' …` for
+# polling ntfy. The captured "secret" is the literal angle-bracket placeholder.
+#
+# Scoped to the SHAPE rather than to this one string: a value whose credential
+# half is `<…>` is a placeholder by construction, and no real credential is
+# literally an angle-bracketed word. That also covers the next recipe someone
+# documents, which anchoring on this exact line would not.
+[[allowlists]]
+description = "Angle-bracket placeholders in documented curl recipes (never real credentials)"
+regexTarget = "secret"
+regexes = [
+  '''^[A-Za-z0-9_.@-]*:?'?<[A-Za-z][A-Za-z0-9 ._-]*>'?$''',
+]
+
+# The ntfy probe recipe deliberately sends an INVALID bearer token to prove the
+# server answers 401 rather than accepting anything:
+#   curl -v -H "Authorization: Bearer tk_definitely_invalid" …
+#
+# Scoped to `tk_` tokens whose value contains the word "invalid" and is otherwise
+# only lowercase letters and underscores. A real ntfy token is `tk_` plus a
+# high-entropy mixed-case alphanumeric run, so it cannot match this pattern.
+[[allowlists]]
+description = "ntfy probe tokens explicitly marked invalid (401-path fixtures, not credentials)"
+regexTarget = "secret"
+regexes = [
+  '''^tk_[a-z_]*invalid[a-z_]*$''',
+]

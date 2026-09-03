@@ -137,3 +137,31 @@ as PASS. A compose text-check must handle all of these or refuse:
   `create_host_path: true`: Compose then silently creates a DIRECTORY where the file belongs
   and the failure moves to an unreadable credential. Require the file, and say so where the
   create command already lives. `(NOTIF-001 r17)`
+
+## A secret scanner that has never passed (2026-09-02)
+
+- **Check the SCHEDULED runs, not just the ones your push triggered.** The nightly
+  `security` workflow had failed **20+ consecutive times back to 2026-08-09, with zero
+  successes ever**, while every push-triggered run was green. The difference is scope:
+  push and PR scans cover the DIFF; the schedule scans full history — 796 commits,
+  21 MB. `tools/ci_watch.sh` reports the runs for your commit, so a standing red on a
+  cron trigger is invisible to it. `gh run list --workflow <name>` and look at the
+  `schedule` rows. `(2026-09-02)`
+- **A finding in git HISTORY cannot be fixed by editing the tree.** Both remaining
+  gitleaks hits were placeholders in documented `curl` recipes — `<operator-password>`
+  and a deliberately-invalid `tk_..._invalid` probe token. Rewriting the current file
+  changes nothing, because the scan reads every commit that ever contained it. An
+  allowlist is the correct remedy; history rewriting is not worth it for a placeholder.
+  `(2026-09-02)`
+- **Scope an allowlist to the SHAPE, and prove both directions.** Anchoring on one exact
+  string means the next documented recipe re-reds the scan; anchoring on "a value whose
+  credential half is `<…>`" covers the class and still cannot match a real key. Every
+  allowlist entry is a hole punched in a scanner and the failure is SILENT, so pin it
+  with a test that asserts credential-shaped values are still reported —
+  `tests/unit/test_gitleaks_allowlist.py` fails on seven cases if a regex is widened to
+  `.*`. Test the REGEXES, not the binary: CI runs gitleaks through an Action, so a test
+  that skipped without a local binary would be vacuous exactly where it must hold.
+  `(2026-09-02)`
+- **A guard that always fires is worse than no guard on a SECURITY surface.** CLAUDE.md
+  rule 9 applied to secret scanning: a real leaked credential would have arrived in that
+  nightly report looking identical to twenty days of placeholder noise. `(2026-09-02)`
