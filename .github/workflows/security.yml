@@ -41,6 +41,16 @@ jobs:
           # Required since gitleaks-action v2.3.7+: a token is needed to enumerate
           # PR commits. The default read-only GITHUB_TOKEN is sufficient.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # WITHOUT THIS THE REPO CONFIG IS NEVER READ, and this scan has never
+          # once passed because of it — 20+ consecutive nightly failures with
+          # zero successes, on findings a `.gitleaks.toml` in this repo already
+          # allowlisted. The gitleaks CLI auto-detects `.gitleaks.toml` (leading
+          # dot); the ACTION auto-detects `gitleaks.toml` (no dot), per its own
+          # README. So the file was present, correct, and silently ignored —
+          # every local reproduction was clean while CI stayed red on the same
+          # commit. Setting the path explicitly removes the naming trap
+          # entirely rather than relying on either convention.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
 
   python-sast:
     name: Python SAST (bandit + pip-audit)

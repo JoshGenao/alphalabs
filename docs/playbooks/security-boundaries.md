@@ -165,3 +165,17 @@ as PASS. A compose text-check must handle all of these or refuse:
 - **A guard that always fires is worse than no guard on a SECURITY surface.** CLAUDE.md
   rule 9 applied to secret scanning: a real leaked credential would have arrived in that
   nightly report looking identical to twenty days of placeholder noise. `(2026-09-02)`
+- **THE ROOT CAUSE WAS A FILENAME, and the allowlist alone would not have fixed it.**
+  `gitleaks-action` auto-detects `gitleaks.toml`; the gitleaks CLI auto-detects
+  `.gitleaks.toml` (leading dot). This repo had the dotted name, so the action silently
+  ignored a config that had allowlisted two of the four findings for weeks — the file was
+  present, correct, and never read. Set `GITLEAKS_CONFIG` explicitly and the naming trap
+  is gone. `(2026-09-03)`
+- **The tell was a COUNT MISMATCH between the local run and CI, and it is worth chasing.**
+  Local scan with the config: 2 findings. CI: 4. Same commit, same tool. That gap is the
+  whole diagnosis, and it is easy to wave away as a version difference. Isolate it: run
+  once with a `useDefault`-only config and once with the repo's. Defaults-only reproduced
+  CI's four findings exactly — same rules, files and lines — which proves CI was running
+  without the repo config rather than running a different version. When your local
+  reproduction is CLEANER than CI on the same commit, suspect that CI is not loading what
+  you think it is. `(2026-09-03)`
