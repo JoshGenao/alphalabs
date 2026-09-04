@@ -479,6 +479,11 @@ pub enum RestartWindowError {
     /// into nothing, so the first blocked submission after the restart instant
     /// would page as a genuine outage.
     NonPositiveWindow { window_ns: i64 },
+    /// The suspension would begin before the epoch — the restart instant is
+    /// real but too early for its own lead. Refused rather than clamped: a
+    /// clamped start silently shortens the suspension, which is the one
+    /// direction it must never move.
+    SuspensionBeforeEpoch { suspend_from_ns: i64 },
     /// The window's start or end instant does not fit in `i64` nanoseconds.
     /// Reported rather than saturated: a saturated boundary silently moves the
     /// window, which is the one direction a maintenance window must never move.
@@ -504,6 +509,11 @@ impl fmt::Display for RestartWindowError {
                 formatter,
                 "SRS-MD-005: restart window must be positive (SyRS SYS-75(b) \
                  defaults to {DEFAULT_RESTART_WINDOW_SECONDS}s); got {window_ns}ns"
+            ),
+            Self::SuspensionBeforeEpoch { suspend_from_ns } => write!(
+                formatter,
+                "SRS-MD-005: the suspension would begin at {suspend_from_ns}ns, before the \
+                 epoch — the restart instant is too early for its own lead"
             ),
             Self::InstantOverflow => write!(
                 formatter,
@@ -602,6 +612,14 @@ impl RestartWindow {
         let suspend_from_ns = expected_restart_ns
             .checked_sub(lead_ns)
             .ok_or(RestartWindowError::InstantOverflow)?;
+        // The DERIVED start must also be a real instant. `expected_restart_ns`
+        // being non-negative is not enough: a small instant with a normal lead
+        // puts the suspension before the epoch, which cannot describe a gateway
+        // restart and would classify every earlier instant as `Normal` against
+        // a window that never legitimately opened.
+        if suspend_from_ns < 0 {
+            return Err(RestartWindowError::SuspensionBeforeEpoch { suspend_from_ns });
+        }
         let window_end_ns = expected_restart_ns
             .checked_add(window_ns)
             .ok_or(RestartWindowError::InstantOverflow)?;
@@ -4920,6 +4938,18 @@ mod tests {
             RestartWindow::new(i64::MAX, LEAD_NS, WINDOW_NS),
             Err(RestartWindowError::InstantOverflow)
         );
+        // A non-negative restart instant is not enough: with a normal lead, a
+        // small one puts the SUSPENSION before the epoch. Refused, not clamped
+        // — clamping would silently shorten the suspension.
+        assert_eq!(
+            RestartWindow::new(0, LEAD_NS, WINDOW_NS),
+            Err(RestartWindowError::SuspensionBeforeEpoch {
+                suspend_from_ns: -LEAD_NS
+            })
+        );
+        // Non-vacuity: exactly one lead past the epoch is accepted, so the
+        // refusal is about the boundary rather than about small instants.
+        assert!(RestartWindow::new(LEAD_NS, LEAD_NS, WINDOW_NS).is_ok());
     }
 
     #[test]

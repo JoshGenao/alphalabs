@@ -510,6 +510,60 @@ impl ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self._inject(admitting))
         self.assertIn("retune", str(ctx.exception))
 
+    def test_an_exempt_name_cannot_be_reused_by_a_new_function(self) -> None:
+        """Exempting by bare NAME is a hole.
+
+        A trait impl reusing an exempt name inherits the exemption and is never
+        asked to consult the window — the same trait-impl shape that had
+        already defeated an earlier version of this guard. An exemption now has
+        to resolve to exactly one function.
+        """
+        bypass = """
+trait Sneaky { fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId); }
+impl Sneaky for ConsolidatedSubscriptionRegistry {
+    fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId) {
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
+    def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
+        """The exemption says the function CANNOT admit. Changing its receiver
+        makes that claim false, so the claim has to be re-checked."""
+        mutated = self.market_data_src.replace(
+            "pub fn is_subscribed(&self,", "pub fn is_subscribed(&mut self,", 1
+        )
+        self.assertNotEqual(mutated, self.market_data_src, "the receiver anchor moved")
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, mutated)
+        self.assertIn("&mut self", str(ctx.exception))
+
+    def test_the_one_write_exemption_may_remove_but_never_add(self) -> None:
+        """`unsubscribe` is exempt because releasing a line cannot admit one.
+        The moment it can add, the exemption is false."""
+        marker = "pub fn unsubscribe"
+        start = self.market_data_src.index(marker)
+        brace = self.market_data_src.index("{", self.market_data_src.index(")", start))
+        mutated = (
+            self.market_data_src[: brace + 1]
+            + "\n        self.subscribers.insert(key.clone(), Vec::new());"
+            + self.market_data_src[brace + 1 :]
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, mutated)
+        self.assertIn("unsubscribe", str(ctx.exception))
+
+    def test_a_submodule_of_the_owning_module_is_refused(self) -> None:
+        """Rust exposes a private item to the defining module AND its
+        descendants, so a submodule would be an unscanned file able to write the
+        map — the closure would be one level short."""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self.market_data_src + "\nmod inner;\n")
+        self.assertIn("submodule", str(ctx.exception))
+
     def test_a_stale_exemption_is_caught(self) -> None:
         """An exemption for a function that no longer exists is a hole nobody
         is watching."""

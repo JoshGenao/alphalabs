@@ -21,8 +21,8 @@
 //! Keep it that way: anything that needs the subscriber map belongs in this
 //! file, gated, not in a module that reaches in.
 //!
-//! The boundary is proved by the compiler, not asserted. An external consumer
-//! cannot reach the field:
+//! The EXTERNAL half of the boundary is proved by the compiler. Neither a read
+//! nor a write of the field compiles from outside the crate:
 //!
 //! ```compile_fail
 //! use atp_market_data::ConsolidatedSubscriptionRegistry;
@@ -31,20 +31,25 @@
 //! let _ = &mut registry.subscribers;
 //! ```
 //!
-//! and neither can anything inside the crate, which is the case that actually
-//! bit — a sibling module reaching in was invisible to every scan over the
-//! crate root:
-//!
 //! ```compile_fail
-//! # use atp_market_data::live_feed as _sibling;
 //! use atp_market_data::ConsolidatedSubscriptionRegistry;
-//! fn sibling_reach(registry: &mut ConsolidatedSubscriptionRegistry) {
-//!     registry.subscribers.clear();
+//! fn count(registry: &ConsolidatedSubscriptionRegistry) -> usize {
+//!     registry.subscribers.len()
 //! }
 //! ```
 //!
 //! Both are mutation-verifiable: make the field `pub` and they fail with
 //! "Test compiled successfully, but it is marked `compile_fail`".
+//!
+//! **They do NOT prove the intra-crate half**, and being exact about that
+//! matters because the intra-crate case is the one that actually bit. Rustdoc
+//! compiles a doctest as a separate external crate, so no doctest here can
+//! stand in for a sibling module reaching in. What closes that case is the
+//! module boundary itself — `lib.rs` is this module's PARENT, and privacy does
+//! not flow child-to-parent, which `rustc` confirms with E0616 on a probe —
+//! together with `tools/connectivity_check.py`, which refuses if any crate-root
+//! function names the field and refuses if this module ever declares a
+//! submodule (a DESCENDANT would inherit visibility and go unscanned).
 
 use std::collections::BTreeMap;
 use std::fmt;

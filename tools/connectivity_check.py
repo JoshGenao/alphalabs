@@ -480,6 +480,91 @@ def _without_test_module(source: str) -> str:
     return source if index < 0 else source[:index]
 
 
+#: Expressions that ADD to a map, as opposed to reading or removing from it.
+#: Whitespace is collapsed before matching, so a rustfmt rewrap cannot hide one.
+_MAP_ADD_TOKENS = (".insert(", ".push(", ".entry(", ".append(", ".extend(")
+
+#: Any mutation at all, including removals.
+_MAP_WRITE_TOKENS = _MAP_ADD_TOKENS + (".remove(", ".retain(", ".clear(", ".get_mut(")
+
+
+def _any_fn_body(source: str, fn_name: str) -> str:
+    """A function body regardless of visibility — trait-impl methods included."""
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\b[^;{{]*{{", source)
+    if not match:
+        fail(f"Rust source is missing function `{fn_name}`")
+    depth, index = 1, match.end()
+    while index < len(source) and depth:
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        index += 1
+    return source[match.end() : index - 1]
+
+
+def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) -> None:
+    """An exemption must attach to ONE function with a KNOWN shape.
+
+    Exempting by bare name is a hole: a new trait-impl method reusing an exempt
+    name inherits the exemption and is never asked to consult the window. The
+    reviewer proved it with
+    ``impl S for ConsolidatedSubscriptionRegistry { fn is_subscribed(&mut self, ..)
+    { self.subscribers.insert(..); } }`` — the same trait-impl shape that had
+    already defeated an earlier version of this guard.
+
+    So an exemption is valid only when all three hold:
+
+    * exactly ONE function in the module has that name (a second declaration
+      makes the exemption ambiguous, and ambiguity resolves in the dangerous
+      direction);
+    * its receiver matches the one the contract declares, so an exempt reader
+      cannot quietly become `&mut self`; and
+    * a `&self` exemption performs NO write, while the single `&mut self`
+      exemption performs no ADD — removing a subscriber cannot admit one.
+    """
+    receivers = spec["exempt_receivers"]
+    for name in exempt:
+        declarations = re.findall(
+            rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(([^)]*)", source
+        )
+        if len(declarations) != 1:
+            fail(
+                f"exempt function `{name}` is declared {len(declarations)} times in the "
+                "subscription module; an exemption keyed on a name that resolves to "
+                "more than one function lets a new declaration inherit it"
+            )
+        declared = receivers.get(name)
+        if declared is None:
+            fail(f"admission_sites.exempt_receivers has no entry for `{name}`")
+        actual = declarations[0].strip()
+        if declared == "none":
+            if actual.startswith("&"):
+                fail(f"exempt function `{name}` gained a self receiver; re-classify it")
+        elif not actual.startswith(declared):
+            fail(
+                f"exempt function `{name}` now takes `{actual.split(',')[0].strip()}` "
+                f"where the contract declares `{declared}` — an exempt reader that "
+                "became a mutator would inherit an exemption it was never granted"
+            )
+        # `pub`-optional: trait-impl methods (try_acquire) carry no visibility
+        # keyword, and an exemption must cover them too.
+        body = re.sub(r"\s+", "", _any_fn_body(source, name))
+        forbidden = _MAP_ADD_TOKENS if declared == "&mut self" else _MAP_WRITE_TOKENS
+        offending = [
+            token
+            for token in forbidden
+            if re.sub(r"\s+", "", spec["private_field"]) + token in body
+        ]
+        if offending:
+            fail(
+                f"exempt function `{name}` performs `{', '.join(offending)}` on "
+                f"`{spec['private_field']}` — an exemption is a claim that the function "
+                "cannot admit a subscription, and this one now can"
+            )
+
+
 def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
     """Require the guard over the set RUST's privacy already closes.
 
@@ -560,6 +645,15 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     production_src = _code_only(_without_test_module(market_data_src))
     # The envelope minters live in the crate ROOT (the manager is a separate
     # type holding no map), so that file is scanned for them too.
+    submodules = re.findall(r"^\s*(?:pub\s+)?mod\s+(\w+)\s*;", production_src, re.M)
+    if submodules:
+        fail(
+            f"the subscription module declares submodule(s) {', '.join(submodules)}. "
+            "Rust exposes a private item to the defining module AND its descendants, so "
+            "those files could write the subscriber map ungated and this scan would not "
+            "see them — the closure is one level short. Keep the module leaf, or extend "
+            "this check to walk its children"
+        )
     if f"pub mod {spec['module_name']};" not in lib_src:
         fail(
             f"the crate root no longer declares `pub mod {spec['module_name']};` — the "
@@ -607,6 +701,7 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             f"admission_sites.exempt names {', '.join(stale)}, which no longer touches "
             "the subscription set — a stale exemption is a hole nobody is watching"
         )
+    _check_exemptions_are_not_reusable(spec, production_src, exempt)
 
     required = sorted(name for name in touchers if name not in exempt)
     declared = list(spec["functions"])

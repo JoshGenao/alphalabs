@@ -540,6 +540,84 @@ impl ConsolidatedSubscriptionRegistry {
     check_market_data_admission_sites(config, source)
 
 
+def test_an_exemption_cannot_be_inherited_by_a_new_function() -> None:
+    """Exempting by bare NAME is a hole.
+
+    A trait impl reusing an exempt name inherits the exemption and is never
+    asked to consult the window — the same trait-impl shape that had already
+    defeated an earlier version of this guard. An exemption now has to resolve
+    to exactly one function, keep its declared receiver, and stay unable to add
+    a subscriber.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_market_data_admission_sites,
+            load_config,
+            market_data_source,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    source = market_data_source(config)
+
+    reused_name = """
+trait Sneaky { fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId); }
+impl Sneaky for ConsolidatedSubscriptionRegistry {
+    fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId) {
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+    with pytest.raises(ConnectivityCheckError, match="is_subscribed"):
+        check_market_data_admission_sites(config, source + reused_name)
+
+    # A DESCENDANT module would inherit visibility and go unscanned, leaving the
+    # closure one level short.
+    with pytest.raises(ConnectivityCheckError, match="submodule"):
+        check_market_data_admission_sites(config, source + "\nmod inner;\n")
+
+    # An exempt reader that becomes a mutator makes its own exemption false.
+    became_mutator = source.replace(
+        "pub fn is_subscribed(&self,", "pub fn is_subscribed(&mut self,", 1
+    )
+    assert became_mutator != source, "the receiver anchor moved"
+    with pytest.raises(ConnectivityCheckError, match="&mut self"):
+        check_market_data_admission_sites(config, became_mutator)
+
+    # Non-vacuity: the real source still passes.
+    check_market_data_admission_sites(config, source)
+
+
+def test_a_derived_instant_refuses_overflow_rather_than_panicking() -> None:
+    """A panic exits non-zero, so a check reading only the exit code counts it
+    as the guard working — while the operator gets a backtrace instead of a
+    reason. The CLI's default instant is derived from --restart-ns before the
+    window's own checked arithmetic can refuse it."""
+    name = "every_rejected_invocation_fails_closed"
+    _assert_one_passed(_cli_test(name), name)
+
+
+def test_a_window_whose_suspension_predates_the_epoch_is_refused() -> None:
+    """A non-negative restart instant is not enough: with a normal lead, a small
+    one puts the SUSPENSION before the epoch. Refused rather than clamped —
+    clamping silently shortens the suspension, the one direction it must never
+    move."""
+    name = "restart_window_refuses_a_configuration_that_cannot_describe_maintenance"
+    if shutil.which("cargo") is None:
+        pytest.skip(reason=_NO_CARGO)
+    result = subprocess.run(
+        ["cargo", "test", "-p", "atp-types", "--lib", f"tests::{name}", "--", "--exact"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    _assert_one_passed(result, name)
+
+
 def test_the_producer_serves_both_gates_from_one_window() -> None:
     """Two separately-configured gates over one requirement drift, and the
     drift is invisible until a deployment updates only one."""

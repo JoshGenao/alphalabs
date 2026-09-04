@@ -349,9 +349,9 @@ fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
     // landed in `Restarting` and printed the SYS-75(a) proof for a lead it
     // never entered. The injection moves the instant outside the window
     // entirely, where nothing is suspended.
-    let default_now = parsed.restart_ns - parsed.lead_ns;
+    let default_now = checked(parsed.restart_ns, -parsed.lead_ns, "the lead")?;
     let now_ns = match parsed.injection {
-        Injection::OutsideWindow => parsed.restart_ns - parsed.lead_ns - NANOS_PER_SECOND,
+        Injection::OutsideWindow => checked(default_now, -NANOS_PER_SECOND, "the lead")?,
         _ => parsed.now_ns.unwrap_or(default_now),
     };
     let endpoint = dead_endpoint()?;
@@ -473,9 +473,10 @@ fn cmd_prove_escalation(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args, Injection::InsideWindow)?;
     // One second past the window by default; the injection moves the instant
     // back INSIDE it, where the same dead gateway is planned maintenance.
-    let default_now = parsed.restart_ns + parsed.window_ns + NANOS_PER_SECOND;
+    let window_end = checked(parsed.restart_ns, parsed.window_ns, "the window")?;
+    let default_now = checked(window_end, NANOS_PER_SECOND, "the window")?;
     let now_ns = match parsed.injection {
-        Injection::InsideWindow => parsed.restart_ns + parsed.window_ns / 2,
+        Injection::InsideWindow => checked(parsed.restart_ns, parsed.window_ns / 2, "the window")?,
         _ => parsed.now_ns.unwrap_or(default_now),
     };
     let endpoint = dead_endpoint()?;
@@ -547,7 +548,7 @@ fn cmd_prove_resume(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args, Injection::DeadGateway)?;
     // Halfway through the window by default: the gateway has come back before
     // the window closed, so SYS-75(c)/(d) says resume.
-    let default_now = parsed.restart_ns + parsed.window_ns / 2;
+    let default_now = checked(parsed.restart_ns, parsed.window_ns / 2, "the window")?;
     let now_ns = parsed.now_ns.unwrap_or(default_now);
 
     // Hold the listener for the whole run so the endpoint stays answering.
@@ -709,6 +710,21 @@ fn report_common(evidence: &RestartWindowEvidence) {
         "contrast[non-designated] route:internal_simulation sim-receipt:{}",
         evidence.non_designated_sim_receipt
     );
+}
+
+/// Offset an instant, refusing an overflow instead of panicking.
+///
+/// The default evaluation instant is derived from `--restart-ns` BEFORE
+/// `RestartWindow::new`'s own checked arithmetic can refuse it, so
+/// `--restart-ns 9223372036854775807` panicked with "attempt to add with
+/// overflow" in a debug build rather than producing the typed refusal this tool
+/// documents. A panic is not a fail-closed refusal: it exits non-zero, so a
+/// check that reads only the exit code counts it as the guard working, while
+/// the operator gets a backtrace instead of a reason.
+fn checked(instant_ns: i64, delta_ns: i64, label: &str) -> Result<i64, String> {
+    instant_ns.checked_add(delta_ns).ok_or_else(|| {
+        format!("the instant derived from --restart-ns and {label} overflows i64 nanoseconds")
+    })
 }
 
 /// Fail closed on a broken post-condition. Returning `Err` is what keeps the

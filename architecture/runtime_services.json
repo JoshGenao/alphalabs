@@ -989,6 +989,16 @@
           "fan_out",
           "try_acquire"
         ],
+        "exempt_receivers": {
+          "new": "none",
+          "unsubscribe": "&mut self",
+          "distinct_subscriptions": "&self",
+          "subscriber_count": "&self",
+          "is_subscribed": "&self",
+          "fan_out": "&self",
+          "try_acquire": "&self"
+        },
+        "$exempt_receivers_why": "An exemption keyed on a bare NAME is a hole: a new trait-impl method reusing an exempt name inherits it. Pinning the receiver means an exempt reader cannot quietly become `&mut self`, the check refuses a name that resolves to more than one function, and it verifies a `&self` exemption performs no write while the single `&mut self` one (unsubscribe) performs no ADD -- removing a subscriber cannot admit one.",
         "exempt_reasons": {
           "new": "The constructor. It creates an EMPTY map -- there is no request, no strategy and no security to admit, so there is nothing for a window to refuse.",
           "unsubscribe": "Removing a subscriber cannot ADMIT anything, and refusing it during maintenance would strand strategies on lines they asked to leave -- releasing a line is always safe.",

@@ -124,6 +124,11 @@ fn assert_failed_closed(output: &Output, label: &str) {
         combined(output)
     );
     assert!(
+        !combined(output).contains("panicked at"),
+        "{label}: refused by PANICKING, which prints no reason an operator can read\n{}",
+        combined(output)
+    );
+    assert!(
         !contains_success_sentinel(&combined(output)),
         "{label}: a failure path emitted a success sentinel\n{}",
         combined(output)
@@ -419,6 +424,13 @@ fn every_rejected_invocation_fails_closed() {
         // `--help` is honoured only as the sole argument: accepting it here
         // would exit 0 having proved nothing.
         vec!["prove-suspension", "--help"],
+        // An instant derived from --restart-ns must REFUSE on overflow, not
+        // panic: a panic prints no proof line but also no reason an operator
+        // can read, and the arithmetic runs before RestartWindow::new's own
+        // checked refusal can fire.
+        vec!["prove-escalation", "--restart-ns", "9223372036854775807"],
+        vec!["prove-resume", "--restart-ns", "9223372036854775807"],
+        vec!["prove-suspension", "--restart-ns", "0"],
     ] {
         let output = run(&args);
         assert_failed_closed(&output, &format!("{args:?}"));
