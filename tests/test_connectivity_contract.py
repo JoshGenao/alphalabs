@@ -606,14 +606,31 @@ impl ConsolidatedSubscriptionRegistry {
         self.assertIn("unsubscribe", str(ctx.exception))
 
     def test_interior_mutability_in_the_owning_module_is_refused(self) -> None:
-        """The `&self` exemptions rest on the borrow checker. A `RefCell` around
-        the map would let a `&self` method admit a subscription, so the argument
-        for those exemptions would silently stop holding."""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(
-                self.config, self.market_data_src + "\nuse std::cell::RefCell;\n"
-            )
-        self.assertIn("interior mutability", str(ctx.exception))
+        """The `&self` exemptions rest on the borrow checker, so ANYTHING that
+        lets `&self` mutate dissolves them.
+
+        The first version of this check banned three shapes and the test
+        exercised one of them, while asserting the whole class — so a `Cell`,
+        `OnceCell` or atomic would have reintroduced interior mutability and let
+        an exempt reader admit a subscription with no guard failure.
+        """
+        for snippet in (
+            "use std::cell::RefCell;",
+            "use std::cell::Cell;",
+            "use std::cell::OnceCell;",
+            "use std::sync::atomic::AtomicUsize;",
+            "use std::sync::OnceLock;",
+            "    fn sneak(&self) { unsafe { } }",
+        ):
+            with self.assertRaises(ConnectivityCheckError) as ctx:
+                check_market_data_admission_sites(
+                    self.config, self.market_data_src + "\n" + snippet + "\n"
+                )
+            self.assertIn("interior mutability", str(ctx.exception), snippet)
+
+        # Non-vacuity: the real module passes, so the refusals above are about
+        # the snippets rather than about a check that refuses everything.
+        check_market_data_admission_sites(self.config, self.market_data_src)
 
     def test_any_widened_visibility_on_the_field_is_caught(self) -> None:
         """The closure IS Rust's privacy, so any widening breaks it.

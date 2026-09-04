@@ -378,6 +378,69 @@ fn the_registry_tells_the_two_refusals_apart_too() {
 }
 
 #[test]
+fn a_permanently_invalid_request_is_refused_on_its_own_terms_during_the_window() {
+    // Precedence. The suspension tells the operator to retry once the window
+    // closes; for an option, an empty symbol or an empty strategy id that is
+    // false — those are refused in every phase — and answering "wait five
+    // minutes" sends them to retry something that can never succeed.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+    let sink = ChangeSinkSpy::default();
+    let suspended = WindowAt::at(RESTART_NS - 30 * NANOS_PER_SECOND);
+
+    let option = SubscriptionRequest {
+        strategy_id: StrategyId::new("live-alpha"),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Option,
+    };
+    assert_eq!(
+        registry
+            .subscribe(&option, &suspended, &sink)
+            .expect_err("options fail closed"),
+        SubscriptionRegistryError::OptionContractUnsupported,
+        "an option is unsupported in every phase; the window must not relabel it"
+    );
+
+    let empty_symbol = SubscriptionRequest {
+        strategy_id: StrategyId::new("live-alpha"),
+        symbol: "   ".to_string(),
+        asset_class: AssetClass::Equity,
+    };
+    assert_eq!(
+        registry
+            .subscribe(&empty_symbol, &suspended, &sink)
+            .expect_err("empty symbol"),
+        SubscriptionRegistryError::EmptySymbol
+    );
+
+    let empty_strategy = SubscriptionRequest {
+        strategy_id: StrategyId::new("  "),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Equity,
+    };
+    assert_eq!(
+        registry
+            .subscribe(&empty_strategy, &suspended, &sink)
+            .expect_err("empty strategy id"),
+        SubscriptionRegistryError::EmptyStrategyId
+    );
+
+    // Non-vacuity, and the property that must NOT regress: a request that WOULD
+    // have been admitted is still suspended. Without this the fix could have
+    // been "stop suspending anything".
+    assert_eq!(
+        registry
+            .subscribe(&sub("live-alpha", "AAPL"), &suspended, &sink)
+            .expect_err("a valid request is suspended"),
+        SubscriptionRegistryError::SuspendedForScheduledRestart
+    );
+    assert_eq!(
+        registry.distinct_subscriptions(),
+        0,
+        "no refusal may register a line"
+    );
+}
+
+#[test]
 fn srs_md_005_admission_follows_the_sys_75_phases_over_both_reachabilities() {
     // The full truth table, so a change to either the phase arithmetic or the
     // admission rule has to move both. Reachability is a dimension rather than

@@ -114,10 +114,15 @@ pub enum SubscriptionRegistryError {
     OptionContractUnsupported,
     /// The scheduled IB Gateway restart window is suspending market-data
     /// requests (SRS-MD-005, SyRS SYS-75(a)). Distinct from the line-limit
-    /// refusal on purpose: nothing was consumed and nothing is misconfigured, so the
-    /// identical request succeeds unchanged once the window closes. Conflating
-    /// the two would send an operator hunting for a line-budget problem that
-    /// does not exist.
+    /// refusal on purpose: nothing was consumed and nothing is misconfigured, so
+    /// the operator should retry after the window rather than hunt for a
+    /// line-budget problem that does not exist.
+    ///
+    /// A request that reaches this refusal WOULD have been admitted:
+    /// `subscribe` validates structure first, so a permanently-invalid request
+    /// (an option, an empty symbol, an empty strategy id) gets its own error in
+    /// every phase. Telling someone to wait five minutes for something that can
+    /// never succeed is worse than telling them nothing.
     SuspendedForScheduledRestart,
     /// The IB Gateway is unreachable (SyRS SYS-45). Distinct from the
     /// scheduled-restart refusal above: this one is an incident the operator is
@@ -160,7 +165,8 @@ impl fmt::Display for SubscriptionRegistryError {
             ),
             Self::SuspendedForScheduledRestart => formatter.write_str(
                 "SRS-MD-005/SYS-75: market-data requests are suspended for the \
-                 scheduled IB Gateway restart window (planned maintenance)",
+                 scheduled IB Gateway restart window (planned maintenance); the \
+                 request was otherwise valid, so retry after the window",
             ),
             Self::ConnectivityLost => formatter.write_str(
                 "SRS-SAFE-003/SYS-45: market-data requests are blocked — IB Gateway \
@@ -267,9 +273,21 @@ impl ConsolidatedSubscriptionRegistry {
         window: &W,
         events: &S,
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
-        // Ahead of validation and ahead of every mutation: a refusal here must
-        // leave the registry exactly as it found it, and the cheapest way to
-        // guarantee that is to refuse before anything is borrowed mutably.
+        // PRECEDENCE. Structural validation runs FIRST, then the window.
+        //
+        // The suspension tells the operator this is planned maintenance and the
+        // request will work once the window closes. For an `AssetClass::Option`
+        // request, an empty symbol or an empty strategy id that is false — the
+        // request is refused on its own terms in every phase — and answering
+        // "wait five minutes" sends them to retry something that can never
+        // succeed. So a permanently-invalid request gets its OWN error whatever
+        // the phase, and only a request that WOULD have been admitted is
+        // suspended.
+        //
+        // Both checks are pure and precede every mutation, so a refusal from
+        // either still leaves the registry exactly as it found it.
+        let key = request.security_key()?;
+        Self::validate_strategy_id(&request.strategy_id)?;
         match window.admission() {
             MarketDataAdmission::Admitted => {}
             MarketDataAdmission::SuspendedForScheduledRestart => {
@@ -279,8 +297,6 @@ impl ConsolidatedSubscriptionRegistry {
                 return Err(SubscriptionRegistryError::ConnectivityLost);
             }
         }
-        let key = request.security_key()?;
-        Self::validate_strategy_id(&request.strategy_id)?;
 
         let change = if let Some(existing) = self.subscribers.get_mut(&key) {
             if existing.contains(&request.strategy_id) {

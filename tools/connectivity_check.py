@@ -677,9 +677,28 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     # The `&self` exemptions rest on the borrow checker, which interior
     # mutability would quietly undo — a `RefCell` around the map would let a
     # `&self` method admit a subscription.
+    # The whole CLASS, not the three shapes that came to mind. A `Cell`,
+    # `OnceCell` or atomic reintroduces interior mutability just as well, and
+    # would let an already-exempt `&self` reader admit a subscription with no
+    # window check — the exemptions rest on the borrow checker, so anything that
+    # lets `&self` mutate dissolves them.
     interior = [
         token
-        for token in ("RefCell", "UnsafeCell", "Mutex<", "RwLock<", "unsafe ")
+        for token in (
+            "Cell<",
+            "RefCell",
+            "UnsafeCell",
+            "OnceCell",
+            "LazyCell",
+            "Mutex<",
+            "RwLock<",
+            "OnceLock",
+            "LazyLock",
+            "Atomic",
+            "unsafe ",
+            "cell::",
+            "sync::atomic",
+        )
         if token in production_src
     ]
     if interior:

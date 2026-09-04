@@ -707,6 +707,28 @@ def test_the_privacy_closure_survives_any_widened_visibility() -> None:
     check_market_data_admission_sites(config, source)
 
 
+def test_a_permanently_invalid_request_is_not_relabelled_as_maintenance() -> None:
+    """Precedence, and a real operator-facing defect the review found.
+
+    The suspension tells the operator to retry once the window closes. For an
+    option subscription, an empty symbol or an empty strategy id that is false —
+    those are refused in every phase — so answering "wait five minutes" sends
+    them to retry something that can never succeed. Structural validation now
+    runs first, and only a request that WOULD have been admitted is suspended.
+    """
+    name = "a_permanently_invalid_request_is_refused_on_its_own_terms_during_the_window"
+    _assert_one_passed(_market_data_test(name), name)
+
+
+def test_the_retained_reachability_observation_expires() -> None:
+    """`last_outcome` promises an observation no older than the reuse window.
+    Dropping the instant meant a 90-second-old outage was still handed back as
+    current during the lead, where nothing probes — a stale fact wearing a fresh
+    label."""
+    name = "the_retained_outcome_expires_with_the_reuse_window"
+    _assert_one_passed(_producer_test(name), name)
+
+
 def test_the_producer_serves_both_gates_from_one_window() -> None:
     """Two separately-configured gates over one requirement drift, and the
     drift is invisible until a deployment updates only one."""

@@ -248,10 +248,20 @@ where
     /// `deferred[]`: routing it into the alert needs the envelope change that
     /// contract owns.
     pub fn last_outcome(&self) -> Option<ReachabilityOutcome> {
+        let now_ns = (self.clock)();
         self.last_outcome
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
+            .filter(|(taken_at_ns, _)| {
+                // Enforce the freshness the doc promises. Dropping the instant
+                // meant that after an outage at T-90s the `Suspending` phase
+                // skips probing and this still returned an 89-second-old
+                // observation to a caller told to expect one no older than the
+                // TTL — a stale fact wearing a fresh label, which is the shape
+                // of every other bug this feature has spent rounds on.
+                (0..self.ttl_ns).contains(&now_ns.saturating_sub(*taken_at_ns))
+            })
             .map(|(_, outcome)| outcome.clone())
     }
 
@@ -681,6 +691,34 @@ mod tests {
         now.store(RESTART_NS + WINDOW_NS - 5_000_000_000, Ordering::SeqCst);
         let _ = cached.state();
         assert_eq!(cached.probe.calls.get(), 2);
+    }
+
+    #[test]
+    fn the_retained_outcome_expires_with_the_reuse_window() {
+        // `last_outcome` promises an observation no older than the TTL. Dropping
+        // the instant meant that after an outage at T-90s the Suspending phase
+        // skips probing and this still returned an 89-second-old observation —
+        // a stale fact wearing a fresh label, which is the shape of nearly
+        // every bug this feature spent a round on.
+        let now = AtomicI64::new(RESTART_NS - LEAD_NS - 1);
+        let producer =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+                now.load(Ordering::SeqCst)
+            });
+        assert_eq!(producer.state(), ConnectivityState::Unreachable);
+        assert!(
+            producer.last_outcome().is_some(),
+            "fresh, so it is reported"
+        );
+
+        // Move into the lead, where nothing probes. The retained entry is now
+        // older than the TTL and must not be handed back as current.
+        now.store(RESTART_NS - 1, Ordering::SeqCst);
+        assert_eq!(producer.state(), ConnectivityState::ScheduledRestartWindow);
+        assert!(
+            producer.last_outcome().is_none(),
+            "an observation older than the reuse window is not an observation"
+        );
     }
 
     #[test]
