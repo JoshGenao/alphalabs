@@ -874,6 +874,50 @@ impl RestartWindowGate for SimGate {
             check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("SimGate", str(ctx.exception))
 
+    def test_the_impl_target_is_a_type_not_an_identifier(self) -> None:
+        """`for &X`, `for &'a X` and `for (X, u8)` all escaped a `(\\w+)` capture.
+
+        Rust lets you implement a trait for a reference or a tuple, so requiring
+        a bare identifier after `for` left the "closed set" open to exactly the
+        always-admitting production gate the enumeration exists to forbid. Each
+        shape below was verified against the old compiled pattern as a real
+        bypass, not a hypothetical.
+        """
+        shapes = {
+            "reference": "impl atp_market_data::RestartWindowGate for &AlwaysOpen {",
+            "lifetime": "impl<'a> atp_market_data::RestartWindowGate for &'a AlwaysOpen {",
+            "tuple": "impl atp_market_data::RestartWindowGate for (AlwaysOpen, u8) {",
+            "where_clause": (
+                "impl<C> atp_market_data::RestartWindowGate for AlwaysOpen<C>\n"
+                "where\n    C: Fn() -> i64,\n{"
+            ),
+        }
+        for label, header in shapes.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_type_parameter_is_not_mistaken_for_an_implementor(self) -> None:
+        """The false-positive direction of the fix.
+
+        Stripping generics is what stops `ScheduledRestartConnectivity<P, C>`
+        reporting `P` and `C` as two undeclared production implementors, which
+        would make the guard cry wolf on the declared producer itself.
+        """
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""
         empty = Path(tempfile.mkdtemp())

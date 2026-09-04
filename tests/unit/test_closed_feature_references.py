@@ -275,12 +275,99 @@ def test_a_queue_row_promising_a_close_discloses_a_standing_critic_block() -> No
     for line in queue.read_text(encoding="utf-8").splitlines():
         for fid in set(re.findall(r"close_feature\.py\s+(SRS-[A-Z]+-\d+)", line)):
             blocked = _blocked_layers(fid)
-            if blocked and "block" not in line.lower():
+            # The verdict as a CODE SPAN, not the substring "block". "unblocks",
+            # "blocked on the VM" and "blocking" all contain it, so a substring
+            # test let a row hand over a failing command while disclosing
+            # nothing about the critic verdict. A backticked verdict is a
+            # deliberate statement of it.
+            if blocked and not re.search(r"`(block|warn|none)`", line):
                 problems.append(f"{fid}: critic {', '.join(blocked)} is not `approve`")
     assert not problems, (
         "queue row(s) promise a close that `evidence.py verify` will refuse, "
         "without disclosing the standing verdict: " + "; ".join(problems)
     )
+
+
+def test_a_stated_round_count_matches_the_record() -> None:
+    """Three surfaces claimed three different round counts (13, 13, 14).
+
+    A number a reader can check against `evidence.json` is worth having; three
+    that disagree tell the reader the whole record is hand-maintained.
+
+    Scoped to the LINE, not the file. A queue row is one line per feature, so a
+    count and the id it describes sit together; comparing every count in a file
+    against every id in it produced seven false accusations on the first run.
+    """
+    surfaces = [ROOT / "docs" / "verification-queue.md"]
+    runs = ROOT / ".harness" / "runs"
+    if runs.is_dir():
+        surfaces += sorted(runs.rglob("VERIFICATION.md"))
+
+    def recorded_rounds(fid: str) -> set[int]:
+        rec = ROOT / ".harness" / "runs" / fid / "evidence.json"
+        if not rec.exists():
+            return set()
+        try:
+            critic = json.loads(rec.read_text(encoding="utf-8")).get("critic") or {}
+        except json.JSONDecodeError:
+            return set()
+        return {
+            e["rounds"]
+            for e in critic.values()
+            if isinstance(e, dict) and isinstance(e.get("rounds"), int)
+        }
+
+    count_re = re.compile(r"(?:rounds:\s*|\bat\s+|\bafter\s+)(\d+)\s*rounds?")
+    problems = []
+    for doc in surfaces:
+        if not doc.exists():
+            continue
+        # A VERIFICATION.md sits under .harness/runs/<FID>/, so it is about that
+        # feature throughout; a queue row names its own feature on its own line.
+        owner = doc.parent.name if doc.name == "VERIFICATION.md" else None
+        for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            stated = {int(m) for m in count_re.findall(line)}
+            if not stated:
+                continue
+            ids = [owner] if owner else sorted(set(re.findall(r"\bSRS-[A-Z]+-\d+\b", line)))
+            for fid in ids:
+                rounds = recorded_rounds(fid) if fid else set()
+                if rounds and not (stated & rounds):
+                    problems.append(
+                        f"{doc.relative_to(ROOT)}:{n} states {sorted(stated)} rounds "
+                        f"for {fid}, record holds {sorted(rounds)}"
+                    )
+    assert not problems, "; ".join(problems)
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "This unblocks SRS-SAFE-003.",
+        "Was blocked on the VM being down.",
+        "Nothing blocking remains.",
+    ],
+)
+def test_prose_containing_the_word_block_does_not_satisfy_the_disclosure(
+    prose, tmp_path, monkeypatch
+) -> None:
+    """The substring hole, pinned as three real sentences a row might carry."""
+    fid = "SRS-FAKE-002"
+    run = tmp_path / ".harness" / "runs" / fid
+    run.mkdir(parents=True)
+    (run / "evidence.json").write_text(
+        json.dumps({"critic": {"judgment": {"verdict": "block"}}}), encoding="utf-8"
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | {prose} | `close_feature.py {fid} --verified` |",
+        encoding="utf-8",
+    )
+    import tests.unit.test_closed_feature_references as mod
+
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="judgment"):
+        mod.test_a_queue_row_promising_a_close_discloses_a_standing_critic_block()
 
 
 def test_the_queue_guard_fires_on_a_row_that_hides_a_block(tmp_path, monkeypatch) -> None:

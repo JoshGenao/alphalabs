@@ -203,3 +203,24 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   reason in a comment leaves the exemption silently wrong the day gates reach the page.
   Assert the *condition that justifies it* (`"gates" not in inspect.getsource(render)`),
   so the exemption fails the moment its premise does. `(SRS-MD-005 r14)`
+
+- **An impl target is a TYPE, not an identifier.** `for\s+(\w+)` misses
+  `impl Gate for &AlwaysOpen`, `impl<'a> Gate for &'a AlwaysOpen` and
+  `impl Gate for (AlwaysOpen, u8)` - all legal Rust, all production implementors, all
+  invisible to a "closed set" enumeration. Capture the span up to `where` or `{`, strip
+  its generic arguments (or `P` and `C` in `Foo<P, C>` each read as a type and the guard
+  cries wolf on the declared producer), then take the type names. `(SRS-MD-005 r15)`
+- **When you fix a regex defect, grep the file for the same shape before you write the
+  playbook entry about it.** The `[^>]*` fix landed 54 lines below two siblings carrying
+  the identical class, one of which would have `fail()`ed claiming the producer did not
+  implement the trait the moment it grew an `Fn() -> i64` bound. `(SRS-MD-005 r15)`
+- **A "class" guard that keys on a DIRECT call sees only the odd path.** The recorder
+  check looked for `save_record` by name, which caught the two commands that call it
+  directly and missed `run`, `record` and `artifact` - the three that persist through
+  `_store_step`, i.e. the normal way to write one. Close the relation transitively and
+  assert the closure reaches the known helper, so the walk itself is tested.
+  `(SRS-MD-005 r15)`
+- **Scope a cross-file consistency check to the LINE, not the file.** Comparing every
+  "N rounds" claim in the queue against every feature id in the queue produced seven
+  false accusations on its first run. A row is one line; keep the claim and its subject
+  together. `(SRS-MD-005 r15)`

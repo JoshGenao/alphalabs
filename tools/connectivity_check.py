@@ -558,7 +558,9 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
     """
     receivers = spec["exempt_receivers"]
     for name in exempt:
-        declarations = re.findall(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(([^)]*)", source)
+        declarations = re.findall(
+            rf"\bfn\s+{re.escape(name)}\s*(?:<[^{{}}();]*?>)?\s*\(([^)]*)", source
+        )
         if len(declarations) != 1:
             fail(
                 f"exempt function `{name}` is declared {len(declarations)} times in the "
@@ -837,7 +839,12 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
     if f"pub struct {spec['struct']}" not in producer_src:
         fail(f"{spec['module']} does not declare `{spec['struct']}`")
     for trait in spec["implements"]:
-        if not re.search(rf"impl<[^>]*>\s+(?:\w+::)*{re.escape(trait)}\s+for", producer_src):
+        # `[^{};]*?`, not `<[^>]*>`: the latter cannot span a `Fn() -> i64`
+        # bound, so a producer refactored to carry one would make this
+        # `fail()` claiming the trait is not implemented at all. Same defect
+        # as the implementor scan below; fixed in both, not just the one the
+        # reviewer pointed at.
+        if not re.search(rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(trait)}\s+for", producer_src):
             fail(
                 f"{spec['struct']} does not implement `{trait}` — the order gate and the "
                 "market-data gate must read ONE window, or they drift"
@@ -847,6 +854,22 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
         f"{' + '.join(spec['implements'])} — one producer behind both suspensions "
         "(SRS-MD-005)"
     )
+
+
+def _strip_generic_args(text: str) -> str:
+    """Drop `<...>` spans so type PARAMETERS are not read as type names.
+
+    `ScheduledRestartConnectivity<P, C>` must yield one name, not three.
+    """
+    out, depth = [], 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
 
 
 def check_restart_window_gate_implementors(config: dict, _unused: str, root: Path = ROOT) -> str:
@@ -890,12 +913,23 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             # through it. Excluding `{`/`}`/`;` instead keeps the match inside
             # one impl header while permitting arrows, lifetimes and where-less
             # bounds.
+            # The impl TARGET is a type, not an identifier. Requiring `(\w+)`
+            # after `for` meant `impl Gate for &AlwaysOpen`,
+            # `impl<'a> Gate for &'a AlwaysOpen` and `impl Gate for (AlwaysOpen, u8)`
+            # all returned no match, so the "closed set" stayed open to exactly
+            # the always-admitting production gate it exists to forbid. Take the
+            # whole target span, strip its generic arguments (or `P` and `C` in
+            # `ScheduledRestartConnectivity<P, C>` would each read as a type),
+            # and collect every type name left.
             for match in re.finditer(
-                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(spec['trait'])}\s+for\s+(\w+)",
+                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(spec['trait'])}"
+                r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
                 source,
                 re.S,
             ):
-                found[match.group(1)] = str(path.relative_to(root))
+                target = _strip_generic_args(match.group(1))
+                for name in re.findall(r"\b([A-Z]\w*)", target):
+                    found[name] = str(path.relative_to(root))
     if not found:
         fail(
             f"no production type implements `{spec['trait']}` — either the producer was "

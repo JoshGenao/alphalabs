@@ -954,3 +954,20 @@ def test_a_malformed_restart_schedule_is_refused_rather_than_defaulted() -> None
     accepted = RestartSchedule()
     assert accepted.window_seconds == 300
     assert accepted.suspend_lead_seconds == 60
+
+
+def test_the_reporting_surface_honours_the_same_bound_as_the_gate() -> None:
+    """A bound that only half the module respects is not a bound.
+
+    Once positives began to be cached, `last_outcome()` - the surface that
+    describes reachability to an operator - still filtered on the 1 s NEGATIVE
+    TTL, so a `Reachable` could be reported as current for ten times the 100 ms
+    bound the module installs as its safety property. Both the gate and the
+    report now route through one `ttl_for`, and this pins that they agree.
+
+    NOT proven here: that the bound is the right length. It is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time; this test only proves the two surfaces cannot drift apart.
+    """
+    name = "the_reporting_surface_honours_the_same_bound_as_the_gate"
+    _assert_one_passed(_producer_test(name), name)

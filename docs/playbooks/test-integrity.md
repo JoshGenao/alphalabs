@@ -398,3 +398,15 @@ Read this whenever you write a test, and before you believe a green one.
     assertion, and the second-wrong fix is hardcoding the new id — the right one is
     deriving the owner from the payload so the property survives the next re-owning.
     `(NOTIF-001)`
+
+- **Never write a result you did not capture, under a document that promises captured
+  output.** `VERIFICATION.md` opened with "Every block below is captured terminal output,
+  not a summary" and then carried
+  `$ echo "cargo test --workspace : 176 suites ok, 0 failed"`, whose `[exit 0]` was
+  `echo`'s. The number was CORRECT - which is exactly why no reader could tell, and why
+  correctness is no defence. On the page a typed result and a captured one are identical.
+  If a command is slow, run it and wait; if it cannot run, say so and leave the block out.
+  The shape is now banned repo-wide by
+  `tests/unit/test_evidence_artifacts.py::test_no_verification_transcript_asserts_a_result_it_did_not_run`,
+  which permits `; echo "... exit $?"` (a real captured code) and rejects an `echo` that
+  states a result of its own. `(SRS-MD-005 r15)`

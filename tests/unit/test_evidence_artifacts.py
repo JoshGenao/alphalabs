@@ -606,39 +606,106 @@ def test_recording_a_critic_verdict_refreshes_the_page(rec, monkeypatch):
 def test_every_recorder_that_saves_the_record_also_refreshes_the_page():
     """The class: this catches the NEXT recorder, not just the one that was wrong.
 
-    Enumerated over the source rather than over a hand-written list, so a new
-    `cmd_*` that calls `save_record` cannot join the tree without either
-    refreshing the page or being named here with a reason.
+    Persistence is followed TRANSITIVELY. An earlier version keyed on a direct
+    `save_record` call, which saw only `cmd_gate` and `cmd_critic` - while
+    `run`, `record` and `artifact` persist through `_store_step`. So the guard
+    was blind to the normal path: a new recorder written the ordinary way could
+    omit the refresh and pass a check whose whole claim is "every writer of the
+    source".
     """
     import ast
     import inspect
 
     # `cmd_gate` is the one legitimate exemption: `render_markdown` renders no
     # gate state at all, so a stale page cannot contradict the record about it.
-    # The exemption is checked, not asserted — the moment gates reach the page it
+    # The exemption is checked, not asserted - the moment gates reach the page it
     # expires by itself rather than quietly becoming wrong.
     exempt = {"cmd_gate": "render_markdown renders no gate state"}
     render_src = inspect.getsource(evidence.render_markdown)
     assert '"gates"' not in render_src and "'gates'" not in render_src, (
         "render_markdown now renders gate state, so cmd_gate can leave the page "
-        "contradicting the record — remove it from `exempt` and refresh there too"
+        "contradicting the record - remove it from `exempt` and refresh there too"
     )
 
     tree = ast.parse(inspect.getsource(evidence))
-    offenders = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("cmd_"):
-            continue
-        called = {
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    def calls(node):
+        return {
             n.func.id
             for n in ast.walk(node)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         }
-        if "save_record" not in called or node.name in exempt:
-            continue
-        if not called & {"_refresh_markdown", "_write_markdown"}:
-            offenders.append(node.name)
+
+    # Close over "writes the record" until it stops growing, so a helper added
+    # between a command and `save_record` cannot hide the command from this.
+    persists = {"save_record"}
+    while True:
+        grown = {name for name, node in funcs.items() if calls(node) & persists}
+        if grown <= persists:
+            break
+        persists |= grown
+
+    assert "_store_step" in persists, (
+        "the transitive walk no longer reaches _store_step; it would miss "
+        "`run`, `record` and `artifact`, which is how this guard was too narrow"
+    )
+
+    offenders = [
+        name
+        for name, node in funcs.items()
+        if name.startswith("cmd_")
+        and name not in exempt
+        and calls(node) & persists
+        and not calls(node) & {"_refresh_markdown", "_write_markdown"}
+    ]
     assert not offenders, (
         f"{offenders} write the evidence record but leave EVIDENCE.md stale; "
         "the page a reviewer opens would contradict the record beside it"
+    )
+
+
+# --- A transcript that promises captured output must not carry typed results -
+
+
+def test_no_verification_transcript_asserts_a_result_it_did_not_run():
+    """The worst defect this feature produced, made impossible to repeat.
+
+    `.harness/runs/SRS-MD-005/VERIFICATION.md` opened with "Every block below is
+    **captured terminal output**, not a summary" and then carried
+
+        $ echo "cargo test --workspace : 176 suites ok, 0 failed"
+        cargo test --workspace : 176 suites ok, 0 failed
+        [exit 0]
+
+    The `[exit 0]` is `echo`'s exit code. The number happened to be right, which
+    is exactly why a reader could not tell: a typed result and a captured one
+    look identical once they are on the page. So the shape is banned outright
+    rather than spot-checked - an `echo` may report a real exit code it captured
+    (`; echo "... exit $?"`), but it may never state a result of its own.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    runs = root / ".harness" / "runs"
+    if not runs.is_dir():
+        pytest.skip("no evidence runs in this tree")
+
+    # A result claim: a verdict word or a count, in text `echo` invents rather
+    # than reads. `$?` and `{}` mean the value came from a command that ran.
+    claim = re.compile(
+        r"\b(ok|pass(ed)?|fail(ed|ures)?|green|clean|\d+\s*(suites?|tests?))\b", re.I
+    )
+    offenders = []
+    for doc in sorted(runs.rglob("*.md")):
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        if "captured terminal output" not in text:
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            m = re.match(r"\$\s*echo\s+(['\"])(.*)\1\s*$", line.strip())
+            if m and claim.search(m.group(2)) and "$?" not in m.group(2) and "{}" not in m.group(2):
+                offenders.append(f"{doc.relative_to(root)}:{n}: {line.strip()}")
+    assert not offenders, "typed result(s) under a promise of captured output:\n  " + "\n  ".join(
+        offenders
     )

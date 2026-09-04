@@ -69,15 +69,16 @@ pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 /// `REACHABILITY_PROBE_TIMEOUT` against a black-holing endpoint and spend the
 /// NFR-P1 order budget on the gate rather than on the order.
 ///
-/// **Only a NEGATIVE outcome is cached, and that asymmetry is the whole
-/// design.** Caching a positive would mean that for up to this long after the
-/// gateway died, `state()` still answered `Connected` and the ERR-2 gate handed
-/// an order to an unreachable gateway instead of refusing with
-/// `CONNECTIVITY_BLOCKED` — trading a safety property for latency, in the one
-/// direction this feature must never move. It is also unnecessary: a successful
-/// connect returns in microseconds, so there is no budget to protect on that
-/// path. The expensive case is precisely the unreachable one, and reusing it
-/// errs toward BLOCKING, which is the safe direction.
+/// **Both outcomes are cached; the ASYMMETRY is the design.** A stale
+/// `Unreachable` errs toward BLOCKING, which is the safe direction, so it may
+/// be reused for this full second. A stale `Connected` errs toward handing an
+/// order to a dead gateway, so it is capped at `REACHABLE_CACHE_TTL_NS`, two
+/// orders of magnitude shorter. An earlier version of this constant cached the
+/// negative ONLY and argued that a successful connect returns in microseconds
+/// so there was nothing to protect. True about latency, and beside the point:
+/// the gate is read once per submission, so a healthy order stream opened one
+/// TCP connection per order against the gateway this module elsewhere refuses
+/// to probe because it is scarce.
 ///
 /// The phase is never cached either — that clock read is free, and the two
 /// instants that matter (the start of the suspension and the end of the window)
@@ -282,14 +283,23 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
-            .filter(|(taken_at_ns, _)| {
+            .filter(|(taken_at_ns, outcome)| {
                 // Enforce the freshness the doc promises. Dropping the instant
                 // meant that after an outage at T-90s the `Suspending` phase
                 // skips probing and this still returned an 89-second-old
                 // observation to a caller told to expect one no older than the
-                // TTL — a stale fact wearing a fresh label, which is the shape
+                // TTL - a stale fact wearing a fresh label, which is the shape
                 // of every other bug this feature has spent rounds on.
-                (0..self.ttl_ns).contains(&now_ns.saturating_sub(*taken_at_ns))
+                //
+                // The SAME per-outcome bound as `observe_cached`, not the
+                // negative TTL for both. Once positives began to be cached, a
+                // reporting surface filtered by `ttl_ns` alone would have let a
+                // `Reachable` escape here for a full second - ten times the
+                // bound this module installs as its safety property, through
+                // the one method whose whole job is to describe that fact to an
+                // operator.
+                (0..Self::ttl_for(outcome, self.ttl_ns))
+                    .contains(&now_ns.saturating_sub(*taken_at_ns))
             })
             .map(|(_, outcome)| outcome.clone())
     }
@@ -320,6 +330,22 @@ where
     ///
     /// The cache is checked and refreshed under ONE lock hold, so two threads
     /// cannot both decide the entry is stale and both pay the deadline.
+    /// How long THIS outcome may be reused. One function, because the bound is
+    /// the safety property and two copies of it drifted within a single round:
+    /// `observe_cached` capped a positive at 100 ms while `last_outcome`, the
+    /// method that reports the fact to an operator, still filtered on the 1 s
+    /// negative TTL.
+    ///
+    /// `with_probe_ttl(0)` disables reuse entirely, in both directions, because
+    /// the cap is a `min` rather than a constant.
+    fn ttl_for(outcome: &ReachabilityOutcome, configured_ttl_ns: i64) -> i64 {
+        if outcome.is_reachable() {
+            configured_ttl_ns.min(REACHABLE_CACHE_TTL_NS)
+        } else {
+            configured_ttl_ns
+        }
+    }
+
     fn observe_cached(&self, now_ns: i64) -> ReachabilityOutcome {
         let mut cached = self
             .last_outcome
@@ -327,13 +353,7 @@ where
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((taken_at_ns, outcome)) = cached.as_ref() {
             let age_ns = now_ns.saturating_sub(*taken_at_ns);
-            let ttl_ns = if outcome.is_reachable() {
-                // A positive is reused only briefly: see REACHABLE_CACHE_TTL_NS.
-                // `with_probe_ttl(0)` still disables reuse entirely.
-                self.ttl_ns.min(REACHABLE_CACHE_TTL_NS)
-            } else {
-                self.ttl_ns
-            };
+            let ttl_ns = Self::ttl_for(outcome, self.ttl_ns);
             // A NEGATIVE age means the clock stepped backwards, not that the
             // entry is fresh. (`saturating_sub` on i64 saturates at the type's
             // bounds — it does not clamp to zero — so the earlier comment
@@ -398,13 +418,17 @@ where
     P: GatewayReachability,
     C: Fn() -> i64,
 {
-    /// The authoritative state, recomputed from the clock and a fresh probe on
-    /// every read.
+    /// The authoritative state, recomputed from the clock on every read over a
+    /// reachability observation no older than its per-outcome TTL.
     ///
-    /// Recomputed rather than cached deliberately. A cached state is a stale
-    /// state, and the two instants that matter most here — the start of the
-    /// suspension and the end of the window — are exactly when a cache would
-    /// still be reporting the previous answer.
+    /// The STATE itself is never cached, and the phase is always recomputed:
+    /// the two instants that matter most here - the start of the suspension and
+    /// the end of the window - are exactly when a cached state would still be
+    /// reporting the previous answer. What may be reused is the sampled FACT,
+    /// under `REACHABLE_CACHE_TTL_NS` (100 ms) for a positive and
+    /// `REACHABILITY_CACHE_TTL_NS` (1 s) for a negative. This rustdoc said
+    /// "a fresh probe on every read" for one round after that stopped being
+    /// true, on the trait method the ERR-2 order gate reads.
     fn state(&self) -> ConnectivityState {
         let now_ns = (self.clock)();
         match self.observe_for(self.window.phase(now_ns), now_ns) {
@@ -752,6 +776,50 @@ mod tests {
         assert!(
             producer.last_outcome().is_none(),
             "an observation older than the reuse window is not an observation"
+        );
+    }
+
+    #[test]
+    fn the_reporting_surface_honours_the_same_bound_as_the_gate() {
+        // `last_outcome()` describes the reachability fact to an operator. When
+        // positives began to be cached it still filtered on the NEGATIVE TTL,
+        // so a `Reachable` could escape here for a full second - ten times the
+        // bound the module installs as its safety property, through the one
+        // method whose job is to report that fact honestly. Both now route
+        // through `ttl_for`.
+        let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
+        let producer =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(true), || {
+                now.load(Ordering::SeqCst)
+            });
+        assert_eq!(producer.state(), ConnectivityState::Connected);
+        assert!(
+            producer.last_outcome().is_some(),
+            "the observation was just taken"
+        );
+
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS,
+            Ordering::SeqCst,
+        );
+        assert!(
+            producer.last_outcome().is_none(),
+            "a reachable observation past its bound must not be reported as current"
+        );
+
+        // Non-vacuity: a NEGATIVE at the same age is still inside ITS bound, so
+        // this test fails if `ttl_for` collapses to one TTL for both.
+        let neg = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+            now.load(Ordering::SeqCst)
+        });
+        assert_eq!(neg.state(), ConnectivityState::Unreachable);
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS * 2,
+            Ordering::SeqCst,
+        );
+        assert!(
+            neg.last_outcome().is_some(),
+            "an unreachable observation is still within the 1 s negative TTL"
         );
     }
 
