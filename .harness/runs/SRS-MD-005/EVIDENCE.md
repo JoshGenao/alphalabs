@@ -4,14 +4,13 @@
 
 - **method**: `integration`
 - **steps evidenced**: 4/4
-- **critics**: none recorded
+- **critics**: deterministic `approve`, judgment `block`
 - **artifacts**: 0
 - **record complete**: NO
 
 ## Outstanding
 
-- no deterministic critic verdict recorded
-- no judgment critic verdict recorded
+- judgment critic verdict is 'block', not 'approve'
 
 ## Acceptance criterion
 

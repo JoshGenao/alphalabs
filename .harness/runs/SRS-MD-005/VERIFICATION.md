@@ -7,7 +7,7 @@ session that built it.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 13 rounds**. This feature integrated
+The judgment critic sits at **`block` after 15 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason — see Section 6. If
 that section said `approve`, this document would be lying.
@@ -182,7 +182,7 @@ step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_sched
 step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
 
 deterministic critic: approve @ ed36c790
-judgment critic    : block | rounds: 13 | reviewer: claude-fallback
+judgment critic    : block | rounds: 15 | reviewer: claude-fallback
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -216,9 +216,17 @@ $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 
 === SECTION 9: suite totals, re-run now against the integrated tree ===
 
-$ echo "cargo test --workspace : 176 suites ok, 0 failed"
-cargo test --workspace : 176 suites ok, 0 failed
+$ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok."){ok++}; p+=$4; f+=$6} END {printf "%d suites, %d ok, %d failed suites, %d tests passed, %d tests failed\\n", s, ok, s-ok, p, f}'
+176 suites, 176 ok, 0 failed suites, 2398 tests passed, 0 tests failed
 [exit 0]
+
+> **This block replaces a fabricated one.** Round 15 caught the original:
+> `$ echo "cargo test --workspace : 176 suites ok, 0 failed"` - a hand-typed
+> summary under a document promising captured output, whose `[exit 0]` was
+> `echo`'s. The count was right, which is precisely why nobody could tell.
+> The command above derives every number from the run. A guard now bans the
+> shape repo-wide:
+> `tests/unit/test_evidence_artifacts.py::test_no_verification_transcript_asserts_a_result_it_did_not_run`.
 
 $ cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1; echo "cargo clippy --workspace --all-targets -- -D warnings : exit $?"
 cargo clippy --workspace --all-targets -- -D warnings : exit 0
