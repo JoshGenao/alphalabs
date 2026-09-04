@@ -82,6 +82,7 @@ class ConnectivityCheckScriptTest(unittest.TestCase):
             "request_subscription, subscribe",
             "ScheduledRestartConnectivity implements BrokerageConnectivity + RestartWindowGate",
             "outside the digest-pinned transport module",
+            "production type implements `RestartWindowGate`",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -243,21 +244,23 @@ class ConnectivityGuardTest(unittest.TestCase):
 class AggregateEvidenceTest(unittest.TestCase):
     """The count is the pin: a check that silently stops running is invisible.
 
-    Both numbers grew by 7 when SRS-MD-005 added the restart-window guards
-    (5 -> 12 static). Keeping them EXACT rather than `>=` is deliberate — a
+    Both numbers grew by 8 when SRS-MD-005 added the restart-window guards
+    (5 -> 13 static). Keeping them EXACT rather than `>=` is deliberate — a
     lower bound would let a check be dropped without anything going red, which
-    is the whole failure this assertion exists to catch.
+    is the whole failure this assertion exists to catch, and it is why adding
+    the gate-implementor enumeration turned this red rather than passing
+    silently.
     """
 
     def test_run_checks_emits_every_static_item_plus_the_cargo_smoke(self) -> None:
         evidence = run_checks()
-        # 12 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 13)
+        # 13 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 14)
 
-    def test_assert_connectivity_static_emits_twelve_evidence_items(self) -> None:
+    def test_assert_connectivity_static_emits_thirteen_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_connectivity_static(config, ROOT)
-        self.assertEqual(len(evidence), 12)
+        self.assertEqual(len(evidence), 13)
 
 
 # --------------------------------------------------------------------------- #

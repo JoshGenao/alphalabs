@@ -480,10 +480,32 @@ def _all_fn_spans(source: str) -> list[tuple[str, str]]:
 
 
 def _without_test_module(source: str) -> str:
-    """Drop the trailing `#[cfg(test)] mod tests { .. }`, which is not shipped."""
-    marker = "\n#[cfg(test)]\nmod tests {"
-    index = source.find(marker)
-    return source if index < 0 else source[:index]
+    """Drop every `#[cfg(test)] mod .. { .. }` BLOCK, keeping the rest.
+
+    Cuts the module's balanced-brace span, not everything to end of file. The
+    first version truncated at the marker, so any production code declared AFTER
+    a test module — which Rust permits — was invisible to every scan built on
+    this, including the one that enumerates who may implement the admission
+    gate. A stripper that removes real code is the same defect as the `*` rule
+    that hid a deref-assignment, one file along.
+    """
+    out: list[str] = []
+    index = 0
+    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", source):
+        if match.start() < index:
+            continue
+        out.append(source[index : match.start()])
+        depth, cursor = 1, match.end()
+        while cursor < len(source) and depth:
+            char = source[cursor]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            cursor += 1
+        index = cursor
+    out.append(source[index:])
+    return "".join(out)
 
 
 #: Expressions that ADD to a map, as opposed to reading or removing from it.
@@ -827,6 +849,69 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
     )
 
 
+def check_restart_window_gate_implementors(config: dict, _unused: str) -> str:
+    """No PRODUCTION type may implement the gate except the declared producer.
+
+    The port's own rustdoc used to argue that taking a port rather than a
+    boolean closed a forgery hole. It does not, and the reviewer was right to
+    say so: an `impl RestartWindowGate` that always returns `Admitted` is
+    exactly as forgeable as `true`, three test files write one, and nothing
+    stopped a production type doing the same — every static guard, the L7 suite
+    and all three CLI proofs would have stayed green while SYS-75(a) was
+    bypassed. The only defence was a comment saying the test double is "not
+    exported", and this feature's own history says a comment is not a guard.
+
+    What the port DOES buy is freshness: the fact is read at the instant the
+    decision is made rather than whenever a caller last looked. Unforgeability
+    has to come from somewhere else, and this is it — the set of production
+    implementors is enumerated from the source and must match the contract.
+
+    Test doubles are excluded by construction: `tests/` files are not shipped,
+    and a `#[cfg(test)]` module is cut before scanning.
+    """
+    block = restart_window_block(config)
+    spec = block["gate_port"]
+    declared = set(spec["production_implementors"])
+    root = ROOT
+    found: dict[str, str] = {}
+    for crate in ("atp-types", "atp-market-data", "atp-orchestrator", "atp-execution"):
+        crate_dir = root / "crates" / crate / "src"
+        if not crate_dir.is_dir():
+            continue
+        for path in sorted(crate_dir.rglob("*.rs")):
+            source = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
+            for match in re.finditer(
+                rf"impl(?:<[^>]*>)?\s+(?:\w+::)*{re.escape(spec['trait'])}\s+for\s+(\w+)", source
+            ):
+                found[match.group(1)] = str(path.relative_to(root))
+    if not found:
+        fail(
+            f"no production type implements `{spec['trait']}` — either the producer was "
+            "removed or this scan no longer matches it, and a scan that finds nothing "
+            "must fail rather than report a clean tree"
+        )
+    undeclared = sorted(set(found) - declared)
+    if undeclared:
+        fail(
+            f"undeclared production implementor(s) of `{spec['trait']}`: "
+            + ", ".join(f"{name} ({found[name]})" for name in undeclared)
+            + ". An implementor that always admits bypasses the SyRS SYS-75(a) "
+            "suspension with every other guard still green, so the production set is "
+            "enumerated here rather than trusted"
+        )
+    missing = sorted(declared - set(found))
+    if missing:
+        fail(
+            f"declared implementor(s) {', '.join(missing)} no longer implement "
+            f"`{spec['trait']}` — the contract and the source disagree"
+        )
+    return (
+        f"exactly {len(found)} production type implements `{spec['trait']}` "
+        f"({', '.join(sorted(found))}) — the port buys freshness, and this enumeration "
+        "is what makes it unforgeable"
+    )
+
+
 def check_reachability_seam_is_unpinned(config: dict, reachability_src: str) -> str:
     """The probe must NOT live in the digest-pinned transport module.
 
@@ -928,6 +1013,7 @@ _STATIC_CHECKS = (
     ("market_data_admission_sites", check_market_data_admission_sites, "market_data"),
     ("restart_window_producer", check_restart_window_producer, "producer"),
     ("reachability_seam", check_reachability_seam_is_unpinned, "reachability"),
+    ("restart_window_gate_implementors", check_restart_window_gate_implementors, "types"),
 )
 
 

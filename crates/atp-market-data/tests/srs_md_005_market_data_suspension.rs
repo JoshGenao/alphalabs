@@ -441,6 +441,57 @@ fn a_permanently_invalid_request_is_refused_on_its_own_terms_during_the_window()
 }
 
 #[test]
+fn the_managers_entry_point_still_relabels_an_invalid_request_and_that_is_recorded() {
+    // The RESIDUAL, pinned so it cannot drift unnoticed.
+    //
+    // `subscribe` canonicalizes before consulting the window, so an option gets
+    // its own error there. `request_subscription` cannot: its structural check
+    // lives downstream in the ERR-4 line-counter probe, whose pinned contract
+    // this feature does not reorder. So during the window this entry point
+    // reports the suspension for a request that can never succeed — and OUTSIDE
+    // the window that same request is already reported as a LINE LIMIT breach by
+    // the probe. Both labels are wrong for it and the second predates this
+    // feature; the owner is ERR-4 / SRS-MD-002, recorded in
+    // `connectivity_contract.restart_window.deferred[]`.
+    //
+    // Asserting the wrong-but-current behaviour is deliberate: an undocumented
+    // residual is the thing that drifts, and a test that encodes it turns the
+    // day someone fixes it into a visible decision rather than a silent one.
+    let manager = MarketDataSubscriptionManager;
+    let option = SubscriptionRequest {
+        strategy_id: StrategyId::new("live-alpha"),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Option,
+    };
+    let during = manager
+        .request_subscription(
+            option.clone(),
+            &WindowAt::at(RESTART_NS - 30 * NANOS_PER_SECOND),
+            &CountingCounter::default(),
+            &ForbiddenLimitSink,
+        )
+        .expect_err("suspended");
+    assert_eq!(
+        during.error_type, "ScheduledRestartWindow",
+        "RESIDUAL: an option is relabelled as maintenance at this entry point"
+    );
+
+    // And the non-vacuity partner that makes the residual legible: the peer
+    // admission point does NOT relabel it.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+    assert_eq!(
+        registry
+            .subscribe(
+                &option,
+                &WindowAt::at(RESTART_NS - 30 * NANOS_PER_SECOND),
+                &ChangeSinkSpy::default(),
+            )
+            .expect_err("the registry refuses it on its own terms"),
+        SubscriptionRegistryError::OptionContractUnsupported
+    );
+}
+
+#[test]
 fn srs_md_005_admission_follows_the_sys_75_phases_over_both_reachabilities() {
     // The full truth table, so a change to either the phase arithmetic or the
     // admission rule has to move both. Reachability is a dimension rather than

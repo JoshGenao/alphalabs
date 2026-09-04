@@ -713,8 +713,17 @@ def test_a_permanently_invalid_request_is_not_relabelled_as_maintenance() -> Non
     The suspension tells the operator to retry once the window closes. For an
     option subscription, an empty symbol or an empty strategy id that is false —
     those are refused in every phase — so answering "wait five minutes" sends
-    them to retry something that can never succeed. Structural validation now
-    runs first, and only a request that WOULD have been admitted is suspended.
+    them to retry something that can never succeed.
+
+    Scoped precisely, because the fix is not feature-wide: the REGISTRY
+    (`ConsolidatedSubscriptionRegistry::subscribe`) now validates before
+    consulting the window, so only a request that would have been admitted is
+    suspended there. The manager's entry point cannot, because its structural
+    check lives downstream in the pinned ERR-4 line-counter probe; that residual
+    is owned by ERR-4 / SRS-MD-002, recorded in
+    `connectivity_contract.restart_window.deferred[]`, and pinned by
+    `the_managers_entry_point_still_relabels_an_invalid_request_and_that_is_recorded`
+    so it cannot drift unnoticed.
     """
     name = "a_permanently_invalid_request_is_refused_on_its_own_terms_during_the_window"
     _assert_one_passed(_market_data_test(name), name)
@@ -727,6 +736,73 @@ def test_the_retained_reachability_observation_expires() -> None:
     label."""
     name = "the_retained_outcome_expires_with_the_reuse_window"
     _assert_one_passed(_producer_test(name), name)
+
+
+def test_only_the_declared_producer_may_implement_the_admission_gate() -> None:
+    """Taking a port does not make the answer unforgeable.
+
+    An `impl RestartWindowGate` returning `Admitted` is exactly as forgeable as
+    passing `true` — three test files write one — and a PRODUCTION type doing
+    the same would bypass SYS-75(a) with every other guard, this suite and all
+    three CLI proofs still green. The only defence was a comment saying the test
+    double is not exported, and this feature's own history says a comment is not
+    a guard. The production implementors are enumerated from the crate sources
+    and matched against the contract instead.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_restart_window_gate_implementors,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    # Non-vacuity first: the real tree passes, so the failure below is the
+    # injection and not a check that refuses everything.
+    check_restart_window_gate_implementors(config, "")
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub struct AlwaysOpenWindow;
+impl RestartWindowGate for AlwaysOpenWindow {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="AlwaysOpenWindow"):
+            check_restart_window_gate_implementors(config, "")
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    check_restart_window_gate_implementors(config, "")
+
+
+def test_the_resume_proof_labels_its_readiness_scope() -> None:
+    """A reachable probe means the endpoint accepted TCP.
+
+    A real IB Gateway accepts TCP before its API will answer a handshake, so
+    `Connected` here is the socket-level half of "the gateway is back". The run
+    self-labels it, for the same reason every path prints `transports:FIXTURE` —
+    evidence that names a whole acceptance clause while covering half of it is
+    the overclaim this feature has spent rounds removing.
+    """
+    source = CLI_SOURCE.read_text(encoding="utf-8")
+    assert "readiness:SOCKET_LEVEL_ONLY" in source
+    name = "a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data"
+    _assert_one_passed(_cli_test(name), name)
 
 
 def test_the_producer_serves_both_gates_from_one_window() -> None:

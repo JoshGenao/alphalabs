@@ -75,11 +75,19 @@ pub trait SubscriptionLimitEventSink {
 /// consult to learn whether the scheduled IB Gateway restart window is
 /// currently suspending market-data traffic.
 ///
-/// A PORT, not a boolean parameter, on purpose. A caller-supplied
-/// `suspended: bool` is a forgeable proof: any caller could pass `false` and
-/// subscribe straight through the window the flag exists to enforce. It also
-/// closes a staleness gap — the fact is read at the instant the decision is
-/// made rather than whenever the caller last looked.
+/// A PORT, not a boolean parameter — but be exact about what that buys.
+///
+/// It buys FRESHNESS: the fact is read at the instant the decision is made
+/// rather than whenever the caller last looked, so a window that opened between
+/// those two moments still refuses.
+///
+/// It does NOT buy unforgeability, and an earlier version of this comment
+/// claimed it did. An `impl RestartWindowGate` returning `Admitted` is exactly
+/// as forgeable as passing `false`; three test files write one. What actually
+/// closes that is `tools/connectivity_check.py`, which enumerates every
+/// PRODUCTION implementor from the crate sources and refuses any not declared
+/// in `connectivity_contract.restart_window.gate_port.production_implementors`
+/// — because a comment saying the test double is not exported is not a guard.
 ///
 /// The implementation is the composition layer's restart-window producer,
 /// which derives the answer from [`atp_types::RestartWindow`] so that this
@@ -174,6 +182,20 @@ impl MarketDataSubscriptionManager {
         // No event is recorded: a suspended request is not a limit breach, and
         // routing it through `SubscriptionLimitEventSink` would put planned
         // maintenance into the operator's line-exhaustion trail.
+        //
+        // PRECEDENCE, and its residual. `ConsolidatedSubscriptionRegistry::subscribe`
+        // canonicalizes BEFORE consulting the window, so a permanently-invalid
+        // request there gets its own error rather than being told to retry after
+        // maintenance. This entry point cannot do the same: its structural check
+        // lives downstream in the ERR-4 line-counter probe, whose pinned
+        // contract (tools/subscription_limit_check.py) this feature does not
+        // reorder. So during the window an option / empty-symbol /
+        // empty-strategy-id request is refused as ScheduledRestartWindow, and
+        // OUTSIDE the window the same request is already refused as
+        // SUBSCRIPTION_LIMIT_REACHED by that probe — both labels are wrong for
+        // it, and the second predates this feature. Recorded in
+        // `connectivity_contract.restart_window.deferred[]` with ERR-4 as the
+        // owner, and pinned by a test so it cannot drift unnoticed.
         match window.admission() {
             MarketDataAdmission::Admitted => {}
             MarketDataAdmission::SuspendedForScheduledRestart => {

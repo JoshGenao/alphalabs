@@ -676,8 +676,15 @@ fn report_header(proof: &str, parsed: &RunArgs, now_ns: i64, evidence: &RestartW
 }
 
 fn report_common(evidence: &RestartWindowEvidence) {
+    // `readiness:SOCKET_LEVEL_ONLY` for the same reason every path prints
+    // `transports:FIXTURE`. A reachable probe means the endpoint ACCEPTED TCP;
+    // a real IB Gateway accepts TCP before its API will answer a handshake, so
+    // `Connected` here is the socket-level half of "the gateway is back".
+    // Folding real readiness in is ERR-9 / SRS-MD-006's gate. Evidence that
+    // names the whole clause while covering half of it is the overclaim this
+    // feature has spent rounds removing elsewhere.
     println!(
-        "gateway reachability:{} state:{:?} scheduled_restart:{}",
+        "gateway readiness:SOCKET_LEVEL_ONLY reachability:{} state:{:?} scheduled_restart:{}",
         evidence
             .reachability
             .as_ref()
