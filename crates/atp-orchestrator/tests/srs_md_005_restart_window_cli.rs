@@ -136,6 +136,13 @@ fn suspension_blocks_orders_and_market_data_and_suppresses_the_alert() {
     let gateway = line_starting(&out, "gateway ");
     assert_eq!(field(gateway, "state"), "ScheduledRestartWindow");
     assert_eq!(
+        field(gateway, "reachability"),
+        "NOT_PROBED",
+        "the evidence path must not probe during the lead either: the gateway serves \
+         ONE API client, and a reporting tool that spent the slot would break in the \
+         tool the guarantee it reports on"
+    );
+    assert_eq!(
         field(gateway, "scheduled_restart"),
         "true",
         "the maintenance marker is what the notification dispatcher matches on"
@@ -205,6 +212,10 @@ fn a_gateway_still_dead_after_the_window_escalates_and_pages() {
     assert_eq!(field(line_starting(&out, "window "), "phase"), "Elapsed");
 
     let gateway = line_starting(&out, "gateway ");
+    // The non-vacuity partner for NOT_PROBED above: outside the lead the
+    // evidence path DOES probe, so "not probed" is a fact about the lead rather
+    // than about a tool that never probes.
+    assert_eq!(field(gateway, "reachability"), "UNREACHABLE");
     assert_eq!(
         field(gateway, "state"),
         "Unreachable",

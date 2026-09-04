@@ -208,6 +208,52 @@ def test_the_lead_suspends_without_spending_a_probe() -> None:
     _assert_one_passed(_producer_test(name), name)
 
 
+def test_the_market_data_gate_inherits_the_probe_skip() -> None:
+    """A new code path does not inherit the old one's guarantees.
+
+    The probe-skip started life inside `state()` only, and the market-data gate
+    — added by the same feature — silently did not inherit it, so every
+    subscription request during the lead paid a blocking TCP connect for an
+    answer the phase already fixed.
+    """
+    name = "restart_window_connectivity::tests::the_market_data_gate_inherits_the_probe_skip"
+    _assert_one_passed(_producer_test(name.split("::")[-1]), name)
+
+
+def test_the_evidence_path_does_not_probe_during_the_lead_either() -> None:
+    """The guarantee must hold in the TOOL that reports on it, too.
+
+    The scenario used to observe unconditionally, so the operator CLI and the L5
+    suite probed during the lead — spending the gateway's single API-client slot
+    on a question the phase already answers, while the gates themselves refused
+    to. A reporting path that breaks the invariant it reports on is the same
+    class as a guard that flags its own documentation.
+    """
+    name = "suspension_blocks_orders_and_market_data_and_suppresses_the_alert"
+    _assert_one_passed(_cli_test(name), name)
+    source = SCENARIO_SOURCE.read_text(encoding="utf-8")
+    assert "connectivity.observe_if_needed()" in source, (
+        "the scenario must use the phase-aware observation, not the unconditional probe"
+    )
+    assert "connectivity.observe()" not in source, (
+        "an unconditional observe() in the evidence path probes during the lead"
+    )
+
+
+def test_both_gates_read_the_clock_exactly_once() -> None:
+    """Sampling the clock again after a probe that can block for two seconds
+    lets the two gates put one wall-clock moment in different SYS-75 phases —
+    the disagreement this producer exists to make impossible."""
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    for fn_name in ("fn state(", "fn market_data_admission("):
+        start = source.index(fn_name)
+        end = source.index("\n    }", start)
+        body = source[start:end]
+        assert body.count("(self.clock)()") == 1, (
+            f"{fn_name.rstrip('(')} reads the injected clock more than once"
+        )
+
+
 def test_the_state_is_recomputed_rather_than_cached_across_the_boundary() -> None:
     """The two instants a cache would get wrong are the two that matter."""
     name = "the_state_is_recomputed_rather_than_cached_across_the_boundary"

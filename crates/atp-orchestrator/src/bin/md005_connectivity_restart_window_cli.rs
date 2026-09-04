@@ -41,6 +41,7 @@ use std::env;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::process::ExitCode;
 
+use atp_adapters::gateway_reachability::ReachabilityOutcome;
 use atp_orchestrator::restart_window_scenario::{
     run_restart_window_scenario, AlertDisposition, LiveOrderOutcome, RestartWindowEvidence,
     RestartWindowScenario, SCENARIO_SYMBOL,
@@ -547,7 +548,10 @@ fn report_header(proof: &str, parsed: &RunArgs, now_ns: i64, evidence: &RestartW
 fn report_common(evidence: &RestartWindowEvidence) {
     println!(
         "gateway reachability:{} state:{:?} scheduled_restart:{}",
-        evidence.reachability.as_str(),
+        evidence
+            .reachability
+            .as_ref()
+            .map_or("NOT_PROBED", ReachabilityOutcome::as_str),
         evidence.connectivity_state,
         evidence
             .event_scheduled_restart

@@ -391,6 +391,44 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
         self.assertIn("ATP_MARKET_DATA_LINE_LIMIT", result.stderr)
 
+    def test_srs_arch_005_rejects_a_zero_restart_window(self) -> None:
+        """SRS-MD-005 / SyRS SYS-75(b). Zero is REFUSED, never read as
+        'suppression disabled': it would collapse the window so the first
+        blocked submission after the restart pages as a genuine outage."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "invalid-restart-window",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("ATP_IB_RESTART_WINDOW_SECONDS", result.stderr)
+
+    def test_srs_arch_005_rejects_a_malformed_restart_lead(self) -> None:
+        """SyRS SYS-75(a). The lead is what makes the suspension pre-emptive."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "invalid-restart-lead",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("ATP_IB_RESTART_SUSPEND_LEAD_SECONDS", result.stderr)
+
     def test_srs_arch_005_rejects_missing_resource_limit(self) -> None:
         result = subprocess.run(
             [

@@ -127,8 +127,29 @@ where
 
     /// Observe the gateway once, returning the full outcome rather than the
     /// collapsed boolean, so a caller that wants to log WHY can.
+    ///
+    /// Prefer [`observe_if_needed`](Self::observe_if_needed) for reporting: this
+    /// one probes unconditionally, and during the SYS-75(a) lead that spends the
+    /// gateway's single API-client slot on a question the phase already answers.
     pub fn observe(&self) -> ReachabilityOutcome {
         self.probe.probe()
+    }
+
+    /// Observe the gateway only when the current phase actually needs the
+    /// answer; `None` means the phase decided without asking.
+    ///
+    /// The reporting counterpart of the probe-skip. An evidence path that used
+    /// `observe()` would probe during the lead — exactly what
+    /// `the_lead_suspends_without_spending_a_probe` asserts never happens — so
+    /// the guarantee would hold in the gates and be broken by the tool that
+    /// reports on them.
+    pub fn observe_if_needed(&self) -> Option<ReachabilityOutcome> {
+        match self.window.phase((self.clock)()) {
+            RestartPhase::Suspending => None,
+            RestartPhase::Normal | RestartPhase::Restarting | RestartPhase::Elapsed => {
+                Some(self.probe.probe())
+            }
+        }
     }
 
     /// Whether market-data requests may be admitted right now, and the reason
@@ -138,8 +159,14 @@ where
     /// This is what the composition binds to `atp_market_data::RestartWindowGate`,
     /// so the two suspensions cannot disagree about the same instant.
     pub fn market_data_admission(&self) -> MarketDataAdmission {
-        match self.observe_for(self.window.phase((self.clock)())) {
-            Some(reachable) => self.window.market_data_admission((self.clock)(), reachable),
+        // ONE clock read, exactly as `state()` does. Sampling it again after the
+        // probe would classify against an instant up to
+        // REACHABILITY_PROBE_TIMEOUT later, so the two gates could put the same
+        // wall-clock moment in different SYS-75 phases — which is the
+        // disagreement this producer exists to make impossible.
+        let now_ns = (self.clock)();
+        match self.observe_for(self.window.phase(now_ns)) {
+            Some(reachable) => self.window.market_data_admission(now_ns, reachable),
             None => MarketDataAdmission::SuspendedForScheduledRestart,
         }
     }

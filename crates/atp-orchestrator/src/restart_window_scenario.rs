@@ -148,7 +148,10 @@ impl RestartWindowScenario {
 #[derive(Debug, Clone)]
 pub struct RestartWindowEvidence {
     pub phase: RestartPhase,
-    pub reachability: ReachabilityOutcome,
+    /// `None` when the phase decided without probing (the SYS-75(a) lead).
+    /// Distinct from an unreachable answer: "we did not ask" and "it did not
+    /// answer" are different facts, and only the second is about the gateway.
+    pub reachability: Option<ReachabilityOutcome>,
     pub connectivity_state: ConnectivityState,
     pub designated: String,
     pub live_outcome: LiveOrderOutcome,
@@ -203,9 +206,12 @@ pub fn run_restart_window_scenario(
         move || now_ns,
     );
 
-    // Observe once for the record. The producer probes independently on each
-    // decision; this read is the operator-facing explanation, not the input.
-    let reachability = connectivity.observe();
+    // Observe for the record ONLY when the phase needs the answer. Using the
+    // unconditional `observe()` here would make the CLI and the L5 suite probe
+    // during the lead — the very thing the gates refuse to do — so the
+    // guarantee would hold in production and be broken by the tool that reports
+    // on it.
+    let reachability = connectivity.observe_if_needed();
     let phase = connectivity.phase();
     let connectivity_state = connectivity.state();
 
