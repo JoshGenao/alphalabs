@@ -61,21 +61,32 @@ use atp_types::{ConnectivityState, MarketDataAdmission, RestartPhase, RestartWin
 /// enforced would be worse than an absent one.
 pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 
-/// How long a reachability observation may be reused before the gateway is
+/// How long an UNREACHABLE observation may be reused before the gateway is
 /// asked again.
 ///
 /// The execution engine consults this port INLINE on the live submission path,
-/// so without a cache a burst of orders would each pay
+/// so without reuse a burst of orders would each pay
 /// `REACHABILITY_PROBE_TIMEOUT` against a black-holing endpoint and spend the
-/// NFR-P1 budget on the gate rather than on the order.
+/// NFR-P1 order budget on the gate rather than on the order.
 ///
-/// Only REACHABILITY is cached. The phase is always recomputed from the clock —
-/// that read is free, and the two instants that matter (the start of the
-/// suspension and the end of the window) must be exact. So the residual is
-/// bounded and stated: a gateway that comes back can be reported unreachable
-/// for up to this long, against a window measured in minutes. One second is
-/// two orders of magnitude below the 300 s default window and comfortably
-/// inside NFR-R2's 15 s detection-to-attempt budget.
+/// **Only a NEGATIVE outcome is cached, and that asymmetry is the whole
+/// design.** Caching a positive would mean that for up to this long after the
+/// gateway died, `state()` still answered `Connected` and the ERR-2 gate handed
+/// an order to an unreachable gateway instead of refusing with
+/// `CONNECTIVITY_BLOCKED` — trading a safety property for latency, in the one
+/// direction this feature must never move. It is also unnecessary: a successful
+/// connect returns in microseconds, so there is no budget to protect on that
+/// path. The expensive case is precisely the unreachable one, and reusing it
+/// errs toward BLOCKING, which is the safe direction.
+///
+/// The phase is never cached either — that clock read is free, and the two
+/// instants that matter (the start of the suspension and the end of the window)
+/// must be exact.
+///
+/// The residual, stated: a gateway that comes back can be reported unreachable
+/// for up to one second. Against a 300 s default window that is two orders of
+/// magnitude smaller, and it is comfortably inside NFR-R2's 15 s
+/// detection-to-attempt budget.
 pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
 
 /// One recorded reconnection attempt.
@@ -229,6 +240,13 @@ where
     /// detail), so the detail surfaces HERE and through the operator CLI's
     /// `reachability:` field instead. Recorded in `deferred[]`: routing it into
     /// the alert itself needs the envelope change that contract owns.
+    /// The last UNREACHABLE observation, if one is still within the reuse
+    /// window.
+    ///
+    /// `None` once the gateway answers again, because a positive outcome is
+    /// deliberately not stored — see [`REACHABILITY_CACHE_TTL_NS`]. Callers
+    /// wanting the current answer should ask
+    /// [`observe_if_needed`](Self::observe_if_needed).
     pub fn last_outcome(&self) -> Option<ReachabilityOutcome> {
         self.last_outcome
             .lock()
@@ -269,15 +287,27 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((taken_at_ns, outcome)) = cached.as_ref() {
-            // `saturating_sub` on a clock that stepped backwards yields 0,
-            // which is inside any TTL — a backwards step must not be readable
-            // as "the entry expired" and stampede the gateway.
-            if now_ns.saturating_sub(*taken_at_ns) < self.ttl_ns {
+            let age_ns = now_ns.saturating_sub(*taken_at_ns);
+            // A NEGATIVE age means the clock stepped backwards, not that the
+            // entry is fresh. (`saturating_sub` on i64 saturates at the type's
+            // bounds — it does not clamp to zero — so the earlier comment
+            // claiming otherwise was wrong, and it made `with_probe_ttl(0)`
+            // reuse an entry it had promised never to.) Re-probe: a fresh fact
+            // is the right answer when the clock is untrustworthy, and it costs
+            // one probe rather than a stampede.
+            if (0..self.ttl_ns).contains(&age_ns) && !outcome.is_reachable() {
                 return outcome.clone();
             }
         }
         let outcome = self.probe.probe();
-        *cached = Some((now_ns, outcome.clone()));
+        // Store only a NEGATIVE outcome. See REACHABILITY_CACHE_TTL_NS: a
+        // cached positive would let the live-order gate send to a gateway that
+        // had already died.
+        *cached = if outcome.is_reachable() {
+            None
+        } else {
+            Some((now_ns, outcome.clone()))
+        };
         outcome
     }
 
@@ -624,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_ttl_probes_every_time_and_a_backwards_clock_does_not_stampede() {
+    fn a_zero_ttl_probes_every_time_and_a_backwards_clock_re_probes() {
         // Non-vacuity for the test above: with reuse disabled the SAME sequence
         // costs one probe per read, so "1 probe" there is a fact about the cache
         // rather than about a producer that never probes.
@@ -638,16 +668,70 @@ mod tests {
         }
         assert_eq!(eager.probe.calls.get(), 5);
 
-        // A clock that steps BACKWARDS must read as "inside the TTL", not as
-        // "expired": saturating_sub yields 0, so a backwards step cannot
-        // stampede the gateway that serves one API client.
+        // A clock that steps BACKWARDS yields a NEGATIVE age, which means the
+        // clock is untrustworthy — not that the entry is fresh. Re-probe: a
+        // fresh fact is the right answer, and it costs one probe. (An earlier
+        // version claimed `saturating_sub` clamps to zero here; on i64 it
+        // saturates at the type's bounds, so a negative age read as "inside any
+        // TTL" and `with_probe_ttl(0)` reused an entry it had promised not to.)
         let cached = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
             now.load(Ordering::SeqCst)
         });
         let _ = cached.state();
         now.store(RESTART_NS + WINDOW_NS - 5_000_000_000, Ordering::SeqCst);
         let _ = cached.state();
-        assert_eq!(cached.probe.calls.get(), 1);
+        assert_eq!(cached.probe.calls.get(), 2);
+    }
+
+    #[test]
+    fn a_reachable_outcome_is_never_reused() {
+        // The dangerous direction. A cached POSITIVE would mean that for up to
+        // the TTL after the gateway died, `state()` still answered `Connected`
+        // and the ERR-2 gate handed an order to an unreachable gateway instead
+        // of refusing — trading a safety property for latency on the one path
+        // where that must never happen. A successful connect is microseconds,
+        // so there is no budget to protect there either.
+        struct FlippingProbe {
+            reachable: Cell<bool>,
+            calls: Cell<u32>,
+        }
+        impl GatewayReachability for FlippingProbe {
+            fn probe(&self) -> ReachabilityOutcome {
+                self.calls.set(self.calls.get() + 1);
+                if self.reachable.get() {
+                    ReachabilityOutcome::Reachable
+                } else {
+                    ReachabilityOutcome::Unreachable {
+                        detail: "died".to_string(),
+                    }
+                }
+            }
+        }
+        let now_ns = RESTART_NS + WINDOW_NS;
+        let producer = ScheduledRestartConnectivity::new(
+            window(),
+            FlippingProbe {
+                reachable: Cell::new(true),
+                calls: Cell::new(0),
+            },
+            move || now_ns,
+        );
+        assert_eq!(producer.state(), ConnectivityState::Connected);
+        // The gateway dies. The clock has NOT moved, so a cached positive would
+        // still be "fresh" — and the gate would send an order into the dark.
+        producer.probe.reachable.set(false);
+        assert_eq!(
+            producer.state(),
+            ConnectivityState::Unreachable,
+            "a reachable observation must never be reused: the gate would route \
+             a live order to a gateway that had already died"
+        );
+        assert_eq!(producer.probe.calls.get(), 2);
+
+        // Non-vacuity: the NEGATIVE outcome IS reused, which is the whole point
+        // of the cache and the safe direction to err in.
+        assert_eq!(producer.state(), ConnectivityState::Unreachable);
+        assert_eq!(producer.probe.calls.get(), 2);
     }
 
     #[test]

@@ -69,16 +69,22 @@ def types_source(config: dict, root: Path = ROOT) -> str:
 
 
 def _code_only(source: str) -> str:
-    """Strip line comments so a guard tests CODE, not the prose about it.
+    """Strip `//` line comments so a guard tests CODE, not the prose about it.
 
     Without this, a doc comment that says "never `to_socket_addrs`" trips the
     check that forbids `to_socket_addrs` — the guard fires on the sentence
-    explaining why the guard exists. A check that flags its own documentation is
-    one people learn to route around.
+    explaining why the guard exists, and a check that flags its own
+    documentation is one people learn to route around.
+
+    It strips ONLY `//`, never a leading `*`. An earlier version also dropped
+    lines whose first non-space character was `*`, meaning to catch block-comment
+    continuations — and deleted every deref-assignment with it, so
+    `*self.subscribers.entry(k).or_default() = vec![s];` disappeared from the
+    scanned source and an ungated admission point was invisible. A stripper that
+    removes real code is worse than the false positive it was added for, and the
+    codebase uses no `/* */` blocks.
     """
-    return "\n".join(
-        line for line in source.splitlines() if not line.lstrip().startswith(("//", "*"))
-    )
+    return "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("//"))
 
 
 def _fn_body_any(source: str, fn_name: str) -> str:
@@ -521,14 +527,16 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
       direction);
     * its receiver matches the one the contract declares, so an exempt reader
       cannot quietly become `&mut self`; and
-    * a `&self` exemption performs NO write, while the single `&mut self`
-      exemption performs no ADD — removing a subscriber cannot admit one.
+    * a `&self` exemption is proved safe by the BORROW CHECKER rather than by a
+      token scan (the module is additionally refused if it introduces interior
+      mutability, which would undo that guarantee), while the single `&mut self`
+      exemption must contain no add expression at all — aliased or not, since
+      `let map = &mut self.subscribers; map.insert(..)` walks past any check
+      anchored on the field name.
     """
     receivers = spec["exempt_receivers"]
     for name in exempt:
-        declarations = re.findall(
-            rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(([^)]*)", source
-        )
+        declarations = re.findall(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(([^)]*)", source)
         if len(declarations) != 1:
             fail(
                 f"exempt function `{name}` is declared {len(declarations)} times in the "
@@ -550,18 +558,27 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
             )
         # `pub`-optional: trait-impl methods (try_acquire) carry no visibility
         # keyword, and an exemption must cover them too.
+        # A `&self` (or receiver-less) exemption needs NO body check: the borrow
+        # checker already guarantees it cannot mutate `self.subscribers`, and
+        # that is a stronger argument than any token scan. The module-level
+        # interior-mutability check below is what keeps that guarantee true.
+        if declared != "&mut self":
+            continue
+        # The ONE `&mut self` exemption claims it can remove but never add. That
+        # cannot be checked against `subscribers.insert(` — a local alias
+        # (`let map = &mut self.subscribers; map.insert(..)`) walks straight past
+        # it, which the reviewer demonstrated. So the body must contain NO add
+        # expression at all, aliased or not. Over-strict on purpose: `unsubscribe`
+        # only needs `retain` and `remove`, and an exemption that has to be
+        # argued case by case is not an exemption.
         body = re.sub(r"\s+", "", _any_fn_body(source, name))
-        forbidden = _MAP_ADD_TOKENS if declared == "&mut self" else _MAP_WRITE_TOKENS
-        offending = [
-            token
-            for token in forbidden
-            if re.sub(r"\s+", "", spec["private_field"]) + token in body
-        ]
+        offending = [token for token in _MAP_ADD_TOKENS if token in body]
         if offending:
             fail(
-                f"exempt function `{name}` performs `{', '.join(offending)}` on "
-                f"`{spec['private_field']}` — an exemption is a claim that the function "
-                "cannot admit a subscription, and this one now can"
+                f"exempt function `{name}` contains `{', '.join(offending)}` — its "
+                "exemption is the claim that it cannot ADD a subscriber, and any add "
+                "expression in its body (through the field or through an alias) makes "
+                "that claim unverifiable"
             )
 
 
@@ -645,6 +662,21 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     production_src = _code_only(_without_test_module(market_data_src))
     # The envelope minters live in the crate ROOT (the manager is a separate
     # type holding no map), so that file is scanned for them too.
+    # The `&self` exemptions rest on the borrow checker, which interior
+    # mutability would quietly undo — a `RefCell` around the map would let a
+    # `&self` method admit a subscription.
+    interior = [
+        token
+        for token in ("RefCell", "UnsafeCell", "Mutex<", "RwLock<", "unsafe ")
+        if token in production_src
+    ]
+    if interior:
+        fail(
+            f"the subscription module uses {', '.join(interior)} — the exemptions for "
+            "its `&self` methods rest on the borrow checker guaranteeing they cannot "
+            "mutate the consolidated set, and interior mutability removes that "
+            "guarantee. Re-argue each exemption or drop it"
+        )
     submodules = re.findall(r"^\s*(?:pub\s+)?mod\s+(\w+)\s*;", production_src, re.M)
     if submodules:
         fail(

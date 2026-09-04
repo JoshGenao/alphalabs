@@ -184,7 +184,10 @@ fn suspension_blocks_orders_and_market_data_and_suppresses_the_alert() {
     assert_eq!(
         field(witness, "reconnects"),
         "1",
-        "SyRS SYS-75(c): the gate must request a reconnection attempt"
+        "SyRS SYS-75(c): the gate must RECORD a reconnection request. It records \
+         rather than re-establishes — the wire-level session re-open is the \
+         transport's — so this asserts the ledger entry, and the automatic \
+         RESUMPTION half is what the resume proof shows"
     );
 
     let market_data = line_starting(&out, "market-data ");

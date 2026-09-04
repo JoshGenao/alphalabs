@@ -618,6 +618,63 @@ def test_a_window_whose_suspension_predates_the_epoch_is_refused() -> None:
     _assert_one_passed(result, name)
 
 
+def test_a_reachable_outcome_is_never_reused() -> None:
+    """The dangerous direction of a cache on the order path.
+
+    A cached POSITIVE would mean that for up to the TTL after the gateway died,
+    `state()` still answered `Connected` and the ERR-2 gate handed a live order
+    to an unreachable gateway instead of refusing — trading a safety property
+    for latency on the one path where that must never happen. Only the negative
+    outcome is reused, which is also the only expensive one.
+    """
+    name = "a_reachable_outcome_is_never_reused"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_a_backwards_clock_re_probes_rather_than_reusing() -> None:
+    """A negative age means the clock is untrustworthy, not that the entry is
+    fresh. `saturating_sub` on i64 saturates at the type's bounds — it does not
+    clamp to zero — so the earlier reading let `with_probe_ttl(0)` reuse an
+    entry it had promised never to."""
+    name = "a_zero_ttl_probes_every_time_and_a_backwards_clock_re_probes"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_admission_scan_reads_deref_assignments_too() -> None:
+    """The comment stripper used to delete real code.
+
+    It dropped every line starting with `*`, taking
+    `*self.subscribers.entry(k).or_default() = vec![s];` with it — so an ungated
+    admission point was invisible. A stripper that removes code is worse than
+    the false positive it was added for.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_market_data_admission_sites,
+            load_config,
+            market_data_source,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    source = market_data_source(config)
+    bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn force(&mut self, k: SecurityKey, s: StrategyId) {
+        *self.subscribers.entry(k).or_default() = vec![s];
+    }
+}
+"""
+    with pytest.raises(ConnectivityCheckError, match="force"):
+        check_market_data_admission_sites(config, source + bypass)
+
+    # Non-vacuity: the real source still passes.
+    check_market_data_admission_sites(config, source)
+
+
 def test_the_producer_serves_both_gates_from_one_window() -> None:
     """Two separately-configured gates over one requirement drift, and the
     drift is invisible until a deployment updates only one."""

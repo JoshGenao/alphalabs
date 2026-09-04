@@ -564,6 +564,57 @@ impl Sneaky for ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self.market_data_src + "\nmod inner;\n")
         self.assertIn("submodule", str(ctx.exception))
 
+    def test_a_deref_assignment_admission_point_is_caught(self) -> None:
+        """The comment stripper used to delete real code.
+
+        It dropped every line whose first non-space character was `*`, meaning
+        to catch block-comment continuations — and took
+        `*self.subscribers.entry(k).or_default() = vec![s];` with it, so an
+        ungated admission point vanished from the scanned source. A stripper
+        that removes code is worse than the false positive it was added for.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn force(&mut self, k: SecurityKey, s: StrategyId) {
+        *self.subscribers.entry(k).or_default() = vec![s];
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("force", str(ctx.exception))
+
+    def test_the_write_exemption_cannot_add_through_an_alias(self) -> None:
+        """`unsubscribe` claims it can remove but never add.
+
+        Checking that against `subscribers.insert(` is not enough: a local alias
+        (`let map = &mut self.subscribers; map.insert(..)`) walks straight past
+        any check anchored on the field name, so the body must contain no add
+        expression at all.
+        """
+        marker = "pub fn unsubscribe"
+        start = self.market_data_src.index(marker)
+        brace = self.market_data_src.index("{", self.market_data_src.index(")", start))
+        mutated = (
+            self.market_data_src[: brace + 1]
+            + "\n        let map = &mut self.subscribers;"
+            + "\n        map.insert(key.clone(), Vec::new());"
+            + self.market_data_src[brace + 1 :]
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, mutated)
+        self.assertIn("unsubscribe", str(ctx.exception))
+
+    def test_interior_mutability_in_the_owning_module_is_refused(self) -> None:
+        """The `&self` exemptions rest on the borrow checker. A `RefCell` around
+        the map would let a `&self` method admit a subscription, so the argument
+        for those exemptions would silently stop holding."""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(
+                self.config, self.market_data_src + "\nuse std::cell::RefCell;\n"
+            )
+        self.assertIn("interior mutability", str(ctx.exception))
+
     def test_a_stale_exemption_is_caught(self) -> None:
         """An exemption for a function that no longer exists is a hole nobody
         is watching."""

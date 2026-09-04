@@ -5,8 +5,12 @@
 //! REAL TCP endpoint, and proves the three behaviours SYS-75 asks for:
 //!
 //! * `prove-suspension` — 60 s before the expected restart, order submission AND
-//!   market-data requests are suspended, ZERO IB orders are created, and the
-//!   connectivity notification is SUPPRESSED (nothing is sent).
+//!   market-data requests are suspended, ZERO IB orders are created, the
+//!   connectivity notification is SUPPRESSED (nothing is sent), and the gate
+//!   RECORDS a reconnection request. It records rather than re-establishes: the
+//!   wire-level session re-open is the transport's, behind the operator-only
+//!   live feature. The automatic RESUMPTION half of SYS-75(c) is what
+//!   `prove-resume` shows.
 //! * `prove-escalation` — after the window, with the gateway still dead, the
 //!   state is UNREACHABLE with `scheduled_restart:false` and the notification is
 //!   DISPATCHED — the SYS-45 / SYS-46 escalation.
@@ -460,9 +464,17 @@ fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
             evidence.channel_messages_sent
         ),
     )?;
+    // Scoped to what this actually witnesses. `request_reconnect` appends to the
+    // producer's ledger; it does not itself re-establish a wire session, and
+    // saying "a reconnection attempt was made" would assert an acceptance
+    // clause the code does not implement. What IS proven of SYS-75(c) is the
+    // pair: the gate RECORDS the request here, and `prove-resume` shows the
+    // producer re-probing and resuming automatically once the gateway answers.
+    // Re-opening the API session is the transport's, behind the operator-only
+    // live feature — recorded in restart_window.deferred[].
     require(
         evidence.reconnects >= 1,
-        "SyRS SYS-75(c): the gate must request a reconnection attempt".to_string(),
+        "SyRS SYS-75(c): the gate must RECORD a reconnection request".to_string(),
     )?;
 
     println!("restart-window-suspension-proven:true");
