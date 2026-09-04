@@ -371,6 +371,19 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
         self.config = load_config()
         self.market_data_src = market_data_source(self.config)
 
+    def _inject(self, snippet: str) -> str:
+        """Splice a bypass into PRODUCTION code, before the test module.
+
+        Appending it to the end of the file puts it inside — or after — the
+        unshipped `#[cfg(test)] mod tests`, which the check correctly ignores.
+        The test would then pass because the injection was invisible, not
+        because the guard caught it: a control that proves nothing, shaped
+        exactly like one that does.
+        """
+        head, marker, tail = self.market_data_src.partition("\n#[cfg(test)]\nmod tests {")
+        self.assertTrue(marker, "expected a #[cfg(test)] module to inject before")
+        return head + snippet + marker + tail
+
     def test_both_admission_sites_are_gated(self) -> None:
         evidence = check_market_data_admission_sites(self.config, self.market_data_src)
         self.assertIn("request_subscription", evidence)
@@ -421,7 +434,7 @@ impl ConsolidatedSubscriptionRegistry {
 }
 """
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+            check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("subscribe_bulk", str(ctx.exception))
 
     def test_a_declared_but_ungated_admission_point_is_caught(self) -> None:
@@ -438,7 +451,7 @@ impl ConsolidatedSubscriptionRegistry {
 }
 """
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(config, self.market_data_src + bypass)
+            check_market_data_admission_sites(config, self._inject(bypass))
         self.assertIn("without calling", str(ctx.exception))
 
     def test_the_reviewers_entry_or_default_form_is_caught(self) -> None:
@@ -462,22 +475,41 @@ impl ConsolidatedSubscriptionRegistry {
 }
 """
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+            check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("force_subscribe", str(ctx.exception))
 
-    def test_a_mutator_that_touches_no_map_yet_is_still_caught(self) -> None:
-        """The closure is over `&mut self`, not over what the body happens to
-        do today — a method that mutates only the line limit now can start
-        admitting tomorrow without re-tripping any scan."""
-        bypass = """
+    def test_a_mutator_is_required_to_be_gated_exactly_when_it_can_admit(self) -> None:
+        """Where the closure draws its line, in both directions.
+
+        The round-4 version of this guard required EVERY public `&mut self`
+        method to be classified, including one that touched no subscriber map.
+        The privacy-based closure is narrower and more honest: a method that
+        cannot reach the consolidated set cannot admit, so demanding a
+        restart-window guard on it would be noise. What matters is that the
+        moment it DOES reach the set it is caught — which is the second half
+        below.
+        """
+        harmless = """
 impl ConsolidatedSubscriptionRegistry {
     pub fn retune(&mut self, limit: u32) {
         self.line_limit = limit;
     }
 }
 """
+        # It cannot admit, so it needs no guard and no exemption.
+        check_market_data_admission_sites(self.config, self._inject(harmless))
+
+        # One line later it touches the map — and is caught immediately.
+        admitting = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn retune(&mut self, limit: u32, k: SecurityKey, s: StrategyId) {
+        self.line_limit = limit;
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+            check_market_data_admission_sites(self.config, self._inject(admitting))
         self.assertIn("retune", str(ctx.exception))
 
     def test_a_stale_exemption_is_caught(self) -> None:
@@ -494,7 +526,8 @@ impl ConsolidatedSubscriptionRegistry {
         """An exemption must not be silent: the evidence names how many there
         are, so removing a gate by exempting it shows up in the record."""
         evidence = check_market_data_admission_sites(self.config, self.market_data_src)
-        self.assertIn("1 declared exemption(s): unsubscribe", evidence)
+        self.assertIn("classified as unable to admit", evidence)
+        self.assertIn("unsubscribe", evidence)
 
     def test_a_reformat_cannot_hide_an_admission_point(self) -> None:
         """rustfmt wraps `self.subscribers\n.insert(` across lines. A raw
@@ -513,18 +546,29 @@ impl ConsolidatedSubscriptionRegistry {
 }
 """
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self.market_data_src + wrapped)
+            check_market_data_admission_sites(self.config, self._inject(wrapped))
         self.assertIn("subscribe_wrapped", str(ctx.exception))
 
     def test_a_scan_that_matches_nothing_fails_rather_than_reporting_clean(self) -> None:
         # A broken discovery reports a clean tree, which is the failure mode
         # that looks most like the guard working.
-        mutated = self.market_data_src.replace(
-            "impl ConsolidatedSubscriptionRegistry {", "impl RenamedRegistry {"
-        )
+        mutated = self.market_data_src.replace("    subscribers: BTreeMap", "    renamed: BTreeMap")
+        self.assertNotEqual(mutated, self.market_data_src, "the private-field anchor moved")
         with self.assertRaises(ConnectivityCheckError) as ctx:
             check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("cannot see", str(ctx.exception))
+        self.assertIn("no longer a private field", str(ctx.exception))
+
+    def test_a_public_subscriber_map_is_caught(self) -> None:
+        """The closure IS Rust's privacy. If the field goes public, any crate
+        can admit without passing through a gated function and no source scan
+        can close that — so the check must refuse rather than keep reporting."""
+        mutated = self.market_data_src.replace(
+            "    subscribers: BTreeMap", "    pub subscribers: BTreeMap"
+        )
+        self.assertNotEqual(mutated, self.market_data_src, "the private-field anchor moved")
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, mutated)
+        self.assertIn("PUBLIC", str(ctx.exception))
 
 
 class RestartWindowProducerTest(unittest.TestCase):

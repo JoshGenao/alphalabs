@@ -205,6 +205,64 @@ fn suspension_blocks_orders_and_market_data_and_suppresses_the_alert() {
 }
 
 #[test]
+fn the_suspension_proof_cannot_be_printed_from_inside_the_window() {
+    // The reviewer's false green. Every OTHER check in the suspension proof is
+    // also satisfied inside the restart window — the state is still
+    // ScheduledRestartWindow, the order is still blocked, the alert is still
+    // suppressed — so without asserting the phase the tool printed the
+    // SYS-75(a) PRE-restart proof for a lead it never entered. `--inject`
+    // cannot catch this, because that control overrides the instant itself.
+    let inside_window = (1_788_493_500_000_000_000i64 + 60 * 1_000_000_000).to_string();
+    let output = run(&[
+        "prove-suspension",
+        "--restart-ns",
+        "1788493500000000000",
+        "--now-ns",
+        &inside_window,
+    ]);
+    assert_failed_closed(&output, "prove-suspension at restart+60s");
+    assert_eq!(
+        field(line_starting(&stdout(&output), "window "), "phase"),
+        "Restarting",
+        "the run must show WHICH phase it was actually in"
+    );
+}
+
+#[test]
+fn a_one_second_lead_still_lands_inside_the_lead() {
+    // The same false green arrived with NO flags at all under the
+    // catalogue-legal ATP_IB_RESTART_SUSPEND_LEAD_SECONDS=1, because the
+    // default instant was `restart_ns - lead_ns / 2` and integer division
+    // collapsed it onto `restart_ns`. The default is now the first instant of
+    // the lead, which is inside it for every legal lead.
+    let output = run_with_env(
+        &["prove-suspension"],
+        "ATP_IB_RESTART_SUSPEND_LEAD_SECONDS",
+        "1",
+    );
+    assert_proved(&output, "restart-window-suspension-proven:true");
+    assert_eq!(
+        field(line_starting(&stdout(&output), "window "), "phase"),
+        "Suspending"
+    );
+}
+
+#[test]
+fn the_resume_proof_cannot_be_printed_from_outside_the_window() {
+    // The same rule for the third proof: a resume that passed outside the
+    // window would be describing an ordinary healthy gateway, not SYS-75(c)/(d).
+    let before = (1_788_493_500_000_000_000i64 - 3_600 * 1_000_000_000).to_string();
+    let output = run(&[
+        "prove-resume",
+        "--restart-ns",
+        "1788493500000000000",
+        "--now-ns",
+        &before,
+    ]);
+    assert_failed_closed(&output, "prove-resume an hour before the restart");
+}
+
+#[test]
 fn suspension_cannot_be_derived_outside_the_window() {
     // The non-vacuity control. Move the instant outside the window and the
     // suspension has nothing to prove — so it must fail closed rather than

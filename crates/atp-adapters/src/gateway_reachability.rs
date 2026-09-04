@@ -39,12 +39,21 @@ use std::time::Duration;
 /// work in the default build — the deterministic fault-injection path is the
 /// whole verification method for SRS-MD-005.
 ///
-/// Two seconds is chosen against the requirement, not by feel: NFR-R2 budgets
-/// 15 s from detection to a reconnection ATTEMPT, and SYS-75 asks the question
-/// repeatedly across a 5-minute window, so a probe must resolve fast enough to
-/// be asked many times inside it. A refused connection returns immediately;
-/// this bound only governs a host that silently drops packets.
-pub const REACHABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// **The binding budget is NFR-P1, not NFR-R2.** The execution engine consults
+/// the connectivity port inline on the live submission path, so this deadline
+/// lands inside the order's signal-to-acknowledgement latency — which NFR-P1
+/// caps at 1,000 ms p95 *including all internal system latency*. An earlier
+/// 2-second value was argued only against NFR-R2's 15-second reconnect budget
+/// and would have blown the entire order budget on every submission against a
+/// black-holing endpoint (a paused Gateway VM, a DROP rule, or the gateway
+/// mid-restart holding the socket unaccepted) — which are exactly the
+/// conditions this feature exists for.
+///
+/// 250 ms is a quarter of the NFR-P1 budget, and the producer additionally
+/// caches an outcome for a short TTL so consecutive submissions do not each pay
+/// it. A refused connection returns immediately, so this bound governs only a
+/// host that silently drops packets. It remains far inside NFR-R2's 15 s.
+pub const REACHABILITY_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// What one probe observed.
 ///
@@ -301,12 +310,21 @@ mod tests {
     }
 
     #[test]
-    fn the_default_probe_timeout_is_bounded_well_inside_the_nfr_r2_budget() {
-        // NFR-R2 allows 15 s from detection to a reconnection attempt, and
-        // SYS-75 asks this question repeatedly inside a 5-minute window, so a
-        // probe deadline anywhere near the budget would let one probe consume
-        // it.
-        assert_eq!(REACHABILITY_PROBE_TIMEOUT, Duration::from_secs(2));
+    fn the_probe_deadline_fits_inside_the_nfr_p1_order_budget() {
+        // The binding constraint. The execution engine consults the
+        // connectivity port INLINE on the live submission path, so this
+        // deadline is spent inside the order's own latency budget: NFR-P1 caps
+        // signal-to-acknowledgement at 1,000 ms p95 including all internal
+        // system latency. A deadline anywhere near that would blow the whole
+        // budget on every submission against a black-holing endpoint.
+        const NFR_P1_BUDGET: Duration = Duration::from_millis(1_000);
+        assert!(
+            REACHABILITY_PROBE_TIMEOUT * 4 <= NFR_P1_BUDGET,
+            "the probe deadline must be at most a quarter of the NFR-P1 order budget; \
+             got {REACHABILITY_PROBE_TIMEOUT:?} against {NFR_P1_BUDGET:?}"
+        );
+        // And still far inside NFR-R2's detection-to-attempt budget, which was
+        // the only bound the first version of this constant was argued against.
         assert!(REACHABILITY_PROBE_TIMEOUT < Duration::from_secs(15));
         assert_eq!(
             TcpGatewayReachability::new(loopback(4002)).timeout(),

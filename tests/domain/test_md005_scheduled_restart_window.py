@@ -381,44 +381,6 @@ def test_the_scenario_drives_the_shared_order_entry_not_the_inner_gate() -> None
     assert ".designate(" in source, "the live designation must be exercised, not bypassed"
 
 
-def test_no_admission_point_can_hide_from_the_static_guard() -> None:
-    """The reviewer's bypass, pinned at the domain layer too.
-
-    The first version of the static guard discovered admission points by "takes
-    a RestartWindowGate", which is circular — a new path that skips the port is
-    exactly what must be caught, and skipping it made the path invisible. This
-    drives the real check against an injected ungated site, so the domain layer
-    notices if the discovery ever goes back to being circular.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-    bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn subscribe_bulk(&mut self, request: &SubscriptionRequest) {
-        self.subscribers
-            .insert(request.symbol.clone(), vec![request.strategy_id.clone()]);
-    }
-}
-"""
-    with pytest.raises(ConnectivityCheckError, match="subscribe_bulk"):
-        check_market_data_admission_sites(config, source + bypass)
-
-    # Non-vacuity: the unmutated source must still pass, or the guard is simply
-    # refusing everything.
-    check_market_data_admission_sites(config, source)
-
-
 def test_the_reconnect_ledger_is_bounded_but_the_count_stays_exact() -> None:
     """A sustained outage against a retrying strategy writes the ledger on every
     blocked submission. Unbounded, it grows for the life of the process this
@@ -452,15 +414,72 @@ def test_a_malformed_catalogue_key_is_refused_not_defaulted() -> None:
     _assert_one_passed(_cli_test(name), name)
 
 
-def test_no_admission_path_can_avoid_the_guard_by_changing_expression() -> None:
-    """The guard's third and final shape.
+def test_consecutive_submissions_do_not_each_pay_the_probe_deadline() -> None:
+    """NFR-P1. The execution engine consults this port INLINE on the live
+    submission path, so an uncached probe would spend the order's own latency
+    budget on the gate against a black-holing endpoint — a paused Gateway VM, a
+    DROP rule, or the gateway mid-restart holding the socket unaccepted, which
+    are exactly the conditions this feature exists for."""
+    name = "consecutive_submissions_do_not_each_pay_the_probe_deadline"
+    _assert_one_passed(_producer_test(name), name)
 
-    It was wrong twice: first it discovered admission points by "takes a
-    RestartWindowGate" (circular), then by two literal effect forms, which the
-    reviewer walked past with `subscribers.entry(k).or_default().push(..)`. A
-    checklist cannot catch the arm nobody added to it. Discovery is now a closed
-    set over the type's `&mut self` surface plus every minter of the acceptance
-    envelope, so the expression used cannot hide a path.
+
+def test_the_phase_is_never_cached_even_though_reachability_is() -> None:
+    """Caching reachability must not cache the PHASE: the two instants a cache
+    would get wrong are the start of the suspension and the end of the window,
+    which are the only two that matter."""
+    name = "the_phase_is_never_cached_even_though_reachability_is"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_probe_deadline_fits_inside_the_nfr_p1_order_budget() -> None:
+    """The binding constraint is NFR-P1 (1,000 ms p95 signal-to-ack, including
+    all internal system latency), not NFR-R2's 15 s reconnect budget — the
+    probe is spent inside the order, not beside it."""
+    if shutil.which("cargo") is None:
+        pytest.skip(reason=_NO_CARGO)
+    name = "the_probe_deadline_fits_inside_the_nfr_p1_order_budget"
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "atp-adapters",
+            "--lib",
+            f"gateway_reachability::tests::{name}",
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    _assert_one_passed(result, name)
+
+
+def test_a_proof_line_never_outruns_the_phase_it_names() -> None:
+    """Every other check in the suspension proof is also satisfied INSIDE the
+    restart window, so without asserting the phase the tool printed the
+    SYS-75(a) pre-restart proof for a lead it never entered — and `--inject`
+    could not catch it, because that control overrides the instant itself."""
+    for name in (
+        "the_suspension_proof_cannot_be_printed_from_inside_the_window",
+        "a_one_second_lead_still_lands_inside_the_lead",
+        "the_resume_proof_cannot_be_printed_from_outside_the_window",
+    ):
+        _assert_one_passed(_cli_test(name), name)
+
+
+def test_the_admission_guard_is_closed_by_rusts_own_privacy() -> None:
+    """The guard's fourth and final shape.
+
+    Three earlier versions each described the dangerous code — by the port it
+    took, by two effect forms, by public `&mut self` on the inherent impl — and
+    a reviewer walked past each in turn. The closure that holds is not a
+    description: `subscribers` is a PRIVATE field, so the complete set of code
+    that can reach the consolidated set is "the functions in this file naming
+    it", bounded by the compiler rather than by imagination.
     """
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     try:
@@ -475,38 +494,43 @@ def test_no_admission_path_can_avoid_the_guard_by_changing_expression() -> None:
 
     config = load_config()
     source = market_data_source(config)
+    head, marker, tail = source.partition("\n#[cfg(test)]\nmod tests {")
+    assert marker, "expected a #[cfg(test)] module to inject before"
+
     shapes = {
-        "entry-or-default-push": """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force_subscribe(&mut self, request: &SubscriptionRequest, key: SecurityKey) {
-        self.subscribers
-            .entry(key)
-            .or_default()
-            .push(request.strategy_id.clone());
+        "a trait impl with &mut self": """
+trait Sneaky { fn admit(&mut self, k: SecurityKey, s: StrategyId); }
+impl Sneaky for ConsolidatedSubscriptionRegistry {
+    fn admit(&mut self, k: SecurityKey, s: StrategyId) {
+        self.subscribers.insert(k, vec![s]);
     }
 }
 """,
-        "a mutator touching no map yet": """
+        "a public free function writing the map": """
+pub fn force_register(r: &mut ConsolidatedSubscriptionRegistry, k: SecurityKey, s: StrategyId) {
+    r.subscribers.insert(k, vec![s]);
+}
+""",
+        "entry().or_default().push()": """
 impl ConsolidatedSubscriptionRegistry {
-    pub fn retune(&mut self, limit: u32) {
-        self.line_limit = limit;
+    pub fn force_subscribe(&mut self, k: SecurityKey, s: StrategyId) {
+        self.subscribers.entry(k).or_default().push(s);
     }
 }
 """,
-        "a second minter of the acceptance envelope": """
-impl MarketDataSubscriptionManager {
-    pub fn quick_accept(&self, request: SubscriptionRequest) -> SubscriptionAccepted {
-        SubscriptionAccepted { strategy_id: request.strategy_id, symbol: request.symbol }
+        "a PRIVATE helper writing the map": """
+impl ConsolidatedSubscriptionRegistry {
+    fn quietly_admit(&mut self, k: SecurityKey, s: StrategyId) {
+        self.subscribers.insert(k, vec![s]);
     }
 }
 """,
     }
     for label, injected in shapes.items():
         with pytest.raises(ConnectivityCheckError):
-            check_market_data_admission_sites(config, source + injected)
+            check_market_data_admission_sites(config, head + injected + marker + tail)
 
-    # Non-vacuity: the real source must still pass, or the guard simply refuses
-    # everything and the three cases above prove nothing.
+    # Non-vacuity: the real source must still pass.
     check_market_data_admission_sites(config, source)
 
 

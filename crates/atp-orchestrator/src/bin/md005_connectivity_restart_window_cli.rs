@@ -343,9 +343,13 @@ fn live_endpoint() -> Result<(TcpListener, SocketAddr), String> {
 
 fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args, Injection::OutsideWindow)?;
-    // Halfway through the lead by default; the injection moves the instant
-    // OUTSIDE the window entirely, where nothing is suspended.
-    let default_now = parsed.restart_ns - parsed.lead_ns / 2;
+    // The FIRST instant of the lead, which is inside it for every legal lead.
+    // The earlier `restart_ns - lead_ns / 2` integer-divided to `restart_ns`
+    // itself at the catalogue-legal `lead_seconds = 1`, so the default run
+    // landed in `Restarting` and printed the SYS-75(a) proof for a lead it
+    // never entered. The injection moves the instant outside the window
+    // entirely, where nothing is suspended.
+    let default_now = parsed.restart_ns - parsed.lead_ns;
     let now_ns = match parsed.injection {
         Injection::OutsideWindow => parsed.restart_ns - parsed.lead_ns - NANOS_PER_SECOND,
         _ => parsed.now_ns.unwrap_or(default_now),
@@ -356,6 +360,17 @@ fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
     report_header("suspension", &parsed, now_ns, &evidence);
     report_common(&evidence);
 
+    // The PHASE first. Every other check below is also satisfied inside the
+    // restart window itself, so without this the proof would print for
+    // SYS-75(a) — the 60-second PRE-restart lead — while evaluating somewhere
+    // the lead never covered. A proof line must name what it proved.
+    require(
+        evidence.phase == RestartPhase::Suspending,
+        format!(
+            "SyRS SYS-75(a) is the PRE-restart lead; this instant is in {:?}",
+            evidence.phase
+        ),
+    )?;
     require(
         evidence.connectivity_state == ConnectivityState::ScheduledRestartWindow,
         format!(
@@ -531,6 +546,16 @@ fn cmd_prove_resume(args: &[String]) -> Result<(), String> {
     report_header("resume", &parsed, now_ns, &evidence);
     report_common(&evidence);
 
+    // Same rule as the other two proofs: name the phase you are in. A resume
+    // proof that passed outside the window would be describing an ordinary
+    // healthy gateway, not SYS-75(c)/(d).
+    require(
+        evidence.phase == RestartPhase::Restarting,
+        format!(
+            "SyRS SYS-75(c)/(d) is about the restart WINDOW; this instant is in {:?}",
+            evidence.phase
+        ),
+    )?;
     require(
         evidence.connectivity_state == ConnectivityState::Connected,
         format!(

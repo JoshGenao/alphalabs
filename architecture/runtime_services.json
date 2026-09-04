@@ -976,13 +976,25 @@
           "request_subscription",
           "subscribe"
         ],
-        "mutating_type": "ConsolidatedSubscriptionRegistry",
+        "private_field": "subscribers",
         "acceptance_envelope": "SubscriptionAccepted {",
         "exempt": [
-          "unsubscribe"
+          "new",
+          "unsubscribe",
+          "distinct_subscriptions",
+          "subscriber_count",
+          "is_subscribed",
+          "fan_out",
+          "try_acquire"
         ],
         "exempt_reasons": {
-          "unsubscribe": "Removing a subscriber cannot ADMIT anything, and blocking it during maintenance would strand strategies subscribed to lines they asked to leave -- releasing a line is always safe. Declared here rather than silently missing from the scan."
+          "new": "The constructor. It creates an EMPTY map -- there is no request, no strategy and no security to admit, so there is nothing for a window to refuse.",
+          "unsubscribe": "Removing a subscriber cannot ADMIT anything, and refusing it during maintenance would strand strategies on lines they asked to leave -- releasing a line is always safe.",
+          "distinct_subscriptions": "Read-only line count. Takes &self and returns a number; it cannot register anything.",
+          "subscriber_count": "Read-only per-security subscriber count.",
+          "is_subscribed": "Read-only membership predicate.",
+          "fan_out": "Read-only delivery: routes an already-received tick to existing subscribers. Suspending it would drop data the system already has, which is the opposite of the requirement -- SYS-75(a) suspends REQUESTS, not the handling of ticks already in flight.",
+          "try_acquire": "Read-only ERR-4 limit PROBE. Its own contract (tools/subscription_limit_check.py) is that it never mutates the registry, and the restart-window gate runs ahead of it in request_subscription anyway."
         },
         "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. tools/connectivity_check.py requires the guard over a CLOSED SET rather than a remembered list of syntax: every public `&mut self` method on ConsolidatedSubscriptionRegistry (the only way to change the consolidated set at all, whatever expression it uses) plus every public function that mints the acceptance envelope (which covers the manager, a separate type holding no registry field). This check was wrong twice before: first it discovered sites by whether they already took the port (circular -- a path that SKIPS the gate is exactly what must be caught), then by two literal effect forms, which a `subscribers.entry(k).or_default().push(..)` walked straight past. A new admission path must be one or the other of the closed set; exemptions are per-item with a stated reason, and a stale exemption fails too."
       },

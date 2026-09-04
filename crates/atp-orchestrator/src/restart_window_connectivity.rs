@@ -61,6 +61,23 @@ use atp_types::{ConnectivityState, MarketDataAdmission, RestartPhase, RestartWin
 /// enforced would be worse than an absent one.
 pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 
+/// How long a reachability observation may be reused before the gateway is
+/// asked again.
+///
+/// The execution engine consults this port INLINE on the live submission path,
+/// so without a cache a burst of orders would each pay
+/// `REACHABILITY_PROBE_TIMEOUT` against a black-holing endpoint and spend the
+/// NFR-P1 budget on the gate rather than on the order.
+///
+/// Only REACHABILITY is cached. The phase is always recomputed from the clock —
+/// that read is free, and the two instants that matter (the start of the
+/// suspension and the end of the window) must be exact. So the residual is
+/// bounded and stated: a gateway that comes back can be reported unreachable
+/// for up to this long, against a window measured in minutes. One second is
+/// two orders of magnitude below the 300 s default window and comfortably
+/// inside NFR-R2's 15 s detection-to-attempt budget.
+pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
+
 /// One recorded reconnection attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconnectAttempt {
@@ -108,8 +125,10 @@ where
     window: RestartWindow,
     probe: P,
     clock: C,
+    ttl_ns: i64,
     ledger: Mutex<ReconnectLedger>,
-    last_outcome: Mutex<Option<ReachabilityOutcome>>,
+    /// The last observation and the instant it was taken.
+    last_outcome: Mutex<Option<(i64, ReachabilityOutcome)>>,
 }
 
 impl<P, C> ScheduledRestartConnectivity<P, C>
@@ -127,9 +146,20 @@ where
             window,
             probe,
             clock,
+            ttl_ns: REACHABILITY_CACHE_TTL_NS,
             ledger: Mutex::new(ReconnectLedger::default()),
             last_outcome: Mutex::new(None),
         }
+    }
+
+    /// Reuse a reachability observation for `ttl_ns` instead of the default.
+    ///
+    /// Zero disables reuse — every read probes. Useful for a test that wants to
+    /// count probes, and honest for a caller that would rather pay the deadline
+    /// than tolerate the staleness.
+    pub fn with_probe_ttl(mut self, ttl_ns: i64) -> Self {
+        self.ttl_ns = ttl_ns.max(0);
+        self
     }
 
     /// The window this producer enforces.
@@ -161,10 +191,11 @@ where
     /// the guarantee would hold in the gates and be broken by the tool that
     /// reports on them.
     pub fn observe_if_needed(&self) -> Option<ReachabilityOutcome> {
-        match self.window.phase((self.clock)()) {
+        let now_ns = (self.clock)();
+        match self.window.phase(now_ns) {
             RestartPhase::Suspending => None,
             RestartPhase::Normal | RestartPhase::Restarting | RestartPhase::Elapsed => {
-                Some(self.probe.probe())
+                Some(self.observe_cached(now_ns))
             }
         }
     }
@@ -182,7 +213,7 @@ where
         // wall-clock moment in different SYS-75 phases — which is the
         // disagreement this producer exists to make impossible.
         let now_ns = (self.clock)();
-        match self.observe_for(self.window.phase(now_ns)) {
+        match self.observe_for(self.window.phase(now_ns), now_ns) {
             Some(reachable) => self.window.market_data_admission(now_ns, reachable),
             None => MarketDataAdmission::SuspendedForScheduledRestart,
         }
@@ -202,7 +233,8 @@ where
         self.last_outcome
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .as_ref()
+            .map(|(_, outcome)| outcome.clone())
     }
 
     /// Whether this phase needs a probe at all, and its answer if so.
@@ -214,7 +246,7 @@ where
     /// TCP connect for an answer the phase already fixed. A new code path does
     /// not inherit the old one's guarantees; putting the decision in one place
     /// is what makes it impossible for a third gate to miss.
-    fn observe_for(&self, phase: RestartPhase) -> Option<bool> {
+    fn observe_for(&self, phase: RestartPhase, now_ns: i64) -> Option<bool> {
         match phase {
             // SYS-75(a) is pre-emptive: the gateway is still up 60 s before its
             // own restart, so asking cannot change the answer — and the gateway
@@ -222,15 +254,31 @@ where
             // waiting for.
             RestartPhase::Suspending => None,
             RestartPhase::Normal | RestartPhase::Restarting | RestartPhase::Elapsed => {
-                let outcome = self.probe.probe();
-                let reachable = outcome.is_reachable();
-                *self
-                    .last_outcome
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
-                Some(reachable)
+                Some(self.observe_cached(now_ns).is_reachable())
             }
         }
+    }
+
+    /// Probe, or reuse an observation younger than the TTL.
+    ///
+    /// The cache is checked and refreshed under ONE lock hold, so two threads
+    /// cannot both decide the entry is stale and both pay the deadline.
+    fn observe_cached(&self, now_ns: i64) -> ReachabilityOutcome {
+        let mut cached = self
+            .last_outcome
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((taken_at_ns, outcome)) = cached.as_ref() {
+            // `saturating_sub` on a clock that stepped backwards yields 0,
+            // which is inside any TTL — a backwards step must not be readable
+            // as "the entry expired" and stampede the gateway.
+            if now_ns.saturating_sub(*taken_at_ns) < self.ttl_ns {
+                return outcome.clone();
+            }
+        }
+        let outcome = self.probe.probe();
+        *cached = Some((now_ns, outcome.clone()));
+        outcome
     }
 
     /// The collapsed predicate, for callers that only need the decision.
@@ -285,7 +333,7 @@ where
     /// still be reporting the previous answer.
     fn state(&self) -> ConnectivityState {
         let now_ns = (self.clock)();
-        match self.observe_for(self.window.phase(now_ns)) {
+        match self.observe_for(self.window.phase(now_ns), now_ns) {
             Some(reachable) => self.window.connectivity_state(now_ns, reachable),
             None => ConnectivityState::ScheduledRestartWindow,
         }
@@ -541,6 +589,86 @@ mod tests {
                  now_ns={now_ns} reachable={reachable}"
             );
         }
+    }
+
+    #[test]
+    fn consecutive_submissions_do_not_each_pay_the_probe_deadline() {
+        // The NFR-P1 property. The execution engine consults this port INLINE on
+        // the live submission path, so without reuse a burst of orders would
+        // each spend REACHABILITY_PROBE_TIMEOUT against a black-holing endpoint
+        // — a paused Gateway VM, a DROP rule, or the gateway mid-restart
+        // holding the socket unaccepted, which are exactly the conditions this
+        // feature exists for.
+        let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
+        let producer =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+                now.load(Ordering::SeqCst)
+            });
+        for _ in 0..25 {
+            assert_eq!(producer.state(), ConnectivityState::Unreachable);
+        }
+        assert_eq!(
+            producer.probe.calls.get(),
+            1,
+            "25 submissions inside the TTL must cost ONE probe, not 25"
+        );
+
+        // Past the TTL the gateway is asked again — the cache is a latency
+        // bound, not a memory of a fact that stopped being true.
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABILITY_CACHE_TTL_NS,
+            Ordering::SeqCst,
+        );
+        assert_eq!(producer.state(), ConnectivityState::Unreachable);
+        assert_eq!(producer.probe.calls.get(), 2);
+    }
+
+    #[test]
+    fn a_zero_ttl_probes_every_time_and_a_backwards_clock_does_not_stampede() {
+        // Non-vacuity for the test above: with reuse disabled the SAME sequence
+        // costs one probe per read, so "1 probe" there is a fact about the cache
+        // rather than about a producer that never probes.
+        let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
+        let eager = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+            now.load(Ordering::SeqCst)
+        })
+        .with_probe_ttl(0);
+        for _ in 0..5 {
+            let _ = eager.state();
+        }
+        assert_eq!(eager.probe.calls.get(), 5);
+
+        // A clock that steps BACKWARDS must read as "inside the TTL", not as
+        // "expired": saturating_sub yields 0, so a backwards step cannot
+        // stampede the gateway that serves one API client.
+        let cached = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+            now.load(Ordering::SeqCst)
+        });
+        let _ = cached.state();
+        now.store(RESTART_NS + WINDOW_NS - 5_000_000_000, Ordering::SeqCst);
+        let _ = cached.state();
+        assert_eq!(cached.probe.calls.get(), 1);
+    }
+
+    #[test]
+    fn the_phase_is_never_cached_even_though_reachability_is() {
+        // The two instants a cache would get wrong are exactly the ones that
+        // matter. Only reachability is reused; the phase is recomputed from the
+        // clock on every read, so the escalation boundary stays exact.
+        let now = AtomicI64::new(RESTART_NS - LEAD_NS - 1);
+        let producer =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(true), || {
+                now.load(Ordering::SeqCst)
+            });
+        assert_eq!(producer.state(), ConnectivityState::Connected);
+        // One nanosecond later — well inside the reachability TTL — the phase
+        // has moved and the verdict must move with it.
+        now.store(RESTART_NS - LEAD_NS, Ordering::SeqCst);
+        assert_eq!(
+            producer.state(),
+            ConnectivityState::ScheduledRestartWindow,
+            "a cached REACHABILITY must never hold a stale PHASE"
+        );
     }
 
     #[test]

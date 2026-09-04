@@ -166,19 +166,26 @@ def test_the_fault_is_a_genuinely_dead_port() -> None:
             probe.connect(("127.0.0.1", live_port))
 
 
-def test_before_the_lead_a_healthy_gateway_routes_and_subscribes(cli_path: Path) -> None:
-    """Step 1 — the baseline. Without it, every suspension below could be a
-    system that simply never trades."""
-    result = run_cli(
-        cli_path,
-        "prove-resume",
-        "--now-ns",
-        str(RESTART_NS - (LEAD_SECONDS + 600) * NS),
-    )
-    assert_proved(result, "restart-window-resume-proven:true")
-    assert field(result.stdout, "gateway ", "state") == "Connected"
-    assert field(result.stdout, "witness ", "ib-orders-created") == "1"
-    assert field(result.stdout, "market-data ", "admitted") == "true"
+def test_before_the_lead_no_proof_claims_a_phase_it_is_not_in(cli_path: Path) -> None:
+    """Step 1 — the baseline, and a control on the proofs themselves.
+
+    Well before the lead the window is doing nothing, so none of the three
+    proofs is derivable here: each asserts the SYS-75 phase it names, precisely
+    so a proof line cannot outrun what it proved. The healthy-routing positive
+    control lives at step 4, inside the window, where SYS-75(c)/(d) actually
+    applies.
+    """
+    for subcommand in ("prove-suspension", "prove-escalation", "prove-resume"):
+        result = run_cli(
+            cli_path,
+            subcommand,
+            "--now-ns",
+            str(RESTART_NS - (LEAD_SECONDS + 600) * NS),
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0, f"{subcommand} must not prove anything here:\n{combined}"
+        assert "-proven:true" not in combined, combined
+        assert field(result.stdout, "window ", "phase") == "Normal"
 
 
 def test_inside_the_lead_orders_and_market_data_are_suspended(cli_path: Path) -> None:

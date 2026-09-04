@@ -431,10 +431,17 @@ def _public_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
-def _impl_span(source: str, type_name: str) -> str:
-    """The concatenated bodies of every ``impl <type_name>`` block."""
-    spans: list[str] = []
-    for match in re.finditer(rf"\bimpl\s+{re.escape(type_name)}\s*\{{", source):
+def _all_fn_spans(source: str) -> list[tuple[str, str]]:
+    """Every function in the file — `pub` or not, inherent impl or trait impl.
+
+    Deliberately not restricted to `pub fn` inside an inherent `impl` block.
+    That restriction is what let the previous version of this guard miss a trait
+    impl with a `&mut self` method and a public free function in the same file,
+    both of which can write the private subscriber map.
+    """
+    spans: list[tuple[str, str]] = []
+    for match in re.finditer(r"\bfn\s+(\w+)\b[^;{]*\{", source):
+        name = match.group(1)
         depth, index = 1, match.end()
         while index < len(source) and depth:
             char = source[index]
@@ -443,38 +450,44 @@ def _impl_span(source: str, type_name: str) -> str:
             elif char == "}":
                 depth -= 1
             index += 1
-        spans.append(source[match.end() : index - 1])
-    return "\n".join(spans)
+        spans.append((name, source[match.end() : index - 1]))
+    return spans
+
+
+def _without_test_module(source: str) -> str:
+    """Drop the trailing `#[cfg(test)] mod tests { .. }`, which is not shipped."""
+    marker = "\n#[cfg(test)]\nmod tests {"
+    index = source.find(marker)
+    return source if index < 0 else source[:index]
 
 
 def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
-    """Require the guard over a CLOSED set, not a list of remembered forms.
+    """Require the guard over the set RUST's privacy already closes.
 
-    This check has now been wrong twice, both times because it enumerated
+    This guard has been wrong three times, each time because it enumerated
     something the author could think of:
 
-    1. It discovered admission points by "takes a `RestartWindowGate`", which is
-       circular — a path that SKIPS the port is exactly what must be caught.
-    2. It then discovered them by two literal effect FORMS
-       (``SubscriptionAccepted {``, ``self.subscribers.insert(``), and the
-       reviewer walked straight past both with
-       ``subscribers.entry(k).or_default().push(..)``, which opens an upstream
-       line just as well.
+    1. by "takes a `RestartWindowGate`" — circular, since a path that SKIPS the
+       port is precisely what must be caught;
+    2. by two literal effect FORMS — walked past by
+       ``subscribers.entry(k).or_default().push(..)``;
+    3. by "public `&mut self` methods on the inherent impl" — walked past by a
+       trait impl with a `&mut self` method, and by a free function in the same
+       file writing ``registry.subscribers``.
 
-    A checklist cannot catch the arm nobody added to it, so the discovery is now
-    a closure argument over the TYPE's surface instead of over remembered
-    syntax:
+    Every one of those tried to describe the dangerous code. The closure that
+    actually holds is not a description at all — it is the language's:
+    ``subscribers`` is a PRIVATE field, so nothing outside this file can touch
+    it, and the complete set of code that can is "the functions in this file
+    that mention it". That set is bounded by the compiler, not by imagination.
 
-    * every public method on the registry that takes ``&mut self`` — the only
-      way to change the consolidated subscription set at all, whatever
-      expression it uses to do it; plus
-    * every public function that mints the acceptance envelope, which covers
-      the manager, a separate type with no registry field.
-
-    A new admission path has to be one or the other. Exemptions are per-item and
-    carry a stated reason in the contract, so removing a subscriber (safe during
-    maintenance, and blocking it would strand strategies subscribed) is declared
-    rather than silently missing.
+    So: every function here that names the subscriber map must either consult
+    the window or be a declared exemption with a stated reason. Read-only
+    accessors cannot admit and are exempt; each is named individually, so a NEW
+    function touching the map has to be classified rather than silently
+    inheriting whichever answer the scan happened to give. The acceptance-
+    envelope minters are added on top, because the manager is a separate type
+    that holds no map at all.
     """
     block = restart_window_block(config)
     spec = block["admission_sites"]
@@ -489,56 +502,68 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         if f"fn {method}(" not in trait_body:
             fail(f"{port['trait']} is missing the `{method}` method")
 
-    registry = spec["mutating_type"]
-    impl_span = _impl_span(market_data_src, registry)
-    if not impl_span:
+    field = spec["private_field"]
+    if not re.search(rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:", market_data_src, re.M):
         fail(
-            f"no `impl {registry}` block found — the scan cannot see the consolidated "
-            "subscription set, and a scan that finds nothing must fail rather than "
-            "report a clean tree"
+            f"the consolidated subscriber map `{field}` is no longer a private field of "
+            "the registry — the closure this check relies on is Rust's own privacy, so "
+            "if the field moved or became public this scan no longer bounds anything"
         )
-    mutators = {
-        name
-        for name, _ in _public_fn_spans(impl_span)
-        if re.search(rf"\bpub\s+(?:const\s+|async\s+)*fn\s+{re.escape(name)}\b[^{{]*&mut\s+self", impl_span)
-    }
-    minters = {
-        name
-        for name, body in _public_fn_spans(market_data_src)
-        if re.sub(r"\s+", "", spec["acceptance_envelope"]) in re.sub(r"\s+", "", body)
-    }
-    discovered = sorted(mutators | minters)
-    if not discovered:
+    if re.search(rf"\bpub\s+{re.escape(field)}\s*:", market_data_src):
         fail(
-            "no public function mutates the consolidated subscription set or mints the "
-            "acceptance envelope — either the crate changed shape or this scan no "
-            "longer matches it, and a scan that finds nothing must fail rather than "
-            "report a clean tree"
+            f"`{field}` is PUBLIC — any crate could then admit a subscription without "
+            "passing through a gated function, and no source scan can close that"
+        )
+
+    # The `#[cfg(test)]` module is not shipped, so a test that builds a registry
+    # is not a production admission path. Excluded explicitly rather than by
+    # accident — and if the marker ever moves, the "scan found nothing" guard
+    # below fires rather than the scan silently covering less.
+    production_src = _without_test_module(market_data_src)
+    envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
+    touchers = {
+        name
+        for name, body in _all_fn_spans(production_src)
+        if field in body or envelope in re.sub(r"\s+", "", body)
+    }
+    if not touchers:
+        fail(
+            f"no function in atp-market-data names `{field}` or mints "
+            f"`{spec['acceptance_envelope']}` — either the crate changed shape or this "
+            "scan no longer matches it, and a scan that finds nothing must fail rather "
+            "than report a clean tree"
         )
 
     exempt = spec["exempt"]
-    required = [name for name in discovered if name not in exempt]
+    reasons = spec["exempt_reasons"]
+    undocumented = [name for name in exempt if not reasons.get(name)]
+    if undocumented:
+        fail(
+            f"admission_sites.exempt names {', '.join(undocumented)} without a stated "
+            "reason — an unexplained exemption is a hole nobody is watching"
+        )
+    stale = [name for name in exempt if name not in touchers]
+    if stale:
+        fail(
+            f"admission_sites.exempt names {', '.join(stale)}, which no longer touches "
+            "the subscription set — a stale exemption is a hole nobody is watching"
+        )
+
+    required = sorted(name for name in touchers if name not in exempt)
     declared = list(spec["functions"])
     missing = [name for name in declared if name not in required]
     if missing:
         fail(
-            f"declared admission site(s) {', '.join(missing)} no longer mutate the "
-            "subscription set or mint the acceptance envelope — the contract and the "
-            "source disagree"
+            f"declared admission site(s) {', '.join(missing)} no longer touch the "
+            "subscription set — the contract and the source disagree"
         )
     undeclared = [name for name in required if name not in declared]
     if undeclared:
         fail(
-            f"undeclared subscription admission site(s) {', '.join(undeclared)}; each "
-            "one can change the consolidated subscription set, so add it to "
-            "admission_sites.functions and gate it on the restart window — or to "
-            "admission_sites.exempt with a stated reason"
-        )
-    stale_exemptions = [name for name in exempt if name not in discovered]
-    if stale_exemptions:
-        fail(
-            f"admission_sites.exempt names {', '.join(stale_exemptions)}, which no "
-            "longer exists — a stale exemption is a hole nobody is watching"
+            f"unclassified function(s) {', '.join(undeclared)} can reach the "
+            f"consolidated subscription set. Add each to admission_sites.functions and "
+            f"gate it on `{guard_call}`, or to admission_sites.exempt with a stated "
+            "reason for why it cannot admit"
         )
 
     ungated = [name for name in required if guard_call not in _fn_body_any(market_data_src, name)]
@@ -550,11 +575,10 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         )
     return (
         f"atp-market-data gates {len(required)} subscription admission site(s) "
-        f"({', '.join(required)}) on `{guard_call}`, discovered as the CLOSED set of "
-        f"`&mut self` methods on {registry} plus every minter of "
-        f"`{spec['acceptance_envelope']}` — so a new admission path cannot avoid the "
-        f"scan by using a different expression ({len(exempt)} declared exemption(s): "
-        f"{', '.join(exempt) or 'none'})"
+        f"({', '.join(required)}) on `{guard_call}`. The set is closed by RUST: "
+        f"`{field}` is private to this file, so the functions naming it are all the "
+        f"code that can reach the consolidated set — {len(exempt)} classified as unable "
+        f"to admit, each with a stated reason ({', '.join(exempt)})"
     )
 
 
