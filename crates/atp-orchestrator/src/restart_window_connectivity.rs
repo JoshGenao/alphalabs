@@ -72,10 +72,25 @@ pub struct ReconnectAttempt {
     pub phase: RestartPhase,
 }
 
+/// How many reconnect attempts the ledger retains.
+///
+/// The ledger is written on EVERY blocked live submission, so a sustained
+/// outage against a retrying strategy would grow it for the life of the
+/// process — and this type documents itself as the production connectivity
+/// producer. A bounded ring keeps the recent history an operator actually reads
+/// while the total count, which is what the evidence asserts on, stays exact.
+pub const RECONNECT_LEDGER_CAPACITY: usize = 256;
+
 /// The reconnect ledger: what was asked for, and when.
+///
+/// `requested` is the true total and never saturates in practice (`u64`);
+/// `attempts` is the bounded tail. Reporting a truncated COUNT would be the
+/// worse trade: an operator asking "how long has this been retrying" needs the
+/// number, and the individual instants past the most recent few are noise.
 #[derive(Debug, Default)]
 struct ReconnectLedger {
-    attempts: Vec<ReconnectAttempt>,
+    attempts: std::collections::VecDeque<ReconnectAttempt>,
+    requested: u64,
 }
 
 /// The SRS-MD-005 connectivity producer.
@@ -94,6 +109,7 @@ where
     probe: P,
     clock: C,
     ledger: Mutex<ReconnectLedger>,
+    last_outcome: Mutex<Option<ReachabilityOutcome>>,
 }
 
 impl<P, C> ScheduledRestartConnectivity<P, C>
@@ -112,6 +128,7 @@ where
             probe,
             clock,
             ledger: Mutex::new(ReconnectLedger::default()),
+            last_outcome: Mutex::new(None),
         }
     }
 
@@ -171,6 +188,23 @@ where
         }
     }
 
+    /// The last reachability outcome observed, if any.
+    ///
+    /// The collapsed boolean loses the difference between "the gateway said no"
+    /// and "we could not ask" — a `ProbeFailed` from exhausted descriptors or a
+    /// denied permission becomes `Unreachable` and pages the operator about IB
+    /// when the fault is local. `ConnectivityEvent` cannot carry the reason
+    /// (its field set is pinned by the ERR-2 contract, which forbids transport
+    /// detail), so the detail surfaces HERE and through the operator CLI's
+    /// `reachability:` field instead. Recorded in `deferred[]`: routing it into
+    /// the alert itself needs the envelope change that contract owns.
+    pub fn last_outcome(&self) -> Option<ReachabilityOutcome> {
+        self.last_outcome
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// Whether this phase needs a probe at all, and its answer if so.
     ///
     /// `None` means the phase decides on its own. Both gates route through this
@@ -188,7 +222,13 @@ where
             // waiting for.
             RestartPhase::Suspending => None,
             RestartPhase::Normal | RestartPhase::Restarting | RestartPhase::Elapsed => {
-                Some(self.probe.probe().is_reachable())
+                let outcome = self.probe.probe();
+                let reachable = outcome.is_reachable();
+                *self
+                    .last_outcome
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
+                Some(reachable)
             }
         }
     }
@@ -198,14 +238,25 @@ where
         self.market_data_admission().is_admitted()
     }
 
-    /// Every reconnection attempt recorded so far, oldest first.
+    /// The most recent reconnection attempts, oldest first, capped at
+    /// [`RECONNECT_LEDGER_CAPACITY`].
     pub fn reconnect_attempts(&self) -> Vec<ReconnectAttempt> {
-        self.lock().attempts.clone()
+        self.lock().attempts.iter().copied().collect()
     }
 
-    /// How many reconnection attempts have been requested.
-    pub fn reconnect_count(&self) -> usize {
-        self.lock().attempts.len()
+    /// How many reconnection attempts have been requested in total.
+    ///
+    /// The TOTAL, not the retained tail: an operator asking how long a gateway
+    /// has been refusing needs the real number, and truncating it would
+    /// under-report an outage — the wrong direction.
+    pub fn reconnect_count(&self) -> u64 {
+        self.lock().requested
+    }
+
+    /// How many attempts were dropped from the retained tail.
+    pub fn reconnect_attempts_dropped(&self) -> u64 {
+        let ledger = self.lock();
+        ledger.requested - ledger.attempts.len() as u64
     }
 
     /// A poisoned mutex must not take down the order path: a panic while
@@ -243,7 +294,12 @@ where
     fn request_reconnect(&self) {
         let now_ns = (self.clock)();
         let phase = self.window.phase(now_ns);
-        self.lock().attempts.push(ReconnectAttempt {
+        let mut ledger = self.lock();
+        ledger.requested = ledger.requested.saturating_add(1);
+        if ledger.attempts.len() == RECONNECT_LEDGER_CAPACITY {
+            ledger.attempts.pop_front();
+        }
+        ledger.attempts.push_back(ReconnectAttempt {
             requested_at_ns: now_ns,
             phase,
         });
@@ -485,6 +541,67 @@ mod tests {
                  now_ns={now_ns} reachable={reachable}"
             );
         }
+    }
+
+    #[test]
+    fn the_reconnect_ledger_is_bounded_but_the_count_is_exact() {
+        // The ledger is written on EVERY blocked live submission, so a
+        // sustained outage against a retrying strategy would grow it for the
+        // life of the process. Truncating the COUNT instead would under-report
+        // an outage, which is the wrong direction — an operator asking how long
+        // a gateway has been refusing needs the real number.
+        let producer = at(RESTART_NS + WINDOW_NS, false);
+        let total = RECONNECT_LEDGER_CAPACITY + 17;
+        for _ in 0..total {
+            producer.request_reconnect();
+        }
+        assert_eq!(
+            producer.reconnect_count(),
+            total as u64,
+            "the total must be exact"
+        );
+        assert_eq!(
+            producer.reconnect_attempts().len(),
+            RECONNECT_LEDGER_CAPACITY,
+            "the retained tail must stay bounded"
+        );
+        assert_eq!(producer.reconnect_attempts_dropped(), 17);
+
+        // Non-vacuity: below the cap nothing is dropped, so the bound is a fact
+        // about the cap rather than about a ledger that always truncates.
+        let small = at(RESTART_NS + WINDOW_NS, false);
+        small.request_reconnect();
+        assert_eq!(small.reconnect_attempts().len(), 1);
+        assert_eq!(small.reconnect_attempts_dropped(), 0);
+    }
+
+    #[test]
+    fn a_local_probe_failure_stays_distinguishable_from_an_outage() {
+        // Collapsing the outcome to a bool loses the difference between "the
+        // gateway said no" and "we could not ask". A ProbeFailed from a local
+        // resource limit still fails closed — which is right — but the operator
+        // must be able to see it was OUR fault, not IB's.
+        struct FailingProbe;
+        impl GatewayReachability for FailingProbe {
+            fn probe(&self) -> ReachabilityOutcome {
+                ReachabilityOutcome::ProbeFailed {
+                    detail: "no file descriptors".to_string(),
+                }
+            }
+        }
+        let producer =
+            ScheduledRestartConnectivity::new(window(), FailingProbe, || RESTART_NS + WINDOW_NS);
+        assert_eq!(
+            producer.state(),
+            ConnectivityState::Unreachable,
+            "a probe we could not run must still fail closed"
+        );
+        let outcome = producer.last_outcome().expect("the outcome is retained");
+        assert_eq!(outcome.as_str(), "PROBE_FAILED");
+        assert!(
+            outcome.detail().contains("file descriptors"),
+            "the reason must survive for the operator; got {outcome:?}"
+        );
     }
 
     #[test]

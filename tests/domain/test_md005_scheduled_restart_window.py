@@ -419,6 +419,97 @@ impl ConsolidatedSubscriptionRegistry {
     check_market_data_admission_sites(config, source)
 
 
+def test_the_reconnect_ledger_is_bounded_but_the_count_stays_exact() -> None:
+    """A sustained outage against a retrying strategy writes the ledger on every
+    blocked submission. Unbounded, it grows for the life of the process this
+    module documents itself as the production connectivity producer for — while
+    truncating the COUNT would under-report the outage, the wrong direction."""
+    name = "the_reconnect_ledger_is_bounded_but_the_count_is_exact"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_a_local_probe_failure_stays_distinguishable_from_an_outage() -> None:
+    """Collapsing the outcome to a bool loses "the gateway said no" versus "we
+    could not ask". A ProbeFailed from a local resource limit must still fail
+    closed — that part is right — but the operator has to be able to see the
+    fault was ours."""
+    name = "a_local_probe_failure_stays_distinguishable_from_an_outage"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_catalogue_keys_actually_move_the_window() -> None:
+    """A documented knob that moves no behaviour is a lie with a fuse, and this
+    one would have been discovered during a restart: the keys validated while
+    the binary read compiled-in constants."""
+    name = "the_catalogue_keys_actually_move_the_window"
+    _assert_one_passed(_cli_test(name), name)
+
+
+def test_a_malformed_catalogue_key_is_refused_not_defaulted() -> None:
+    """A safety window on a schedule nobody chose is worse than a refusal the
+    operator can read."""
+    name = "a_malformed_catalogue_key_is_refused_not_defaulted"
+    _assert_one_passed(_cli_test(name), name)
+
+
+def test_no_admission_path_can_avoid_the_guard_by_changing_expression() -> None:
+    """The guard's third and final shape.
+
+    It was wrong twice: first it discovered admission points by "takes a
+    RestartWindowGate" (circular), then by two literal effect forms, which the
+    reviewer walked past with `subscribers.entry(k).or_default().push(..)`. A
+    checklist cannot catch the arm nobody added to it. Discovery is now a closed
+    set over the type's `&mut self` surface plus every minter of the acceptance
+    envelope, so the expression used cannot hide a path.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_market_data_admission_sites,
+            load_config,
+            market_data_source,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    source = market_data_source(config)
+    shapes = {
+        "entry-or-default-push": """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn force_subscribe(&mut self, request: &SubscriptionRequest, key: SecurityKey) {
+        self.subscribers
+            .entry(key)
+            .or_default()
+            .push(request.strategy_id.clone());
+    }
+}
+""",
+        "a mutator touching no map yet": """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn retune(&mut self, limit: u32) {
+        self.line_limit = limit;
+    }
+}
+""",
+        "a second minter of the acceptance envelope": """
+impl MarketDataSubscriptionManager {
+    pub fn quick_accept(&self, request: SubscriptionRequest) -> SubscriptionAccepted {
+        SubscriptionAccepted { strategy_id: request.strategy_id, symbol: request.symbol }
+    }
+}
+""",
+    }
+    for label, injected in shapes.items():
+        with pytest.raises(ConnectivityCheckError):
+            check_market_data_admission_sites(config, source + injected)
+
+    # Non-vacuity: the real source must still pass, or the guard simply refuses
+    # everything and the three cases above prove nothing.
+    check_market_data_admission_sites(config, source)
+
+
 def test_the_producer_serves_both_gates_from_one_window() -> None:
     """Two separately-configured gates over one requirement drift, and the
     drift is invisible until a deployment updates only one."""

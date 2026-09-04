@@ -431,25 +431,50 @@ def _public_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
+def _impl_span(source: str, type_name: str) -> str:
+    """The concatenated bodies of every ``impl <type_name>`` block."""
+    spans: list[str] = []
+    for match in re.finditer(rf"\bimpl\s+{re.escape(type_name)}\s*\{{", source):
+        depth, index = 1, match.end()
+        while index < len(source) and depth:
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            index += 1
+        spans.append(source[match.end() : index - 1])
+    return "\n".join(spans)
+
+
 def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
-    """Discover admission functions by WHAT THEY DO, then require the guard.
+    """Require the guard over a CLOSED set, not a list of remembered forms.
 
-    The first version of this check discovered them by looking for functions
-    that already took a ``RestartWindowGate`` — which is circular: a NEW
-    admission path that skips the port is exactly the thing it needs to catch,
-    and skipping the port made it invisible. The reviewer proved it by injecting
-    a `subscribe_bulk` that registered subscriptions without the gate; the check
-    happily reported "gates 2 admission site(s)" and passed.
+    This check has now been wrong twice, both times because it enumerated
+    something the author could think of:
 
-    So discovery now keys on the EFFECT that makes a function an admission
-    point: it mints the acceptance envelope, or it inserts into the consolidated
-    subscriber map. Any public function that does either must consult the
-    window. A function can no longer hide from the scan by omitting the very
-    thing the scan exists to require.
+    1. It discovered admission points by "takes a `RestartWindowGate`", which is
+       circular — a path that SKIPS the port is exactly what must be caught.
+    2. It then discovered them by two literal effect FORMS
+       (``SubscriptionAccepted {``, ``self.subscribers.insert(``), and the
+       reviewer walked straight past both with
+       ``subscribers.entry(k).or_default().push(..)``, which opens an upstream
+       line just as well.
 
-    The declared list in the contract is still cross-checked in both directions,
-    so a renamed or vanished site fails too — a broken discovery reports a clean
-    tree, which is the failure mode that looks most like working.
+    A checklist cannot catch the arm nobody added to it, so the discovery is now
+    a closure argument over the TYPE's surface instead of over remembered
+    syntax:
+
+    * every public method on the registry that takes ``&mut self`` — the only
+      way to change the consolidated subscription set at all, whatever
+      expression it uses to do it; plus
+    * every public function that mints the acceptance envelope, which covers
+      the manager, a separate type with no registry field.
+
+    A new admission path has to be one or the other. Exemptions are per-item and
+    carry a stated reason in the contract, so removing a subscriber (safe during
+    maintenance, and blocking it would strand strategies subscribed) is declared
+    rather than silently missing.
     """
     block = restart_window_block(config)
     spec = block["admission_sites"]
@@ -464,61 +489,72 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         if f"fn {method}(" not in trait_body:
             fail(f"{port['trait']} is missing the `{method}` method")
 
-    #: What makes a function an ADMISSION point, independent of whether it was
-    #: written to take the gate. Kept in the contract so the effect list is
-    #: reviewable rather than buried here.
-    effects = spec["admission_effects"]
-
-    def admits(body: str) -> bool:
-        # Whitespace-collapsed: rustfmt wraps `self.subscribers\n.insert(` across
-        # lines, and a raw substring would then miss the very call that defines
-        # an admission point. A guard that a reformat can silently disarm is not
-        # a guard.
-        flat = re.sub(r"\s+", "", body)
-        return any(re.sub(r"\s+", "", effect) in flat for effect in effects)
-
-    discovered = sorted(
-        {name for name, body in _public_fn_spans(market_data_src) if admits(body)}
-    )
+    registry = spec["mutating_type"]
+    impl_span = _impl_span(market_data_src, registry)
+    if not impl_span:
+        fail(
+            f"no `impl {registry}` block found — the scan cannot see the consolidated "
+            "subscription set, and a scan that finds nothing must fail rather than "
+            "report a clean tree"
+        )
+    mutators = {
+        name
+        for name, _ in _public_fn_spans(impl_span)
+        if re.search(rf"\bpub\s+(?:const\s+|async\s+)*fn\s+{re.escape(name)}\b[^{{]*&mut\s+self", impl_span)
+    }
+    minters = {
+        name
+        for name, body in _public_fn_spans(market_data_src)
+        if re.sub(r"\s+", "", spec["acceptance_envelope"]) in re.sub(r"\s+", "", body)
+    }
+    discovered = sorted(mutators | minters)
     if not discovered:
         fail(
-            "no function in atp-market-data admits a subscription by any of the "
-            f"declared effects ({', '.join(effects)}) — either the crate changed shape "
-            "or this scan no longer matches it, and a scan that finds nothing must "
-            "fail rather than report a clean tree"
+            "no public function mutates the consolidated subscription set or mints the "
+            "acceptance envelope — either the crate changed shape or this scan no "
+            "longer matches it, and a scan that finds nothing must fail rather than "
+            "report a clean tree"
         )
 
+    exempt = spec["exempt"]
+    required = [name for name in discovered if name not in exempt]
     declared = list(spec["functions"])
-    missing = [name for name in declared if name not in discovered]
+    missing = [name for name in declared if name not in required]
     if missing:
         fail(
-            f"declared admission site(s) {', '.join(missing)} no longer admit a "
-            "subscription by any declared effect — the contract and the source disagree"
+            f"declared admission site(s) {', '.join(missing)} no longer mutate the "
+            "subscription set or mint the acceptance envelope — the contract and the "
+            "source disagree"
         )
-    undeclared = [name for name in discovered if name not in declared]
+    undeclared = [name for name in required if name not in declared]
     if undeclared:
         fail(
-            f"undeclared subscription admission site(s) {', '.join(undeclared)}; add "
-            "them to admission_sites.functions so the contract enumerates every arm, "
-            "and gate each on the restart window"
+            f"undeclared subscription admission site(s) {', '.join(undeclared)}; each "
+            "one can change the consolidated subscription set, so add it to "
+            "admission_sites.functions and gate it on the restart window — or to "
+            "admission_sites.exempt with a stated reason"
+        )
+    stale_exemptions = [name for name in exempt if name not in discovered]
+    if stale_exemptions:
+        fail(
+            f"admission_sites.exempt names {', '.join(stale_exemptions)}, which no "
+            "longer exists — a stale exemption is a hole nobody is watching"
         )
 
-    ungated = []
-    for name in discovered:
-        body = _fn_body_any(market_data_src, name)
-        if guard_call not in body:
-            ungated.append(name)
+    ungated = [name for name in required if guard_call not in _fn_body_any(market_data_src, name)]
     if ungated:
         fail(
-            f"atp-market-data::{', '.join(ungated)} admit a subscription without "
+            f"atp-market-data::{', '.join(ungated)} can admit a subscription without "
             f"calling `{guard_call}` — SyRS SYS-75(a) requires market-data requests to "
             "be suspended at EVERY admission point, not just the outermost"
         )
     return (
-        f"atp-market-data gates {len(discovered)} subscription admission site(s) "
-        f"({', '.join(discovered)}), discovered by effect ({', '.join(effects)}) rather "
-        f"than by whether they already take the port, on `{guard_call}` — SyRS "
-        "SYS-75(a) market-data suspension"
+        f"atp-market-data gates {len(required)} subscription admission site(s) "
+        f"({', '.join(required)}) on `{guard_call}`, discovered as the CLOSED set of "
+        f"`&mut self` methods on {registry} plus every minter of "
+        f"`{spec['acceptance_envelope']}` — so a new admission path cannot avoid the "
+        f"scan by using a different expression ({len(exempt)} declared exemption(s): "
+        f"{', '.join(exempt) or 'none'})"
     )
 
 

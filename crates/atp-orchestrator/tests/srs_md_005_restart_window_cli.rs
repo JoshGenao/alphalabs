@@ -53,6 +53,20 @@ fn contains_success_sentinel(out: &str) -> bool {
 fn run(args: &[&str]) -> Output {
     Command::new(CLI)
         .args(args)
+        // Clear the catalogue keys so a developer's shell cannot change what
+        // these tests measure. The env-driven cases below set them explicitly.
+        .env_remove("ATP_IB_RESTART_WINDOW_SECONDS")
+        .env_remove("ATP_IB_RESTART_SUSPEND_LEAD_SECONDS")
+        .output()
+        .expect("the md005_connectivity_restart_window_cli binary runs")
+}
+
+fn run_with_env(args: &[&str], key: &str, value: &str) -> Output {
+    Command::new(CLI)
+        .args(args)
+        .env_remove("ATP_IB_RESTART_WINDOW_SECONDS")
+        .env_remove("ATP_IB_RESTART_SUSPEND_LEAD_SECONDS")
+        .env(key, value)
         .output()
         .expect("the md005_connectivity_restart_window_cli binary runs")
 }
@@ -364,6 +378,62 @@ fn identical_inputs_produce_identical_output_across_processes() {
         stdout(&second),
         "the CLI must be deterministic for a fixed instant"
     );
+}
+
+#[test]
+fn the_catalogue_keys_actually_move_the_window() {
+    // SRS-ARCH-005 catalogues ATP_IB_RESTART_WINDOW_SECONDS and describes it as
+    // controlling the suspension window. Before this, it validated and changed
+    // nothing — the binary read compiled-in constants — so a documented knob
+    // moved no behaviour, which would have been discovered during a restart.
+    // Held at a FIXED instant so only the configuration varies.
+    let restart_ns: i64 = 1_788_493_500_000_000_000;
+    let just_past_default = (restart_ns + 301 * 1_000_000_000).to_string();
+    let args = [
+        "prove-escalation",
+        "--restart-ns",
+        "1788493500000000000",
+        "--now-ns",
+        &just_past_default,
+    ];
+
+    let default_window = run(&args);
+    assert_proved(&default_window, "restart-window-escalation-proven:true");
+
+    let widened = run_with_env(&args, "ATP_IB_RESTART_WINDOW_SECONDS", "900");
+    assert_failed_closed(&widened, "ATP_IB_RESTART_WINDOW_SECONDS=900");
+    assert_eq!(
+        field(line_starting(&stdout(&widened), "gateway "), "state"),
+        "ScheduledRestartWindow",
+        "a 15-minute window must still be suppressing at this instant"
+    );
+    assert_eq!(
+        field(line_starting(&stdout(&widened), "window "), "window_ns"),
+        "900000000000"
+    );
+}
+
+#[test]
+fn a_malformed_catalogue_key_is_refused_not_defaulted() {
+    // A safety window on a schedule nobody chose is worse than a refusal the
+    // operator can read, and an EMPTY value is usually a variable that expanded
+    // to nothing rather than a deliberate unset.
+    for value in ["0", "-5", "", "   ", "not-a-number"] {
+        let output = run_with_env(
+            &["prove-escalation"],
+            "ATP_IB_RESTART_WINDOW_SECONDS",
+            value,
+        );
+        assert_failed_closed(&output, &format!("ATP_IB_RESTART_WINDOW_SECONDS={value:?}"));
+    }
+    // Non-vacuity: a WELL-FORMED value is accepted, so the refusals above are
+    // about the values rather than about a parser that rejects everything.
+    let ok = run_with_env(
+        &["prove-escalation"],
+        "ATP_IB_RESTART_WINDOW_SECONDS",
+        "300",
+    );
+    assert_proved(&ok, "restart-window-escalation-proven:true");
 }
 
 #[test]

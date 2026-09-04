@@ -156,20 +156,83 @@ struct RunArgs {
     injection: Injection,
 }
 
-impl Default for RunArgs {
-    fn default() -> Self {
-        Self {
+impl RunArgs {
+    /// Seed the durations from the SRS-ARCH-005 catalogue keys, falling back to
+    /// the SyRS SYS-75 defaults.
+    ///
+    /// Without this the keys VALIDATED and changed nothing: `.env.example`, the
+    /// config README and the catalogue all describe them as controlling the
+    /// suspension window, while the binary read compiled-in constants. A
+    /// documented knob that moves no behaviour is a lie with a fuse, and this
+    /// one would have been discovered during a restart.
+    ///
+    /// A missing key takes the default; a present but malformed one is a typed
+    /// error rather than a silent fallback, because a safety window on a
+    /// schedule nobody chose is worse than a refusal the operator can read.
+    /// `ATP_IB_RESTART_ET` is deliberately NOT read here — resolving a local
+    /// Eastern time needs the DST-aware calendar, which lives on the Python
+    /// side; `atp_orchestration.restart_schedule.cli_args` passes the resolved
+    /// instant as `--restart-ns`.
+    fn from_env(read: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        Ok(Self {
             restart_ns: DEFAULT_RESTART_NS,
             now_ns: None,
-            lead_ns: DEFAULT_RESTART_SUSPEND_LEAD_SECONDS * NANOS_PER_SECOND,
-            window_ns: DEFAULT_RESTART_WINDOW_SECONDS * NANOS_PER_SECOND,
+            lead_ns: seconds_from_env(
+                &read,
+                "ATP_IB_RESTART_SUSPEND_LEAD_SECONDS",
+                DEFAULT_RESTART_SUSPEND_LEAD_SECONDS,
+            )?,
+            window_ns: seconds_from_env(
+                &read,
+                "ATP_IB_RESTART_WINDOW_SECONDS",
+                DEFAULT_RESTART_WINDOW_SECONDS,
+            )?,
             injection: Injection::None,
-        }
+        })
     }
 }
 
+/// Read a positive second count from the environment, in nanoseconds.
+///
+/// Absent takes the default. Present-but-empty, non-numeric or non-positive is
+/// a typed error: an empty value is usually a variable that expanded to
+/// nothing, and applying the default there hides exactly the deployment mistake
+/// that leaves a safety window on a schedule nobody chose.
+fn seconds_from_env(
+    read: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default_seconds: i64,
+) -> Result<i64, String> {
+    let Some(raw) = read(key) else {
+        return Ok(default_seconds * NANOS_PER_SECOND);
+    };
+    if raw.trim().is_empty() {
+        return Err(format!(
+            "{key} is set but empty; unset it to accept the default ({default_seconds}s)"
+        ));
+    }
+    let seconds: i64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("{key}=`{raw}` is not an integer"))?;
+    if seconds <= 0 {
+        return Err(format!("{key}={seconds} must be positive (SyRS SYS-75)"));
+    }
+    seconds
+        .checked_mul(NANOS_PER_SECOND)
+        .ok_or_else(|| format!("{key}={seconds} overflows nanoseconds"))
+}
+
 fn parse_args(args: &[String], allowed_injection: Injection) -> Result<RunArgs, String> {
-    let mut parsed = RunArgs::default();
+    // Environment first, explicit flags second: a flag is the operator saying
+    // it right now, and must win over the deployment's standing configuration.
+    let mut parsed = RunArgs::from_env(|key| match env::var(key) {
+        Ok(value) => Some(value),
+        // NotUnicode is NOT absent. Treating it as unset would silently apply
+        // the default for a value the operator did set (EXE-006 rule 4).
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => Some(String::from("\u{fffd}")),
+    })?;
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].as_str();

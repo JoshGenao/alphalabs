@@ -441,6 +441,61 @@ impl ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(config, self.market_data_src + bypass)
         self.assertIn("without calling", str(ctx.exception))
 
+    def test_the_reviewers_entry_or_default_form_is_caught(self) -> None:
+        """The bypass that walked past the SECOND version of this guard.
+
+        That version discovered admission points by two literal effect forms;
+        `subscribers.entry(k).or_default().push(..)` opens a consolidated line
+        just as well and matched neither. A checklist cannot catch the arm
+        nobody added to it, so discovery is now a CLOSED set over the type's
+        `&mut self` surface — a new admission path has to be in it whatever
+        expression it uses.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn force_subscribe(&mut self, request: &SubscriptionRequest, key: SecurityKey) {
+        self.subscribers
+            .entry(key)
+            .or_default()
+            .push(request.strategy_id.clone());
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+        self.assertIn("force_subscribe", str(ctx.exception))
+
+    def test_a_mutator_that_touches_no_map_yet_is_still_caught(self) -> None:
+        """The closure is over `&mut self`, not over what the body happens to
+        do today — a method that mutates only the line limit now can start
+        admitting tomorrow without re-tripping any scan."""
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn retune(&mut self, limit: u32) {
+        self.line_limit = limit;
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+        self.assertIn("retune", str(ctx.exception))
+
+    def test_a_stale_exemption_is_caught(self) -> None:
+        """An exemption for a function that no longer exists is a hole nobody
+        is watching."""
+        config = json.loads(json.dumps(self.config))
+        block = config["connectivity_contract"]["restart_window"]["admission_sites"]
+        block["exempt"] = [*block["exempt"], "long_gone"]
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(config, self.market_data_src)
+        self.assertIn("long_gone", str(ctx.exception))
+
+    def test_exempting_a_real_admission_site_is_visible_in_the_evidence(self) -> None:
+        """An exemption must not be silent: the evidence names how many there
+        are, so removing a gate by exempting it shows up in the record."""
+        evidence = check_market_data_admission_sites(self.config, self.market_data_src)
+        self.assertIn("1 declared exemption(s): unsubscribe", evidence)
+
     def test_a_reformat_cannot_hide_an_admission_point(self) -> None:
         """rustfmt wraps `self.subscribers\n.insert(` across lines. A raw
         substring match would then miss the call that DEFINES an admission
@@ -464,12 +519,12 @@ impl ConsolidatedSubscriptionRegistry {
     def test_a_scan_that_matches_nothing_fails_rather_than_reporting_clean(self) -> None:
         # A broken discovery reports a clean tree, which is the failure mode
         # that looks most like the guard working.
-        mutated = self.market_data_src.replace("SubscriptionAccepted {", "Renamed {").replace(
-            "self.subscribers\n                .insert(", "self.renamed.insert("
+        mutated = self.market_data_src.replace(
+            "impl ConsolidatedSubscriptionRegistry {", "impl RenamedRegistry {"
         )
         with self.assertRaises(ConnectivityCheckError) as ctx:
             check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("no function", str(ctx.exception))
+        self.assertIn("cannot see", str(ctx.exception))
 
 
 class RestartWindowProducerTest(unittest.TestCase):

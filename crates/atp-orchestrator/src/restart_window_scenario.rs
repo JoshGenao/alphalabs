@@ -158,7 +158,7 @@ pub struct RestartWindowEvidence {
     /// Wire attempts. A blocked submission must create ZERO IB orders — that is
     /// what proves the refusal happened at the gate and not at the broker.
     pub ib_orders_created: u32,
-    pub reconnects: usize,
+    pub reconnects: u64,
     pub events_recorded: usize,
     pub event_scheduled_restart: Option<bool>,
     /// SYS-75(a), market-data half.

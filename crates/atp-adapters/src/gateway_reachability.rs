@@ -74,8 +74,15 @@ impl ReachabilityOutcome {
     /// An allowlist: only `Reachable` is reachable. `ProbeFailed` is treated as
     /// NOT reachable, which is the fail-closed direction — during the restart
     /// window that keeps the system suspended (the safe state), and after it
-    /// the escalation pages an operator who can see the probe's own failure in
-    /// the detail string.
+    /// the escalation pages.
+    ///
+    /// The page will say the GATEWAY is unreachable even when the fault was
+    /// local, because `ConnectivityEvent`'s field set is pinned by the ERR-2
+    /// contract and cannot carry transport detail. The reason is retained by
+    /// `ScheduledRestartConnectivity::last_outcome` and printed by the operator
+    /// CLI, and the gap is recorded in
+    /// `connectivity_contract.restart_window.deferred[]` — stating it beats
+    /// implying the alert carries a detail it does not.
     pub fn is_reachable(&self) -> bool {
         matches!(self, Self::Reachable)
     }
