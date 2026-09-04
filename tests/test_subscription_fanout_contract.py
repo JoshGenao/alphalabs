@@ -406,7 +406,22 @@ class InputValidationTest(_Fixture):
     def test_removed_fan_out_validation_is_caught(self) -> None:
         # Replace fan_out's fail-closed `?` with an unchecked unwrap — a tick
         # with an empty symbol or an option would no longer be rejected.
-        mutated = self.md_src.replace(
+        #
+        # Anchored on fan_out's SPAN, not on the bare token: three production
+        # functions call `tick.security_key()?`, so a `replace(token, ..., 1)`
+        # mutates whichever the file happens to declare first. It silently
+        # started mutating the gap detector instead when the registry moved into
+        # its own module, and the check then correctly reported no problem — a
+        # mutation test passing because it mutated the wrong thing, which is the
+        # failure that looks most like the guard working.
+        span_start = self.md_src.index("pub fn fan_out(")
+        head, tail = self.md_src[:span_start], self.md_src[span_start:]
+        self.assertIn(
+            "let key = tick.security_key()?;",
+            tail[:600],
+            "fan_out no longer opens with the fail-closed canonicalization",
+        )
+        mutated = head + tail.replace(
             "let key = tick.security_key()?;",
             "let key = tick.security_key().unwrap();",
             1,

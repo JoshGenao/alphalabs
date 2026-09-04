@@ -86,11 +86,40 @@ def types_source(config: dict, root: Path = ROOT) -> str:
 
 
 def market_data_source(config: dict, root: Path = ROOT) -> str:
+    """The market-data surface this contract describes.
+
+    Concatenates the crate root with every module the contract names in
+    ``registry_modules``. The registry moved out of ``lib.rs`` into its own
+    module for SRS-MD-005 (its private subscriber map has to be invisible to
+    sibling modules, or no static guard can bound who admits a subscription),
+    and a check that hard-codes ``lib.rs`` breaks the moment a module is
+    extracted — so the contract names the files instead.
+    """
     block = contract_block(config)
-    source_path = root / block["market_data_crate"]["path"] / "src" / "lib.rs"
-    if not source_path.exists():
-        fail(f"market-data crate source missing: {source_path.relative_to(root)}")
-    return source_path.read_text(encoding="utf-8")
+    crate_root = root / block["market_data_crate"]["path"]
+    sources = ["src/lib.rs", *block.get("registry_modules", [])]
+    text: list[str] = []
+    for relative in sources:
+        source_path = crate_root / relative
+        if not source_path.exists():
+            fail(f"market-data source missing: {source_path.relative_to(root)}")
+        text.append(_production_only(source_path.read_text(encoding="utf-8")))
+    return "\n".join(text)
+
+
+def _production_only(source: str) -> str:
+    """Drop the trailing ``#[cfg(test)] mod tests`` block.
+
+    This contract describes the SHIPPED surface, and concatenating several files
+    makes the exclusion load-bearing rather than cosmetic: a mutation anchored
+    with ``replace(token, ..., 1)`` would otherwise land on a copy of the token
+    inside an earlier file's tests, leave the production code intact, and the
+    check would correctly report no problem — a mutation test passing because it
+    mutated nothing.
+    """
+    marker = "\n#[cfg(test)]\nmod tests {"
+    index = source.find(marker)
+    return source if index < 0 else source[:index]
 
 
 def _impl_block(source: str, header_regex: str, label: str) -> str:

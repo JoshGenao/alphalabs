@@ -190,6 +190,13 @@ fn suspension_blocks_orders_and_market_data_and_suppresses_the_alert() {
     );
     assert_eq!(field(market_data, "admission"), "SCHEDULED_RESTART_WINDOW");
 
+    // The MUTATING admission point — the call that actually opens an upstream
+    // IB line. Refusing at the outer manager while the registry still opened
+    // one would leave the suspension enforced only on the surface.
+    let registry = line_starting(&out, "registry ");
+    assert_eq!(field(registry, "lines-opened"), "0");
+    assert_eq!(field(registry, "refusal"), "SuspendedForScheduledRestart");
+
     let alerts = line_starting(&out, "alerts ");
     assert_eq!(field(alerts, "disposition"), "SUPPRESSED");
     assert_eq!(
@@ -366,6 +373,14 @@ fn a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data() {
     assert_eq!(
         field(line_starting(&out, "market-data "), "admitted"),
         "true"
+    );
+    // The positive control for the zero in the suspension proof: the SAME
+    // mutating call opens exactly one line here.
+    assert_eq!(
+        field(line_starting(&out, "registry "), "lines-opened"),
+        "1",
+        "so `lines-opened:0` while suspended is a fact about the suspension, not \
+         about a registry that never opens anything"
     );
     assert_eq!(
         field(line_starting(&out, "alerts "), "disposition"),

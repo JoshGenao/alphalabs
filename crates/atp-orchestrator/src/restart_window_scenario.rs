@@ -168,6 +168,11 @@ pub struct RestartWindowEvidence {
     /// is lost" are opposite instructions to an operator.
     pub market_data_admission: MarketDataAdmission,
     pub market_data_refusal: Option<String>,
+    /// Upstream IB lines the REGISTRY holds after the run. Zero while suspended
+    /// is the witness that the mutating admission point opened none.
+    pub lines_opened: u32,
+    /// How `ConsolidatedSubscriptionRegistry::subscribe` refused, if it did.
+    pub registry_refusal: Option<String>,
     /// SYS-75(b).
     pub alert_disposition: AlertDisposition,
     /// Messages the fixture transports actually received. Zero is the proof
@@ -321,25 +326,34 @@ pub fn run_restart_window_scenario(
     };
 
     // (3) SYS-75(a), the market-data half — through the REAL subscription
-    //     manager, gated by the SAME producer the order path just consulted.
+    //     manager AND the REAL registry, both gated by the SAME producer the
+    //     order path just consulted.
     let manager = MarketDataSubscriptionManager;
-    let registry = atp_market_data::ConsolidatedSubscriptionRegistry::new(SCENARIO_LINE_LIMIT);
+    let mut registry = atp_market_data::ConsolidatedSubscriptionRegistry::new(SCENARIO_LINE_LIMIT);
     let limit_events = CollectingLimitSink::default();
-    let subscription = manager.request_subscription(
-        SubscriptionRequest {
-            strategy_id: live.clone(),
-            symbol: SCENARIO_SYMBOL.to_string(),
-            asset_class: AssetClass::Equity,
-        },
-        &connectivity,
-        &registry,
-        &limit_events,
-    );
+    let request = SubscriptionRequest {
+        strategy_id: live.clone(),
+        symbol: SCENARIO_SYMBOL.to_string(),
+        asset_class: AssetClass::Equity,
+    };
+    let subscription =
+        manager.request_subscription(request.clone(), &connectivity, &registry, &limit_events);
     let market_data_admission = connectivity.market_data_admission();
     let (market_data_admitted, market_data_refusal) = match subscription {
         Ok(_) => (true, None),
         Err(err) => (false, Some(err.error_type)),
     };
+
+    //     And the MUTATING admission point. This feature repeatedly calls
+    //     `subscribe` the load-bearing one — it is the call that actually opens
+    //     an upstream IB line — so the evidence has to drive it, not just the
+    //     outer manager. `lines_opened` is the witness: zero while suspended is
+    //     what proves no line was opened, and it is only meaningful because the
+    //     same call opens exactly one outside the window.
+    let change_events = CollectingChangeSink::default();
+    let subscribe_outcome = registry.subscribe(&request, &connectivity, &change_events);
+    let lines_opened = registry.distinct_subscriptions();
+    let registry_refusal = subscribe_outcome.err().map(|err| format!("{err:?}"));
 
     // (4) SYS-75(b) — what the alert path did. Join the worker first: the sink
     //     dispatches off the caller's thread, so reading the buffers without
@@ -378,6 +392,8 @@ pub fn run_restart_window_scenario(
         market_data_admitted,
         market_data_admission,
         market_data_refusal,
+        lines_opened,
+        registry_refusal,
         alert_disposition,
         channel_messages_sent,
         non_designated_sim_receipt,
@@ -457,6 +473,21 @@ impl<S: ConnectivityEventSink> ConnectivityEventSink for RecordingConnectivitySi
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event.clone());
         self.inner.record(event);
+    }
+}
+
+/// Collects registry change events (the mutating admission point's channel).
+#[derive(Debug, Default)]
+struct CollectingChangeSink {
+    events: std::sync::Mutex<Vec<atp_types::SubscriptionChangeEvent>>,
+}
+
+impl atp_market_data::SubscriptionChangeSink for CollectingChangeSink {
+    fn record(&self, event: atp_types::SubscriptionChangeEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
     }
 }
 

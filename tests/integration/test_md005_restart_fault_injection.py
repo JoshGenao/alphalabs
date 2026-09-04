@@ -203,6 +203,10 @@ def test_inside_the_lead_orders_and_market_data_are_suspended(cli_path: Path) ->
     assert field(result.stdout, "market-data ", "admitted") == "false"
     assert field(result.stdout, "alerts ", "disposition") == "SUPPRESSED"
     assert field(result.stdout, "alerts ", "messages-sent") == "0"
+    # The mutating admission point, in the evidence the feature's
+    # verification_method rests on rather than only at the Rust layer.
+    assert field(result.stdout, "registry ", "lines-opened") == "0"
+    assert field(result.stdout, "registry ", "refusal") == "SuspendedForScheduledRestart"
 
 
 def test_inside_the_window_a_dead_gateway_stays_suppressed(cli_path: Path) -> None:
@@ -231,6 +235,8 @@ def test_inside_the_window_a_returning_gateway_resumes(cli_path: Path) -> None:
     assert_proved(result, "restart-window-resume-proven:true")
     assert field(result.stdout, "gateway ", "reachability") == "REACHABLE"
     assert field(result.stdout, "witness ", "ib-orders-created") == "1"
+    # The positive control for step 2's zero.
+    assert field(result.stdout, "registry ", "lines-opened") == "1"
 
 
 def test_after_the_window_a_dead_gateway_escalates_and_pages(cli_path: Path) -> None:

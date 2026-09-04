@@ -123,6 +123,26 @@ def _crate_lib_source(config: dict, crate_key: str, root: Path = ROOT) -> str:
 
 
 def market_data_source(config: dict, root: Path = ROOT) -> str:
+    """The module that OWNS the consolidated subscription set.
+
+    Declared in the contract rather than assumed to be `lib.rs`. The registry
+    lives in its own module precisely so this file is the complete set of code
+    that can reach `subscribers` — Rust exposes a parent's privates to its
+    CHILDREN, so while it sat in the crate root a sibling module could reach in
+    and no scan over the root could see it.
+    """
+    block = restart_window_block(config)
+    source_path = root / block["admission_sites"]["module"]
+    if not source_path.exists():
+        fail(
+            f"the consolidated subscription module is missing: "
+            f"{block['admission_sites']['module']}"
+        )
+    return source_path.read_text(encoding="utf-8")
+
+
+def market_data_lib_source(config: dict, root: Path = ROOT) -> str:
+    """The crate root, for checks about the crate's public surface."""
     return _crate_lib_source(config, "market_data_crate", root)
 
 
@@ -475,11 +495,20 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
        trait impl with a `&mut self` method, and by a free function in the same
        file writing ``registry.subscribers``.
 
-    Every one of those tried to describe the dangerous code. The closure that
-    actually holds is not a description at all — it is the language's:
-    ``subscribers`` is a PRIVATE field, so nothing outside this file can touch
-    it, and the complete set of code that can is "the functions in this file
-    that mention it". That set is bounded by the compiler, not by imagination.
+    4. by "the functions in ``lib.rs`` that name the private field" — walked
+       past by the fact that Rust exposes a module's privates to its
+       DESCENDANTS, so the sibling ``live_feed`` module could have reached in.
+
+    Every one of those tried to describe the dangerous code, and the fourth also
+    asserted a language property Rust does not have. So the fix was not another
+    scan: the registry MOVED into its own module
+    (``crates/atp-market-data/src/subscriptions.rs``). Privacy runs
+    parent-to-child and never child-to-parent, so the crate root and every
+    sibling module are now unable to name ``subscribers`` — the compiler says
+    so, and a ``compile_fail`` doctest in that module proves it. "The functions
+    in the owning module" is therefore the complete set, bounded by the
+    compiler rather than by imagination, and this check verifies the boundary
+    still holds instead of assuming it.
 
     So: every function here that names the subscriber map must either consult
     the window or be a declared exemption with a stated reason. Read-only
@@ -494,8 +523,11 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     guard_call = spec["guard_call"]
     port = block["gate_port"]
 
+    # The port is declared in the crate root; the registry that consumes it
+    # lives in its own module.
+    lib_src = market_data_lib_source(config)
     try:
-        trait_body = _trait_body(market_data_src, port["trait"])
+        trait_body = _trait_body(lib_src, port["trait"])
     except AssertionError as error:
         fail(str(error))
     for method in port["methods"]:
@@ -519,13 +551,43 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     # is not a production admission path. Excluded explicitly rather than by
     # accident — and if the marker ever moves, the "scan found nothing" guard
     # below fires rather than the scan silently covering less.
-    production_src = _without_test_module(market_data_src)
+    # Comments stripped BEFORE scanning. The owning module documents its
+    # boundary with `compile_fail` doctests that necessarily name the field and
+    # declare a `fn sibling_reach`, and without this the guard flags the very
+    # prose explaining why the guard exists — the third time this class of
+    # false positive has appeared in this feature.
+    production_src = _code_only(_without_test_module(market_data_src))
+    # The envelope minters live in the crate ROOT (the manager is a separate
+    # type holding no map), so that file is scanned for them too.
+    if f"pub mod {spec['module_name']};" not in lib_src:
+        fail(
+            f"the crate root no longer declares `pub mod {spec['module_name']};` — the "
+            "registry must stay in its own module, or the parent regains visibility of "
+            "the private field and this scan stops bounding anything"
+        )
     envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
     touchers = {
         name
         for name, body in _all_fn_spans(production_src)
-        if field in body or envelope in re.sub(r"\s+", "", body)
+        if field in body
+    } | {
+        name
+        for name, body in _all_fn_spans(_code_only(_without_test_module(lib_src)))
+        if envelope in re.sub(r"\s+", "", body)
     }
+    # Nothing outside the owning module may name the field. This is the property
+    # the whole closure rests on, so it is checked rather than assumed.
+    leaked = [
+        name
+        for name, body in _all_fn_spans(_code_only(_without_test_module(lib_src)))
+        if field in body
+    ]
+    if leaked:
+        fail(
+            f"crate-root function(s) {', '.join(leaked)} name `{field}`. Rust exposes a "
+            "parent's privates to its CHILDREN, so a registry reachable from outside its "
+            "own module cannot be bounded by any scan — move the code into that module"
+        )
     if not touchers:
         fail(
             f"no function in atp-market-data names `{field}` or mints "
@@ -566,7 +628,16 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "reason for why it cannot admit"
         )
 
-    ungated = [name for name in required if guard_call not in _fn_body_any(market_data_src, name)]
+    # A site lives in whichever of the two scanned files declares it: the
+    # registry's methods in the owning module, the envelope minters in the root.
+    def body_of(name: str) -> str:
+        for source in (production_src, _without_test_module(lib_src)):
+            if re.search(rf"\bfn\s+{re.escape(name)}\b[^;{{]*{{", source):
+                return _fn_body_any(source, name)
+        fail(f"admission site `{name}` was discovered but its body cannot be read")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    ungated = [name for name in required if guard_call not in body_of(name)]
     if ungated:
         fail(
             f"atp-market-data::{', '.join(ungated)} can admit a subscription without "

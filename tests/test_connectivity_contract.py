@@ -260,10 +260,6 @@ class AggregateEvidenceTest(unittest.TestCase):
         self.assertEqual(len(evidence), 12)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # --------------------------------------------------------------------------- #
 # SRS-MD-005 — the scheduled restart window (SyRS SYS-75)
 # --------------------------------------------------------------------------- #
@@ -381,7 +377,8 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
         exactly like one that does.
         """
         head, marker, tail = self.market_data_src.partition("\n#[cfg(test)]\nmod tests {")
-        self.assertTrue(marker, "expected a #[cfg(test)] module to inject before")
+        # The owning module has no test module of its own; appending is then
+        # already production code. Where a marker exists, splice before it.
         return head + snippet + marker + tail
 
     def test_both_admission_sites_are_gated(self) -> None:
@@ -393,14 +390,15 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
         # Remove the guard from the MUTATING admission point. The function still
         # takes the port, so a checklist naming "these two functions accept a
         # window" would still pass — only reading the body catches it.
+        # `subscribe`'s guard lives in the owning module; the manager's lives in
+        # the crate root. This test mutates the one in the file it reads.
         marker = "        match window.admission() {"
         self.assertEqual(
             self.market_data_src.count(marker),
-            2,
-            "expected exactly two admission guards; the anchor has drifted",
+            1,
+            "expected the registry's admission guard; the anchor has drifted",
         )
-        last = self.market_data_src.rindex(marker)
-        mutated = self.market_data_src[:last] + self.market_data_src[last:].replace(
+        mutated = self.market_data_src.replace(
             marker, "        match MarketDataAdmission::Admitted {", 1
         )
         with self.assertRaises(ConnectivityCheckError):
@@ -619,3 +617,12 @@ class RestartWindowProducerTest(unittest.TestCase):
         self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
         with self.assertRaises(ConnectivityCheckError):
             check_reachability_seam_is_unpinned(self.config, mutated)
+
+
+if __name__ == "__main__":
+    # Kept at the END of the file on purpose. It previously sat mid-file, ahead
+    # of the SRS-MD-005 guard classes, so `python3 tests/test_connectivity_contract.py`
+    # exited 0 having executed none of them — a green covering nothing the
+    # feature added. (CI runs pytest, which collects the whole module either
+    # way, so nothing was red; that is exactly what made it easy to miss.)
+    unittest.main()

@@ -976,6 +976,8 @@
           "request_subscription",
           "subscribe"
         ],
+        "module": "crates/atp-market-data/src/subscriptions.rs",
+        "module_name": "subscriptions",
         "private_field": "subscribers",
         "acceptance_envelope": "SubscriptionAccepted {",
         "exempt": [
@@ -996,7 +998,8 @@
           "fan_out": "Read-only delivery: routes an already-received tick to existing subscribers. Suspending it would drop data the system already has, which is the opposite of the requirement -- SYS-75(a) suspends REQUESTS, not the handling of ticks already in flight.",
           "try_acquire": "Read-only ERR-4 limit PROBE. Its own contract (tools/subscription_limit_check.py) is that it never mutates the registry, and the restart-window gate runs ahead of it in request_subscription anyway."
         },
-        "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. tools/connectivity_check.py requires the guard over a CLOSED SET rather than a remembered list of syntax: every public `&mut self` method on ConsolidatedSubscriptionRegistry (the only way to change the consolidated set at all, whatever expression it uses) plus every public function that mints the acceptance envelope (which covers the manager, a separate type holding no registry field). This check was wrong twice before: first it discovered sites by whether they already took the port (circular -- a path that SKIPS the gate is exactly what must be caught), then by two literal effect forms, which a `subscribers.entry(k).or_default().push(..)` walked straight past. A new admission path must be one or the other of the closed set; exemptions are per-item with a stated reason, and a stale exemption fails too."
+        "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. Enforcing that needs a set a static guard can BOUND, and four attempts to describe one failed in review: by the port a function already took (circular -- a path that SKIPS the gate is exactly what must be caught), by two literal effect forms (walked past by `entry(k).or_default().push(..)`), by public `&mut self` on the inherent impl (walked past by a trait impl and by a free function in the same file), and by the functions in lib.rs naming the private field (walked past because Rust exposes a module's privates to its DESCENDANTS, so the sibling live_feed module could reach in). The fix is structural rather than another scan: the registry now lives in its own module, `subscribers` is private to that file, and privacy runs parent-to-child only -- so the crate root and every sibling are unable to name it. A compile_fail doctest in that module proves the boundary, this check re-verifies it, and `the functions in the owning module` is finally a set the compiler closes. Exemptions are per-item with a stated reason; a stale or unexplained one fails."
+
       },
       "escalation": {
         "phase": "Elapsed",
@@ -4634,6 +4637,10 @@
     "ac_traces": ["SRS-MD-001", "SYS-70"],
     "types_crate": { "crate": "atp-types", "path": "crates/atp-types" },
     "market_data_crate": { "crate": "atp-market-data", "path": "crates/atp-market-data" },
+    "registry_modules": [
+      "src/subscriptions.rs"
+    ],
+    "$registry_modules_why": "The consolidated registry lives outside src/lib.rs. Its `subscribers` field must be invisible to sibling modules -- Rust exposes a parent's privates to its DESCENDANTS, so while the registry sat in the crate root the SRS-MD-005 restart-window guard could not bound the set of code able to admit a subscription. Naming the modules here keeps this check reading the real surface instead of hard-coding a path the code can leave.",
     "market_data_tick": {
       "struct": "MarketDataTick",
       "required_fields": ["symbol", "asset_class", "tick_seq"],

@@ -63,6 +63,7 @@ CLI_SOURCE = REPO_ROOT / "crates/atp-orchestrator/src/bin/md005_connectivity_res
 PRODUCER_SOURCE = REPO_ROOT / "crates/atp-orchestrator/src/restart_window_connectivity.rs"
 SCENARIO_SOURCE = REPO_ROOT / "crates/atp-orchestrator/src/restart_window_scenario.rs"
 MARKET_DATA_SOURCE = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+SUBSCRIPTIONS_SOURCE = REPO_ROOT / "crates/atp-market-data/src/subscriptions.rs"
 TYPES_SOURCE = REPO_ROOT / "crates/atp-types/src/lib.rs"
 REACHABILITY_SOURCE = REPO_ROOT / "crates/atp-adapters/src/gateway_reachability.rs"
 
@@ -267,7 +268,9 @@ def test_the_state_is_recomputed_rather_than_cached_across_the_boundary() -> Non
 
 def test_both_subscription_admission_points_consult_the_window() -> None:
     """Gating only the outer manager leaves the mutating one as a bypass."""
-    source = MARKET_DATA_SOURCE.read_text(encoding="utf-8")
+    source = MARKET_DATA_SOURCE.read_text(encoding="utf-8") + SUBSCRIPTIONS_SOURCE.read_text(
+        encoding="utf-8"
+    )
     # A hard count of 2 was the weakness the adversarial reviewer named: it pins
     # "these two are gated" and says nothing about a THIRD admission point added
     # later. The load-bearing check is the effect-based discovery in
@@ -494,8 +497,11 @@ def test_the_admission_guard_is_closed_by_rusts_own_privacy() -> None:
 
     config = load_config()
     source = market_data_source(config)
+    # The owning module carries no `#[cfg(test)]` block, so appending is already
+    # production code; where a marker exists the bypass is spliced before it, so
+    # the check (which correctly ignores the unshipped test module) still sees
+    # the injection.
     head, marker, tail = source.partition("\n#[cfg(test)]\nmod tests {")
-    assert marker, "expected a #[cfg(test)] module to inject before"
 
     shapes = {
         "a trait impl with &mut self": """

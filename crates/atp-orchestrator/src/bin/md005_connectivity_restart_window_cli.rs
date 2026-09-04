@@ -428,6 +428,24 @@ fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
             evidence.market_data_admission.as_str()
         ),
     )?;
+    // The MUTATING admission point: the call that actually opens an upstream IB
+    // line. Refusing at the manager while the registry still opened one would
+    // leave the suspension enforced only on the outer surface.
+    require(
+        evidence.lines_opened == 0,
+        format!(
+            "SyRS SYS-75(a): the registry must open ZERO upstream lines while suspended; \
+             observed {}",
+            evidence.lines_opened
+        ),
+    )?;
+    require(
+        evidence.registry_refusal.as_deref() == Some("SuspendedForScheduledRestart"),
+        format!(
+            "the registry refusal must name the restart window; observed {:?}",
+            evidence.registry_refusal
+        ),
+    )?;
     require(
         evidence.alert_disposition == AlertDisposition::Suppressed,
         format!(
@@ -585,6 +603,17 @@ fn cmd_prove_resume(args: &[String]) -> Result<(), String> {
         evidence.market_data_admitted,
         "SyRS SYS-75(d): market-data requests must resume with order submission".to_string(),
     )?;
+    // The positive control for the zero above: the SAME mutating call opens
+    // exactly one line here, so "zero lines while suspended" is a fact about
+    // the suspension rather than about a registry that never opens anything.
+    require(
+        evidence.lines_opened == 1,
+        format!(
+            "SyRS SYS-75(d): the registry must open exactly one upstream line once \
+             operations resume; observed {}",
+            evidence.lines_opened
+        ),
+    )?;
     require(
         evidence.alert_disposition == AlertDisposition::NoEvent,
         format!(
@@ -665,6 +694,11 @@ fn report_common(evidence: &RestartWindowEvidence) {
         evidence.market_data_admitted,
         evidence.market_data_admission.as_str(),
         evidence.market_data_refusal.as_deref().unwrap_or("none"),
+    );
+    println!(
+        "registry lines-opened:{} refusal:{}",
+        evidence.lines_opened,
+        evidence.registry_refusal.as_deref().unwrap_or("none"),
     );
     println!(
         "alerts disposition:{} messages-sent:{}",
