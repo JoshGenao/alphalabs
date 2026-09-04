@@ -125,6 +125,37 @@ the reviewer will block until every source agrees.
     INTEGRATION (this branch does not edit feature_list.json)" — a bare "(passes:true)" reads
     as a prose/source-of-truth split. `(DATA-007 close)`
 
+## A guard is not the property it guards (SRS-MD-005, 13 rounds)
+
+**A stop signal, added because this one cost eight rounds:** when the reviewer's
+findings move from the FEATURE to the CHECK TOOL that guards it, and each fix
+invites the next probe of the same surface, you are no longer hardening the
+system — you are hardening a scanner. SRS-MD-005 spent rounds 1-4 on real
+feature defects, round 5 on the sharpest of the session, and rounds 5-13 almost
+entirely on five successive holes in one static check.
+
+Two questions tell you which side of the line you are on:
+
+1. **Is the property enforced anywhere but the check?** If a compiler, a type or
+   a module boundary already enforces it, the check is a SECOND layer and a hole
+   in it is not a hole in the system. SRS-MD-005's "every admission point
+   consults the window" is enforced by Rust privacy — the registry's field is
+   private to its own module, proven by E0616 and two mutation-verified
+   `compile_fail` doctests. The scanner is belt-and-braces.
+2. **Would the next finding change shipped behaviour?** If the answer is "it
+   would change a regex", the loop has stopped paying for itself.
+
+When both point the same way, stop and say so — with the round count, the
+verdict verbatim, and what a fresh round would probably find. Do not fake an
+APPROVE, and do not quietly delete the check either: an imperfect second layer
+over a compiler-enforced property is still worth having. `(SRS-MD-005 r5-r13)`
+
+**The counterweight, from the same session:** round 12 was the first
+`warn`-only verdict and still found a genuine operator-facing defect — a refusal
+that told the operator to retry something that could never succeed. Rounds that
+look like diminishing returns are not always diminishing returns. The signal is
+WHERE the findings land, not how many there are. `(SRS-MD-005 r12)`
+
 ## Ask the operator when
 
 - The scope posture is a genuine cross-feature commitment (routing other features' CLIs

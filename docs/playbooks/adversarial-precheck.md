@@ -44,6 +44,45 @@ prove the discovery itself: markers that match nothing must FAIL rather than pas
 and a known arm vanishing from the scan must fail too — a broken discovery reports a clean
 tree, which is the failure mode that looks most like working. `(RESV-006 r2)`
 
+## When a guard keeps failing, stop describing and start bounding (SRS-MD-005 r2-r6)
+
+**A guard that DESCRIBES the dangerous code cannot close a class. Move the code
+until the language closes it for you.** SRS-MD-005 needed "every path that can
+admit a market-data subscription consults the restart window", and the check was
+rewritten four times, each version passing a bypass the reviewer wrote in one
+line:
+
+| version | discovery rule | walked past by |
+|---|---|---|
+| r2 | functions that already take the gate port | a path that skips the port — i.e. the whole point |
+| r3 | two literal effect forms | `subscribers.entry(k).or_default().push(..)` |
+| r4 | public `&mut self` on the inherent impl | a trait impl, and a free function in the same file |
+| r5 | functions in `lib.rs` naming the private field | a CHILD module: Rust exposes privates to descendants |
+
+Every one was a better description and none was a closure. The fix that ended it
+was not a fifth scan — it was moving the registry into its own module, so the
+field is unreachable from the crate root and every sibling. Then "the functions
+in that file" is a set the COMPILER closes, two `compile_fail` doctests prove
+the boundary, and the check verifies the boundary still holds rather than
+asserting a language property. `(SRS-MD-005 r2-r6)`
+
+Three corollaries worth having before you write the guard:
+
+- **Ask what the compiler already guarantees**, and put the code where that
+  guarantee is the one you need. A module boundary, a private field, or a
+  `pub(crate)` constructor is worth more than any regex over the same tree.
+- **Rust privacy is parent-to-child, never child-to-parent.** A private field in
+  `lib.rs` is visible to every `mod` declared there. "Private to the file" is
+  only true for a file that is not an ancestor.
+- **A guard that scans source will flag its own documentation.** This bit three
+  times in one feature: `to_socket_addrs` inside a doc comment saying "never
+  call `to_socket_addrs`", the string `4001/4002` inside "never touches
+  4001/4002", and a `compile_fail` doctest declaring `fn sibling_reach` that
+  names the very field the scan forbids. Strip comments before scanning, and
+  keep a non-vacuity assertion that the stripper did not eat the code.
+
+`(SRS-MD-005)`
+
 ## The pre-check list
 
 Walk this against your own diff before Step 6.1. Most of it is one grep each.

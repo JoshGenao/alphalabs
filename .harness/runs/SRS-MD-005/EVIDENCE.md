@@ -1,0 +1,144 @@
+# SRS-MD-005 — verification evidence
+
+> Verify that handle the scheduled IB Gateway daily restart as planned maintenance.
+
+- **method**: `integration`
+- **steps evidenced**: 4/4
+- **critics**: none recorded
+- **artifacts**: 0
+- **record complete**: NO
+
+## Outstanding
+
+- no deterministic critic verdict recorded
+- no judgment critic verdict recorded
+
+## Acceptance criterion
+
+> Step 3: Verify acceptance criteria: During the configured restart window, order submission and market data requests are suspended beginning 60 seconds before the expected restart; normal connectivity notifications are suppressed for the configured window defaulting to 5 minutes; automatic reconnection is attempted after the window; if IB Gateway remains unavailable after the window, standard connectivity loss handling occurs.
+
+## Steps
+
+### Step 1
+
+Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.
+
+`pass` · exit `0` · executed by the tool
+
+```
+./init.sh
+```
+
+<details><summary>observed output (tail)</summary>
+
+```
+→ Installing dependencies...
+  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-005/.venv/bin/python (Python 3.13)
+→ Starting dev server...
+  Dev server already running at http://127.0.0.1:3000.
+→ Waiting for server...
+→ Running baseline smoke test...
+→ Running contract checks (scope=env)...
+→ contract checks (scope=env, 17 check(s))
+  · architecture_check
+  · dependency_boundary_check
+  · config_check
+  · startup_readiness_gate_check
+  · startup_readiness_runtime_check
+  · ib_adapter_check
+  · rest_api_check
+  · websocket_api_check
+  · cli_check
+  · operator_workflow_surface_check
+  · operator_interface_runtime_check
+  · log_record_check
+  · log_persistence_check
+  · subscription_fanout_check
+  · sim_halt_check
+  · strategy_api_indicators_check
+  · strategy_api_documentation_check
+✓ 17/17 contract check(s) passed (scope=env)
+✓ Environment ready
+```
+
+</details>
+
+### Step 2
+
+Step 2: Exercise SRS-MD-005 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.
+
+`pass` · exit `0` · executed by the tool
+
+```
+cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli
+```
+
+<details><summary>observed output (tail)</summary>
+
+```
+running 15 tests
+test help_is_available_alone_and_carries_no_success_sentinel ... ok
+test a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok
+test the_resume_proof_cannot_be_printed_from_outside_the_window ... ok
+test suspension_cannot_be_derived_outside_the_window ... ok
+test resume_cannot_be_derived_against_a_dead_gateway ... ok
+test a_one_second_lead_still_lands_inside_the_lead ... ok
+test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
+test escalation_cannot_be_derived_inside_the_window ... ok
+test suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok
+test the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok
+test the_catalogue_keys_actually_move_the_window ... ok
+test identical_inputs_produce_identical_output_across_processes ... ok
+test a_malformed_catalogue_key_is_refused_not_defaulted ... ok
+test the_window_boundaries_are_operator_configurable ... ok
+test every_rejected_invocation_fails_closed ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-691ab0fb79bb8fdf)
+```
+
+</details>
+
+### Step 3
+
+Step 3: Verify acceptance criteria: During the configured restart window, order submission and market data requests are suspended beginning 60 seconds before the expected restart; normal connectivity notifications are suppressed for the configured window defaulting to 5 minutes; automatic reconnection is attempted after the window; if IB Gateway remains unavailable after the window, standard connectivity loss handling occurs.
+
+`pass` · exit `0` · executed by the tool
+
+```
+.venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py -q
+```
+
+<details><summary>observed output (tail)</summary>
+
+```
+................................................                         [100%]
+48 passed in 34.32s
+```
+
+</details>
+
+### Step 4
+
+Step 4: Record objective evidence from integration test, fault injection and leave passes false until the evidence proves the requirement end to end.
+
+`pass` · exit `0` · executed by the tool
+
+```
+.venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q
+```
+
+<details><summary>observed output (tail)</summary>
+
+```
+........                                                                 [100%]
+8 passed in 0.30s
+```
+
+</details>
+
+---
+
+Generated by `tools/evidence.py render`. `passes: true` requires either every step executed by the tool with both critics approving, or a named human attestation — see `AGENTS.md`.

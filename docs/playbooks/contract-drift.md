@@ -142,3 +142,17 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
     does not declare — a renamed local type is also undeclared, which is the whole defect.
     Beware the guard firing on its own explanatory note: write the example without the
     `Type::method` form. `(RESV-006 r14)`
+
+## A contract that names a FILE breaks when a module is extracted (SRS-MD-005)
+
+- **Declare the modules, not the path.** `subscription_fanout_check.py` read
+  `crates/<crate>/src/lib.rs` directly, so moving the registry into its own
+  module turned a sibling feature's closed-green contract red for a change that
+  did not touch it. The contract block now carries a `registry_modules` list and
+  the check reads what the contract names. If a check hard-codes a path, the
+  next refactor is a false red — and the session that hits it has to decide
+  whether it broke something. `(SRS-MD-005 r6)`
+- **Extracting a module is a contract change even when no behaviour moves.**
+  Grep the check tools for the crate path before you move a type, not after.
+  `(SRS-MD-005 r6)`
+

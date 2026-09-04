@@ -247,6 +247,63 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     Keep the caller supplying only what the store cannot know (here: whether a human was
     shown the warning and said yes). `(RESV-006 r10)`
 
+## A gate on the order path is inside the order's latency budget (SRS-MD-005)
+
+52. **A port the execution engine consults INLINE is spent inside NFR-P1, not
+    beside it.** SRS-MD-005's connectivity producer probed the gateway with a
+    2-second TCP deadline on every `state()` call, and `submit_live_order`
+    consults that port on every live submission — so against a black-holing
+    endpoint (a paused Gateway VM, a DROP rule, or the gateway mid-restart
+    holding the socket unaccepted, which are precisely the conditions the
+    feature exists for) every order stalled ~2 s before reaching the broker,
+    against NFR-P1's 1,000 ms p95 for the whole signal-to-acknowledgement path.
+    The constant had been argued only against NFR-R2's 15-second RECONNECT
+    budget — a real requirement, and the wrong one. Ask which budget your
+    deadline is actually spent in, bound it to a fraction of that, and assert it
+    against the requirement rather than against feel. `(SRS-MD-005 r5)`
+53. **Cache the sampled FACT, never the derived STATE.** The same fix added a
+    short-TTL cache so a burst of orders costs one probe. Only reachability is
+    cached; the phase is recomputed from the clock every read, because the two
+    instants that matter — the start of the suspension and the end of the
+    window — are exactly where a cached verdict would be wrong. State the
+    residual (a gateway that returns can read stale for up to the TTL) and pin
+    that a backwards clock step reads as "inside the TTL" rather than "expired",
+    or a clock correction stampedes a gateway that serves one API client.
+    `(SRS-MD-005 r5)`
+54. **A refusal must say WHICH refusal it is.** One boolean gate returned the
+    same "suspended for the scheduled restart" error before and after the
+    window, so a genuine outage was reported to the operator as planned
+    maintenance — telling them to wait out an incident. The gate now returns a
+    reason, not a bool. Wherever two refusals share a category, the distinction
+    has to survive to the surface the operator reads. `(SRS-MD-005 r2)`
+55. **A configured knob that changes no behaviour is a lie with a fuse.** Three
+    keys were catalogued, documented in `.env.example` and the config README as
+    controlling the suspension window, and validated on startup — while the
+    binary read compiled-in constants. Everything passed; the discovery would
+    have been a restart. After adding a config key, prove it MOVES a verdict at
+    a fixed instant, and refuse a present-but-empty value rather than defaulting
+    (an empty variable is usually one that expanded to nothing).
+    `(SRS-MD-005 r4)`
+
+56. **A refusal that tells the operator to RETRY must be reachable only by
+    requests that could succeed on retry.** SRS-MD-005's subscription gate
+    consulted the restart window before canonicalizing, so during the window an
+    option subscription, an empty symbol or an empty strategy id came back as
+    "planned maintenance, retry once the window closes" — sending someone to
+    wait five minutes for something that can never succeed. Rule 2's precedence
+    advice (validate AFTER the connectivity gate) is right when the blocked-path
+    error is the one the caller expects; it inverts the moment your refusal
+    carries an instruction. Ask what the message TELLS them to do, and put the
+    checks that can falsify it first. `(SRS-MD-005 r12)`
+57. **A stale fact wearing a fresh label is this feature's whole defect class.**
+    Five separate findings across twelve rounds were one shape: evidence that
+    re-derived a flag instead of reading it, a cached `Connected` outlasting the
+    gateway, an accessor promising a TTL it never enforced, a proof line naming
+    a phase it had not entered, and a config key documented as controlling
+    something it did not reach. Whenever a value is cached, derived, or
+    described, ask what makes the description true AT THE MOMENT IT IS READ —
+    and if nothing does, either enforce it or stop claiming it. `(SRS-MD-005)`
+
 ## Deterministic-critic false positives (reword, don't disable)
 
 - `money:float-arithmetic` fires on the substring `price/quantity` in a comment (the `/`

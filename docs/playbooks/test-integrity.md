@@ -177,6 +177,58 @@ Read this whenever you write a test, and before you believe a green one.
     already been caught by a `compile_fail` doctest that failed for the wrong reason; both are
     the same trap, one in a regex and one in a type. `(RESV-006 r12)`
 
+## Mutation harnesses that lie to you (SRS-MD-005)
+
+45. **Restoring a mutated file with a MTIME-PRESERVING copy leaves cargo serving
+    the mutant.** `shutil.copy2` (and `cp -p`) restore the original timestamp,
+    so cargo's change detection sees a build artifact newer than the source and
+    skips the rebuild. The next run reports the MUTANT's behaviour as the
+    restored code's — and it looks like a real defect, complete with plausible
+    output. Two of them were chased before the cause surfaced. Restore with
+    `shutil.copy` (or `cp` without `-p`) and `touch` the file, then re-run the
+    unmutated suite before believing anything. `(SRS-MD-005)`
+46. **A mutation anchor moves when you extract a module.** Concatenating several
+    files for a contract check makes `replace(token, .., 1)` land on whichever
+    file comes first — including a copy inside an earlier file's `#[cfg(test)]`
+    block. The check then correctly reports no problem, and the mutation test
+    passes having mutated nothing. Exclude test modules from a contract's
+    surface, and anchor on the function's SPAN whenever the token appears more
+    than once in production. `(SRS-MD-005 r6)`
+47. **`compile_fail` doctests are the cheapest proof of an encapsulation claim,
+    and they mutation-verify.** Making the field `pub` turns them red with
+    "Test compiled successfully, but it is marked `compile_fail`". Write one
+    from OUTSIDE the crate and one from inside it — the in-crate case is the one
+    that bites, because a sibling module reaching a parent's private is invisible
+    to every scan over the parent. `(SRS-MD-005 r6)`
+
+## Evidence that breaks what it reports on (SRS-MD-005)
+
+48. **A reporting path can violate the invariant it reports on.** The producer
+    deliberately skipped the gateway probe during the pre-restart lead (the
+    gateway serves ONE API client, and the answer could not change the
+    decision), and the evidence scenario then called the unconditional
+    `observe()` — so the operator CLI and the whole L5 suite probed exactly
+    where production refused to. The guarantee held in the gates and was broken
+    by the tool that certified them. After adding a guard, grep for the
+    unguarded call it replaced. `(SRS-MD-005 r3)`
+49. **A proof line must assert the phase it names.** `prove-suspension` checked
+    the state, the block, the zero wire attempts, the refusal and the
+    suppression — every one of which is ALSO true one minute later, inside the
+    restart window — so it printed a proof for the 60-second pre-restart lead it
+    had never entered. The `--inject` control could not catch it, because that
+    control overrides the instant. If a proof is about a phase, a window or a
+    mode, assert that first. `(SRS-MD-005 r5)`
+50. **Evidence must READ the fact, never re-derive it.** The scenario computed
+    `scheduled_restart` from the connectivity state it had already asserted, so
+    the check could not fail independently — a tautology dressed as evidence,
+    for a flag whose entire purpose is that it must AGREE with the state. Tee the
+    real published event and read the field off it. `(SRS-MD-005)`
+51. **A `--fixture` nobody runs is a guard nobody has.** Two new fail-closed
+    config fixtures were reachable only by hand, unlike every pre-existing one,
+    so nothing in CI would have noticed the validators going quiet. Wire a new
+    fixture into the suite that drives its siblings, in the same commit.
+    `(SRS-MD-005 r3)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·
