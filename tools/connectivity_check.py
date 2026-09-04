@@ -135,8 +135,7 @@ def market_data_source(config: dict, root: Path = ROOT) -> str:
     source_path = root / block["admission_sites"]["module"]
     if not source_path.exists():
         fail(
-            f"the consolidated subscription module is missing: "
-            f"{block['admission_sites']['module']}"
+            f"the consolidated subscription module is missing: {block['admission_sites']['module']}"
         )
     return source_path.read_text(encoding="utf-8")
 
@@ -535,7 +534,9 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             fail(f"{port['trait']} is missing the `{method}` method")
 
     field = spec["private_field"]
-    if not re.search(rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:", market_data_src, re.M):
+    if not re.search(
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:", market_data_src, re.M
+    ):
         fail(
             f"the consolidated subscriber map `{field}` is no longer a private field of "
             "the registry — the closure this check relies on is Rust's own privacy, so "
@@ -566,11 +567,7 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "the private field and this scan stops bounding anything"
         )
     envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
-    touchers = {
-        name
-        for name, body in _all_fn_spans(production_src)
-        if field in body
-    } | {
+    touchers = {name for name, body in _all_fn_spans(production_src) if field in body} | {
         name
         for name, body in _all_fn_spans(_code_only(_without_test_module(lib_src)))
         if envelope in re.sub(r"\s+", "", body)

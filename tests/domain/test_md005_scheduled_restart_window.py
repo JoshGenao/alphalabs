@@ -532,7 +532,7 @@ impl ConsolidatedSubscriptionRegistry {
 }
 """,
     }
-    for label, injected in shapes.items():
+    for injected in shapes.values():
         with pytest.raises(ConnectivityCheckError):
             check_market_data_admission_sites(config, head + injected + marker + tail)
 
