@@ -43,13 +43,15 @@ use std::time::Duration;
 
 use atp_adapters::gateway_reachability::{ReachabilityOutcome, TcpGatewayReachability};
 use atp_execution::{
-    BrokerageConnectivity, ExecutionEngine, LiveDesignationConfirmation, OrderRoutingReceipt,
+    BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine, LiveDesignationConfirmation,
+    OrderRoutingReceipt,
 };
 use atp_market_data::MarketDataSubscriptionManager;
 use atp_notification::{DeliveryOutcome, OperatorNotifier, SharedChannelClient};
 use atp_types::{
-    AssetClass, ConnectivityState, MarketDataAdmission, OrderSide, OrderSubmission, OrderType,
-    RestartPhase, RestartWindow, RestartWindowError, StrategyId, SubscriptionRequest,
+    AssetClass, ConnectivityEvent, ConnectivityState, MarketDataAdmission, OrderSide,
+    OrderSubmission, OrderType, RestartPhase, RestartWindow, RestartWindowError, StrategyId,
+    SubscriptionRequest,
 };
 
 use crate::connectivity_notification::{
@@ -231,7 +233,11 @@ pub fn run_restart_window_scenario(
         Arc::clone(&email) as SharedChannelClient,
         Arc::clone(&push) as SharedChannelClient,
     ];
-    let alerts = ConnectivityNotifierSink::new(OperatorNotifier::new(), channels, SystemAlertClock);
+    let alerts = RecordingConnectivitySink::new(ConnectivityNotifierSink::new(
+        OperatorNotifier::new(),
+        channels,
+        SystemAlertClock,
+    ));
 
     // (1) The designated-live order, through the REAL authority chain.
     let live_result = engine.dispatch_order(
@@ -332,13 +338,14 @@ pub fn run_restart_window_scenario(
     // (4) SYS-75(b) — what the alert path did. Join the worker first: the sink
     //     dispatches off the caller's thread, so reading the buffers without
     //     flushing would race and report a suppression that had not happened.
-    if !alerts.flush(ALERT_FLUSH_TIMEOUT) {
+    if !alerts.inner().flush(ALERT_FLUSH_TIMEOUT) {
         return Err(format!(
             "SRS-MD-005: the connectivity alert worker did not settle within {ALERT_FLUSH_TIMEOUT:?} \
              — the disposition below would be a guess"
         ));
     }
-    let outcomes = alerts.outcomes();
+    let published = alerts.events();
+    let outcomes = alerts.inner().outcomes();
     let alert_disposition = classify_alert(&outcomes);
     let channel_messages_sent = email.sent().len() + push.sent().len();
 
@@ -356,10 +363,12 @@ pub fn run_restart_window_scenario(
         ib_orders_created: brokerage.gateway().orders_created(),
         reconnects: connectivity.reconnect_count(),
         events_recorded,
-        event_scheduled_restart: match connectivity_state {
-            ConnectivityState::Connected => None,
-            state => Some(state == ConnectivityState::ScheduledRestartWindow),
-        },
+        // READ from the event the engine published, never re-derived from the
+        // state above: the two are separate claims and the requirement is that
+        // they AGREE.
+        event_scheduled_restart: published
+            .first()
+            .map(|event: &ConnectivityEvent| event.scheduled_restart),
         market_data_admitted,
         market_data_admission,
         market_data_refusal,
@@ -398,6 +407,51 @@ fn classify_alert(outcomes: &[ConnectivityAlertOutcome]) -> AlertDisposition {
         };
     }
     disposition
+}
+
+/// Tees every `ConnectivityEvent` the engine publishes into a buffer, then
+/// forwards it to the real notifier.
+///
+/// Without this the scenario would DERIVE `scheduled_restart` from the state it
+/// already computed, which is a tautology dressed as evidence: the flag would
+/// agree with the state by construction, and a gate that published the wrong
+/// flag would still pass. The whole point of SRS-NOTIF-001's anti-forgery rule
+/// is that the flag and the state are two separate claims which must AGREE, so
+/// the evidence has to read the one the engine actually emitted.
+#[derive(Debug)]
+struct RecordingConnectivitySink<S: ConnectivityEventSink> {
+    inner: S,
+    events: std::sync::Mutex<Vec<ConnectivityEvent>>,
+}
+
+impl<S: ConnectivityEventSink> RecordingConnectivitySink<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn events(&self) -> Vec<ConnectivityEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn inner(&self) -> &S {
+        &self.inner
+    }
+}
+
+impl<S: ConnectivityEventSink> ConnectivityEventSink for RecordingConnectivitySink<S> {
+    fn record(&self, event: ConnectivityEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event.clone());
+        self.inner.record(event);
+    }
 }
 
 /// Collects subscription-limit events so the scenario can report them rather
