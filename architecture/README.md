@@ -448,7 +448,11 @@ open, and every `impl BrokerageConnectivity` in the tree was a test fixture.
   operator's live paper-account evidence.
 - `ScheduledRestartConnectivity` composes the three and implements BOTH
   `BrokerageConnectivity` and `RestartWindowGate`, so the order gate and the
-  market-data gate read one window and cannot disagree about an instant.
+  market-data gate read one window and cannot disagree about the STATE at an
+  instant. They can still disagree about the operator-facing wording: the ERR-2
+  order envelope is pinned to `IbGatewayUnreachable` for both blocked states,
+  so during the lead it says "unreachable" where the market-data surface says
+  "scheduled restart". Widening that envelope is recorded as deferred.
 - `python/atp_orchestration/restart_schedule.py` resolves the configured
   `ATP_IB_RESTART_ET` (default 23:45 US Eastern) to an epoch instant through the
   DST-aware `atp_strategy.calendar` authority. Python resolves, Rust classifies:

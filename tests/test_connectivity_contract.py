@@ -10,6 +10,7 @@ event-record calls).
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -392,12 +393,83 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
         with self.assertRaises(ConnectivityCheckError):
             check_market_data_admission_sites(self.config, mutated)
 
+    def test_a_new_ungated_admission_point_is_caught(self) -> None:
+        """The bypass the first version of this guard was blind to.
+
+        Discovery used to key on "takes a RestartWindowGate", which is circular:
+        a new path that SKIPS the port is exactly what must be caught, and
+        skipping it made the path invisible. The adversarial reviewer proved it
+        by injecting this function; the check reported "gates 2 admission
+        site(s)" and passed. Discovery now keys on the EFFECT that makes a
+        function an admission point, so omitting the port cannot hide it.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn subscribe_bulk<S: SubscriptionChangeSink>(
+        &mut self,
+        requests: &[SubscriptionRequest],
+        events: &S,
+    ) -> Result<(), SubscriptionRegistryError> {
+        for request in requests {
+            let key = request.security_key()?;
+            self.subscribers
+                .insert(key.clone(), vec![request.strategy_id.clone()]);
+            let _ = events;
+        }
+        Ok(())
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self.market_data_src + bypass)
+        self.assertIn("subscribe_bulk", str(ctx.exception))
+
+    def test_a_declared_but_ungated_admission_point_is_caught(self) -> None:
+        """Declaring it in the contract must not be enough — it must be gated."""
+        config = json.loads(json.dumps(self.config))
+        block = config["connectivity_contract"]["restart_window"]["admission_sites"]
+        block["functions"] = [*block["functions"], "subscribe_bulk"]
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn subscribe_bulk(&mut self, request: &SubscriptionRequest) {
+        self.subscribers
+            .insert(request.symbol.clone(), vec![request.strategy_id.clone()]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(config, self.market_data_src + bypass)
+        self.assertIn("without calling", str(ctx.exception))
+
+    def test_a_reformat_cannot_hide_an_admission_point(self) -> None:
+        """rustfmt wraps `self.subscribers\n.insert(` across lines. A raw
+        substring match would then miss the call that DEFINES an admission
+        point, and a guard a reformat can disarm is not a guard."""
+        wrapped = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn subscribe_wrapped(&mut self, request: &SubscriptionRequest) {
+        self
+            .subscribers
+            .insert(
+                request.symbol.clone(),
+                vec![request.strategy_id.clone()],
+            );
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self.market_data_src + wrapped)
+        self.assertIn("subscribe_wrapped", str(ctx.exception))
+
     def test_a_scan_that_matches_nothing_fails_rather_than_reporting_clean(self) -> None:
         # A broken discovery reports a clean tree, which is the failure mode
         # that looks most like the guard working.
-        mutated = self.market_data_src.replace("RestartWindowGate", "RenamedAwayGate")
-        with self.assertRaises(ConnectivityCheckError):
+        mutated = self.market_data_src.replace("SubscriptionAccepted {", "Renamed {").replace(
+            "self.subscribers\n                .insert(", "self.renamed.insert("
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
             check_market_data_admission_sites(self.config, mutated)
+        self.assertIn("no function", str(ctx.exception))
 
 
 class RestartWindowProducerTest(unittest.TestCase):

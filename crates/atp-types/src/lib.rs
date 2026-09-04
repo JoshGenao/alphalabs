@@ -557,6 +557,16 @@ impl RestartPhase {
 /// fields are private and there is deliberately no `Default`: a window is a
 /// safety input, and one that materialised from nowhere would suspend trading
 /// on a schedule nobody chose.
+///
+/// **It covers ONE occurrence, not a daily recurrence.** SYS-75 describes a
+/// restart that happens every day; this type is built from a single absolute
+/// instant, so past `window_end_ns` it reports `Elapsed` forever and the next
+/// day's restart would read as an outage. That is deliberate here — the phase
+/// arithmetic stays pure and clock-free, and resolving "23:45 ET on a given
+/// date" is a calendar concern the Python side already owns — but it makes
+/// rebuilding the window for each session date the CALLER's responsibility.
+/// Recorded in `connectivity_contract.restart_window.deferred[]` with the host
+/// that will own it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestartWindow {
     suspend_from_ns: i64,
@@ -915,6 +925,16 @@ impl StructuredSubscriptionError {
     /// `OrderErrorCategory` variant: that taxonomy is pinned by many check
     /// tools and a one-off variant is exactly what they exist to prevent — the
     /// precise reason travels in `error_type` instead.
+    ///
+    /// KNOWN DIVERGENCE, stated rather than papered over: only the CATEGORY is
+    /// shared. During the restart window the order path still reports
+    /// `error_type: "IbGatewayUnreachable"` for BOTH blocked states, because
+    /// that envelope is pinned by the closed-green ERR-2 contract and its
+    /// tests. So on one instant this surface says `ScheduledRestartWindow`
+    /// while the order surface says `IbGatewayUnreachable`. Widening the ERR-2
+    /// envelope to tell them apart is the honest fix and belongs to whoever
+    /// owns that contract; it is recorded in
+    /// `connectivity_contract.restart_window.deferred[]`.
     pub fn suspended_for_scheduled_restart(request: SubscriptionRequest) -> Self {
         let message = format!(
             "SRS-MD-005 + SyRS SYS-75: market-data subscription for {symbol} from \
@@ -944,7 +964,8 @@ impl StructuredSubscriptionError {
     /// maintenance would be the silence bug wearing a label.
     pub fn connectivity_lost(request: SubscriptionRequest) -> Self {
         let message = format!(
-            "SRS-SAFE-003 + SyRS SYS-45: market-data subscription for {symbol} from              {strategy} blocked — IB Gateway is unreachable",
+            "SRS-SAFE-003 + SyRS SYS-45: market-data subscription for {symbol} \
+             from {strategy} blocked — IB Gateway is unreachable",
             symbol = request.symbol,
             strategy = request.strategy_id.as_str(),
         );

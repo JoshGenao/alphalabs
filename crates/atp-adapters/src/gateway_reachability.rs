@@ -179,13 +179,20 @@ impl GatewayReachability for TcpGatewayReachability {
                     // The endpoint answered "no" (refused / reset), or stayed
                     // silent until the deadline. Either way the gateway is not
                     // serving — which during a restart is exactly expected.
+                    //
+                    // Deliberately NOT listing `HostUnreachable`,
+                    // `NetworkUnreachable` or `NetworkDown`: those were
+                    // stabilised in Rust 1.83 and the workspace declares
+                    // `rust-version = "1.75"`, so naming them would make this
+                    // crate stop building at its own declared minimum. They
+                    // fall through to `ProbeFailed` below, which
+                    // `is_reachable()` already treats as NOT reachable — the
+                    // fail-closed direction, so the SAFETY answer is identical
+                    // and only the operator-facing label is less precise.
                     ErrorKind::ConnectionRefused
                     | ErrorKind::ConnectionReset
                     | ErrorKind::ConnectionAborted
-                    | ErrorKind::TimedOut
-                    | ErrorKind::HostUnreachable
-                    | ErrorKind::NetworkUnreachable
-                    | ErrorKind::NetworkDown => ReachabilityOutcome::Unreachable { detail },
+                    | ErrorKind::TimedOut => ReachabilityOutcome::Unreachable { detail },
                     // Anything else is a fact about THIS host, not the gateway.
                     _ => ReachabilityOutcome::ProbeFailed { detail },
                 }

@@ -46,9 +46,19 @@ use atp_types::{ConnectivityState, MarketDataAdmission, RestartPhase, RestartWin
 
 /// NFR-R2: "Reconnection attempt within 15 seconds of detection."
 ///
-/// The budget the reconnect ledger measures against. It is a deadline for the
+/// The declared budget, published so an operator (and a later enforcement path)
+/// reads one number rather than a literal in prose. It is a deadline for the
 /// ATTEMPT, not for success — a gateway mid-restart will refuse for minutes,
 /// and SYS-75 is precisely the rule that says not to page about it yet.
+///
+/// **Nothing here enforces it, and saying so is the point.** The ledger records
+/// when each reconnect was requested and in which phase; it does not compare
+/// those instants to this budget, because the thing being timed — re-opening
+/// the IB API session — is the transport's job and sits behind the
+/// operator-only live feature. Measuring detection-to-attempt latency belongs
+/// with that wire-level reconnect, and both are recorded together in
+/// `connectivity_contract.restart_window.deferred[]`. A constant that looked
+/// enforced would be worse than an absent one.
 pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 
 /// One recorded reconnection attempt.
@@ -128,8 +138,32 @@ where
     /// This is what the composition binds to `atp_market_data::RestartWindowGate`,
     /// so the two suspensions cannot disagree about the same instant.
     pub fn market_data_admission(&self) -> MarketDataAdmission {
-        self.window
-            .market_data_admission((self.clock)(), self.probe.probe().is_reachable())
+        match self.observe_for(self.window.phase((self.clock)())) {
+            Some(reachable) => self.window.market_data_admission((self.clock)(), reachable),
+            None => MarketDataAdmission::SuspendedForScheduledRestart,
+        }
+    }
+
+    /// Whether this phase needs a probe at all, and its answer if so.
+    ///
+    /// `None` means the phase decides on its own. Both gates route through this
+    /// ONE helper deliberately: the probe-skip started life inside `state()`,
+    /// and `market_data_admission` — added in the same feature — silently did
+    /// not inherit it, so every subscription request in the lead paid a blocking
+    /// TCP connect for an answer the phase already fixed. A new code path does
+    /// not inherit the old one's guarantees; putting the decision in one place
+    /// is what makes it impossible for a third gate to miss.
+    fn observe_for(&self, phase: RestartPhase) -> Option<bool> {
+        match phase {
+            // SYS-75(a) is pre-emptive: the gateway is still up 60 s before its
+            // own restart, so asking cannot change the answer — and the gateway
+            // serves ONE API client, so asking spends the slot the reconnect is
+            // waiting for.
+            RestartPhase::Suspending => None,
+            RestartPhase::Normal | RestartPhase::Restarting | RestartPhase::Elapsed => {
+                Some(self.probe.probe().is_reachable())
+            }
+        }
     }
 
     /// The collapsed predicate, for callers that only need the decision.
@@ -173,14 +207,10 @@ where
     /// still be reporting the previous answer.
     fn state(&self) -> ConnectivityState {
         let now_ns = (self.clock)();
-        // Skip the probe entirely during the pre-restart lead: SYS-75(a)
-        // suspends whether or not the gateway answers, so asking would spend a
-        // socket on a question that cannot change the answer.
-        if matches!(self.window.phase(now_ns), RestartPhase::Suspending) {
-            return ConnectivityState::ScheduledRestartWindow;
+        match self.observe_for(self.window.phase(now_ns)) {
+            Some(reachable) => self.window.connectivity_state(now_ns, reachable),
+            None => ConnectivityState::ScheduledRestartWindow,
         }
-        self.window
-            .connectivity_state(now_ns, self.probe.probe().is_reachable())
     }
 
     fn request_reconnect(&self) {
@@ -279,6 +309,36 @@ mod tests {
             0,
             "the lead must not probe: the answer cannot change the decision"
         );
+    }
+
+    #[test]
+    fn the_market_data_gate_inherits_the_probe_skip() {
+        // The probe-skip started life inside `state()` only, and this second
+        // gate — added by the same feature — silently did not inherit it, so
+        // every subscription request during the lead paid a blocking TCP
+        // connect for an answer the phase already fixed. A new code path does
+        // not inherit the old one's guarantees; both now route through one
+        // helper, and this pins that they do.
+        let producer = at(RESTART_NS - 30 * NANOS_PER_SECOND, true);
+        assert_eq!(
+            producer.market_data_admission(),
+            MarketDataAdmission::SuspendedForScheduledRestart
+        );
+        assert_eq!(
+            producer.probe.calls.get(),
+            0,
+            "the market-data gate must skip the probe during the lead, exactly as the \
+             order gate does"
+        );
+
+        // Non-vacuity: outside the lead this gate DOES probe, so "0 calls" is a
+        // fact about the lead rather than about a gate that never probes.
+        let outside = at(RESTART_NS - LEAD_NS - 1, true);
+        assert_eq!(
+            outside.market_data_admission(),
+            MarketDataAdmission::Admitted
+        );
+        assert_eq!(outside.probe.calls.get(), 1);
     }
 
     #[test]

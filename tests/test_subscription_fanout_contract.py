@@ -70,7 +70,7 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
             "SubscriptionChangeEvent with the 6 required fields",
             "change, strategy_id, symbol, asset_class, subscriber_count, lines_in_use",
             "SubscriptionChangeSink with 1 method (record)",
-            "SubscriptionRegistryError with 4 fail-closed variants",
+            "SubscriptionRegistryError with 6 fail-closed variants",
             "EmptySymbol, EmptyStrategyId, LineLimitReached, OptionContractUnsupported",
             "ConsolidatedSubscriptionRegistry with the 7 dedup + fan-out methods",
             "keys the consolidated set on SecurityKey",

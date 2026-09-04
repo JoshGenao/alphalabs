@@ -414,15 +414,42 @@ def check_restart_escalation_arm(config: dict, types_src: str) -> str:
     )
 
 
-def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
-    """Enumerate the admission functions FROM THE SOURCE, not from a checklist.
+def _public_fn_spans(source: str) -> list[tuple[str, str]]:
+    """Every ``pub fn`` in the file, paired with its body."""
+    spans: list[tuple[str, str]] = []
+    for match in re.finditer(r"\bpub\s+(?:const\s+|async\s+)*fn\s+(\w+)\b[^{]*\{", source):
+        name = match.group(1)
+        depth, index = 1, match.end()
+        while index < len(source) and depth:
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            index += 1
+        spans.append((name, source[match.end() : index - 1]))
+    return spans
 
-    A list of "these two functions consult the guard" passes happily while a
-    third admission path added later admits during the window. So the discovery
-    runs over the source: every public function whose body registers or admits a
-    subscription must consult the gate, and a declared function that has
-    vanished fails too (a broken scan reports a clean tree, which is the failure
-    mode that looks most like working).
+
+def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
+    """Discover admission functions by WHAT THEY DO, then require the guard.
+
+    The first version of this check discovered them by looking for functions
+    that already took a ``RestartWindowGate`` — which is circular: a NEW
+    admission path that skips the port is exactly the thing it needs to catch,
+    and skipping the port made it invisible. The reviewer proved it by injecting
+    a `subscribe_bulk` that registered subscriptions without the gate; the check
+    happily reported "gates 2 admission site(s)" and passed.
+
+    So discovery now keys on the EFFECT that makes a function an admission
+    point: it mints the acceptance envelope, or it inserts into the consolidated
+    subscriber map. Any public function that does either must consult the
+    window. A function can no longer hide from the scan by omitting the very
+    thing the scan exists to require.
+
+    The declared list in the contract is still cross-checked in both directions,
+    so a renamed or vanished site fails too — a broken discovery reports a clean
+    tree, which is the failure mode that looks most like working.
     """
     block = restart_window_block(config)
     spec = block["admission_sites"]
@@ -437,45 +464,61 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         if f"fn {method}(" not in trait_body:
             fail(f"{port['trait']} is missing the `{method}` method")
 
-    declared = list(spec["functions"])
+    #: What makes a function an ADMISSION point, independent of whether it was
+    #: written to take the gate. Kept in the contract so the effect list is
+    #: reviewable rather than buried here.
+    effects = spec["admission_effects"]
+
+    def admits(body: str) -> bool:
+        # Whitespace-collapsed: rustfmt wraps `self.subscribers\n.insert(` across
+        # lines, and a raw substring would then miss the very call that defines
+        # an admission point. A guard that a reformat can silently disarm is not
+        # a guard.
+        flat = re.sub(r"\s+", "", body)
+        return any(re.sub(r"\s+", "", effect) in flat for effect in effects)
+
     discovered = sorted(
-        set(re.findall(r"pub fn (\w+)\s*<[^>]*W: RestartWindowGate", market_data_src))
-        | set(re.findall(r"pub fn (\w+)[\s\S]{0,400}?window: &W", market_data_src))
+        {name for name, body in _public_fn_spans(market_data_src) if admits(body)}
     )
     if not discovered:
         fail(
-            "no subscription admission function takes a RestartWindowGate — either the "
-            "guard was removed or this scan no longer matches the source, and a scan "
-            "that finds nothing must fail rather than report a clean tree"
+            "no function in atp-market-data admits a subscription by any of the "
+            f"declared effects ({', '.join(effects)}) — either the crate changed shape "
+            "or this scan no longer matches it, and a scan that finds nothing must "
+            "fail rather than report a clean tree"
         )
+
+    declared = list(spec["functions"])
     missing = [name for name in declared if name not in discovered]
     if missing:
         fail(
-            f"declared admission site(s) {', '.join(missing)} no longer take the "
-            "restart-window port — the contract and the source disagree"
+            f"declared admission site(s) {', '.join(missing)} no longer admit a "
+            "subscription by any declared effect — the contract and the source disagree"
         )
     undeclared = [name for name in discovered if name not in declared]
     if undeclared:
         fail(
-            f"undeclared admission site(s) {', '.join(undeclared)} take the "
-            "restart-window port; add them to admission_sites.functions so the "
-            "contract enumerates every arm"
+            f"undeclared subscription admission site(s) {', '.join(undeclared)}; add "
+            "them to admission_sites.functions so the contract enumerates every arm, "
+            "and gate each on the restart window"
         )
+
+    ungated = []
     for name in discovered:
-        try:
-            body = _fn_block(market_data_src, name)
-        except AssertionError as error:
-            fail(str(error))
+        body = _fn_body_any(market_data_src, name)
         if guard_call not in body:
-            fail(
-                f"atp-market-data::{name} accepts the restart-window port but never "
-                f"calls `{guard_call}` — SyRS SYS-75(a) requires market-data requests "
-                "to be suspended at EVERY admission point, not just the outermost"
-            )
+            ungated.append(name)
+    if ungated:
+        fail(
+            f"atp-market-data::{', '.join(ungated)} admit a subscription without "
+            f"calling `{guard_call}` — SyRS SYS-75(a) requires market-data requests to "
+            "be suspended at EVERY admission point, not just the outermost"
+        )
     return (
         f"atp-market-data gates {len(discovered)} subscription admission site(s) "
-        f"({', '.join(discovered)}) on `{guard_call}` through the {port['trait']} port "
-        "— SyRS SYS-75(a) market-data suspension"
+        f"({', '.join(discovered)}), discovered by effect ({', '.join(effects)}) rather "
+        f"than by whether they already take the port, on `{guard_call}` — SyRS "
+        "SYS-75(a) market-data suspension"
     )
 
 

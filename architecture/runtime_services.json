@@ -976,7 +976,11 @@
           "request_subscription",
           "subscribe"
         ],
-        "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. The check enumerates these from the source rather than trusting the list, so a new admission function that skips the guard fails."
+        "admission_effects": [
+          "SubscriptionAccepted {",
+          "self.subscribers.insert("
+        ],
+        "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. tools/connectivity_check.py discovers admission points by the EFFECTS above (minting the acceptance envelope, or inserting into the consolidated subscriber map) rather than by whether a function already takes the port: discovering them by the port would be circular, since a new path that SKIPS the gate is exactly what the check must catch. An undeclared function with either effect fails the check, as does a declared one that no longer has it."
       },
       "escalation": {
         "phase": "Elapsed",
@@ -1007,7 +1011,10 @@
         "The CONTINUOUS connectivity watcher. This producer answers when asked (at order routing, at a subscription request); the loop that watches the gateway between those moments -- so a disconnect is detected rather than sampled -- is SRS-EXE-001's named scope, restated in connectivity_notification.rs's module docs.",
         "Readiness folded into Connected. A Reachable probe means the gateway accepts TCP, not that the API answers a handshake; the gateway listens before it is ready. The 'readiness checks pass' half of the ERR-2 acceptance criterion is owned by ERR-9 / SRS-MD-006 (atp_readiness), and claiming it here would be a false green.",
         "Wire-level reconnection. request_reconnect records the attempt and its NFR-R2 deadline; re-opening the API session is the transport's job and sits behind the operator-only ib-live-transport feature.",
-        "A live IB observation of the real 23:45 ET restart. Everything above is provable by fault injection against a dead port, which is why the feature verifies as `integration`; watching the real gateway go down and come back is an operator window, not a gate."
+        "A live IB observation of the real 23:45 ET restart. Everything above is provable by fault injection against a dead port, which is why the feature verifies as `integration`; watching the real gateway go down and come back is an operator window, not a gate.",
+        "DAILY ROLL-FORWARD. RestartWindow models ONE occurrence: it is built from a single absolute expected_restart_ns and ScheduledRestartConnectivity holds it immutably, so past window_end_ns the producer stays Elapsed forever and the NEXT day's SYS-75 restart would page as an outage. Deliberate at this layer -- the window stays pure and clock-free, and `python/atp_orchestration/restart_schedule.py` already resolves a per-DATE instant -- but it means a long-running composition must rebuild the window for each session date. Nothing does that yet, because nothing yet runs this producer as a daemon: that host is the same SRS-EXE-001 connectivity-runtime leg named above, and the roll-forward belongs with it. Raised by the judgment critic (round 2).",
+        "The ERR-2 envelope wording. Only the CATEGORY is shared between the two suspensions: `submit_live_order` reports error_type `IbGatewayUnreachable` for BOTH Unreachable and ScheduledRestartWindow, so during the lead the order surface says the gateway is down while the market-data surface correctly says the restart window is active. Widening that envelope to distinguish them is the honest fix, but it is the closed-green ERR-2 contract pinned by tools/connectivity_check.py and by SRS-SAFE-003 / SRS-ERR-001 tests, so it belongs to whoever owns that contract rather than to this feature. Raised by the judgment critic (round 2).",
+        "NFR-R2 enforcement. RECONNECT_ATTEMPT_BUDGET publishes the 15-second detection-to-attempt budget and the ledger records when each reconnect was requested, but nothing compares the two: the operation being timed is re-opening the IB API session, which is the transport's job behind the operator-only ib-live-transport feature. Measuring it belongs with that wire-level reconnect. Raised by the judgment critic (round 2)."
       ]
     }
   },
@@ -4645,7 +4652,9 @@
     },
     "registry_error_enum": {
       "enum": "SubscriptionRegistryError",
-      "variants": ["EmptySymbol", "EmptyStrategyId", "LineLimitReached", "OptionContractUnsupported"]
+      "variants": ["EmptySymbol", "EmptyStrategyId", "LineLimitReached", "OptionContractUnsupported",
+        "SuspendedForScheduledRestart",
+        "ConnectivityLost"]
     },
     "registry": {
       "struct": "ConsolidatedSubscriptionRegistry",

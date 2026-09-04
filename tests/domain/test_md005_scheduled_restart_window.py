@@ -222,7 +222,13 @@ def test_the_state_is_recomputed_rather_than_cached_across_the_boundary() -> Non
 def test_both_subscription_admission_points_consult_the_window() -> None:
     """Gating only the outer manager leaves the mutating one as a bypass."""
     source = MARKET_DATA_SOURCE.read_text(encoding="utf-8")
-    assert source.count("match window.admission() {") == 2, (
+    # A hard count of 2 was the weakness the adversarial reviewer named: it pins
+    # "these two are gated" and says nothing about a THIRD admission point added
+    # later. The load-bearing check is the effect-based discovery in
+    # tools/connectivity_check.py, driven against an injected ungated site by
+    # test_no_admission_point_can_hide_from_the_static_guard below; this is the
+    # cheap floor beneath it, so it asks for AT LEAST the two known guards.
+    assert source.count("match window.admission() {") >= 2, (
         "expected the restart-window guard at BOTH subscription admission points"
     )
     for signature in ("pub fn request_subscription<C, S, W>", "pub fn subscribe<S:"):
@@ -327,6 +333,44 @@ def test_the_scenario_drives_the_shared_order_entry_not_the_inner_gate() -> None
     assert ".dispatch_order(" in source
     assert ".submit_live_order(" not in source, "the scenario must not call the inner gate directly"
     assert ".designate(" in source, "the live designation must be exercised, not bypassed"
+
+
+def test_no_admission_point_can_hide_from_the_static_guard() -> None:
+    """The reviewer's bypass, pinned at the domain layer too.
+
+    The first version of the static guard discovered admission points by "takes
+    a RestartWindowGate", which is circular — a new path that skips the port is
+    exactly what must be caught, and skipping it made the path invisible. This
+    drives the real check against an injected ungated site, so the domain layer
+    notices if the discovery ever goes back to being circular.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_market_data_admission_sites,
+            load_config,
+            market_data_source,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    source = market_data_source(config)
+    bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn subscribe_bulk(&mut self, request: &SubscriptionRequest) {
+        self.subscribers
+            .insert(request.symbol.clone(), vec![request.strategy_id.clone()]);
+    }
+}
+"""
+    with pytest.raises(ConnectivityCheckError, match="subscribe_bulk"):
+        check_market_data_admission_sites(config, source + bypass)
+
+    # Non-vacuity: the unmutated source must still pass, or the guard is simply
+    # refusing everything.
+    check_market_data_admission_sites(config, source)
 
 
 def test_the_producer_serves_both_gates_from_one_window() -> None:

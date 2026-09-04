@@ -105,6 +105,11 @@ class RestartSchedule:
     ``restart_et`` is a local Eastern wall-clock time, so the same schedule
     yields different UTC instants either side of a DST transition. That is the
     intent: IB restarts on its own local clock, not on UTC.
+
+    It describes a DAILY recurrence, and ``restart_instant_ns(date)`` resolves
+    one occurrence of it. The Rust ``RestartWindow`` covers exactly that one
+    occurrence, so a long-running composition must rebuild its window for each
+    session date — see ``connectivity_contract.restart_window.deferred[]``.
     """
 
     restart_et: str = DEFAULT_RESTART_ET
@@ -127,16 +132,23 @@ class RestartSchedule:
     def from_env(cls, env: dict[str, str] | None = None) -> "RestartSchedule":
         """Read ``ATP_IB_RESTART_*``.
 
-        A **missing** key takes the documented catalogue default; a **malformed**
-        one raises. That asymmetry is deliberate and matches the IB connection
-        config: an unset value means "the operator accepted the default", while
-        a present-but-wrong value means they tried to say something and it did
-        not parse.
+        A key that is **absent** takes the documented catalogue default; a key
+        that is **present** must parse. That asymmetry is deliberate and matches
+        the IB connection config: an unset value means "the operator accepted
+        the default", while a present-but-wrong value means they tried to say
+        something and it did not parse.
+
+        An EMPTY value counts as present-but-malformed, not as absent. The
+        earlier version used ``or DEFAULT``, which silently accepted
+        ``ATP_IB_RESTART_ET=""`` and applied 23:45 — contradicting this
+        docstring, and hiding exactly the deployment mistake (a variable
+        expanded to nothing) that leaves a safety window on a schedule nobody
+        chose.
         """
 
         source = os.environ if env is None else env
         return cls(
-            restart_et=source.get("ATP_IB_RESTART_ET") or DEFAULT_RESTART_ET,
+            restart_et=_str_from_env(source, "ATP_IB_RESTART_ET", DEFAULT_RESTART_ET),
             window_seconds=_int_from_env(
                 source, "ATP_IB_RESTART_WINDOW_SECONDS", DEFAULT_RESTART_WINDOW_SECONDS
             ),
@@ -223,10 +235,28 @@ def resolve_restart_instant_ns(session_date: _dt.date, restart_et: str = DEFAULT
     return int(round(epoch_seconds)) * NANOS_PER_SECOND
 
 
+def _str_from_env(source: dict[str, str] | os._Environ[str], key: str, default: str) -> str:
+    raw = source.get(key)
+    if raw is None:
+        return default
+    if not raw.strip():
+        raise RestartScheduleError(
+            f"{key} is set but empty. An empty value is present-but-malformed, not "
+            "absent — most often a variable that expanded to nothing — and silently "
+            "applying the default would leave the safety window on a schedule nobody "
+            f"chose. Unset it to accept the default ({default!r})."
+        )
+    return raw
+
+
 def _int_from_env(source: dict[str, str] | os._Environ[str], key: str, default: int) -> int:
     raw = source.get(key)
-    if raw is None or raw == "":
+    if raw is None:
         return default
+    if not raw.strip():
+        raise RestartScheduleError(
+            f"{key} is set but empty. Unset it to accept the default ({default})."
+        )
     try:
         return int(raw)
     except ValueError as error:
