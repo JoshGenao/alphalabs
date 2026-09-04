@@ -230,23 +230,23 @@ where
         }
     }
 
-    /// The last reachability outcome observed, if any.
+    /// The last UNREACHABLE observation, while it is still within the reuse
+    /// window; `None` once the gateway answers again.
     ///
-    /// The collapsed boolean loses the difference between "the gateway said no"
-    /// and "we could not ask" — a `ProbeFailed` from exhausted descriptors or a
-    /// denied permission becomes `Unreachable` and pages the operator about IB
-    /// when the fault is local. `ConnectivityEvent` cannot carry the reason
-    /// (its field set is pinned by the ERR-2 contract, which forbids transport
-    /// detail), so the detail surfaces HERE and through the operator CLI's
-    /// `reachability:` field instead. Recorded in `deferred[]`: routing it into
-    /// the alert itself needs the envelope change that contract owns.
-    /// The last UNREACHABLE observation, if one is still within the reuse
-    /// window.
+    /// `None` is the normal healthy answer, not missing information: a
+    /// reachable outcome is deliberately never retained (see
+    /// [`REACHABILITY_CACHE_TTL_NS`]). Ask
+    /// [`observe_if_needed`](Self::observe_if_needed) for the current answer.
     ///
-    /// `None` once the gateway answers again, because a positive outcome is
-    /// deliberately not stored — see [`REACHABILITY_CACHE_TTL_NS`]. Callers
-    /// wanting the current answer should ask
-    /// [`observe_if_needed`](Self::observe_if_needed).
+    /// It exists because the collapsed boolean loses the difference between
+    /// "the gateway said no" and "we could not ask" — a `ProbeFailed` from
+    /// exhausted descriptors or a denied permission becomes `Unreachable` and
+    /// pages the operator about IB when the fault is local. `ConnectivityEvent`
+    /// cannot carry the reason (its field set is pinned by the ERR-2 contract,
+    /// which forbids transport detail), so the detail surfaces here and through
+    /// the operator CLI's `reachability:` field instead. Recorded in
+    /// `deferred[]`: routing it into the alert needs the envelope change that
+    /// contract owns.
     pub fn last_outcome(&self) -> Option<ReachabilityOutcome> {
         self.last_outcome
             .lock()

@@ -34,8 +34,19 @@
 //!                                          a live page
 //! ```
 //!
-//! The clock is injected. Nothing here reads the wall clock, so a run at
-//! 09:00 and a run at midnight produce identical evidence.
+//! The SYS-75 clock is injected, so every phase decision, every gate verdict
+//! and every published event is reproducible from `RestartWindowScenario`
+//! alone — a run at 09:00 and a run at midnight produce identical evidence.
+//!
+//! One wall-clock read remains, and it is worth naming rather than glossing:
+//! `ConnectivityNotifierSink` takes a `SystemAlertClock`, whose `now_millis`
+//! calls `SystemTime::now()` to stamp the alert and to compare against its
+//! coalescing cool-down. It does not reach the evidence, because each run
+//! constructs a FRESH sink with no previous dispatch, so no cool-down can be
+//! armed and nothing is ever coalesced. Injecting a fixture clock there would
+//! swap the REAL SRS-NOTIF-001 dispatch path for a differently-configured one,
+//! a worse trade for a scenario whose whole point is that the suppression
+//! decision is taken by production code.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

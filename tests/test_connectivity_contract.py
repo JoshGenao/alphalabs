@@ -615,6 +615,49 @@ impl ConsolidatedSubscriptionRegistry {
             )
         self.assertIn("interior mutability", str(ctx.exception))
 
+    def test_any_widened_visibility_on_the_field_is_caught(self) -> None:
+        """The closure IS Rust's privacy, so any widening breaks it.
+
+        `pub(crate)` re-opens the field to every sibling module — including
+        `live_feed`, the exact module the registry was moved into its own file
+        to escape — and the earlier check's `\\bpub\\s+` matched none of the
+        parenthesised forms.
+        """
+        for visibility in ("pub", "pub(crate)", "pub(super)", "pub(in crate::live_feed)"):
+            mutated = self.market_data_src.replace(
+                "    subscribers: BTreeMap", f"    {visibility} subscribers: BTreeMap", 1
+            )
+            self.assertNotEqual(mutated, self.market_data_src, "the field anchor moved")
+            with self.assertRaises(ConnectivityCheckError) as ctx:
+                check_market_data_admission_sites(self.config, mutated)
+            self.assertIn(visibility, str(ctx.exception))
+
+    def test_the_crate_root_guard_cannot_be_satisfied_by_a_comment(self) -> None:
+        """The manager's half of the guard read its source WITHOUT stripping
+        comments, so deleting the real `match window.admission()` and leaving a
+        comment that merely mentions it passed — a guard a docstring could
+        satisfy. It also had no mutation test, because the module move left this
+        class's fixture pointing only at the registry."""
+        import connectivity_check as module
+
+        lib_src = module.market_data_lib_source(self.config)
+        start = lib_src.index("        match window.admission() {")
+        end = lib_src.index("        match counter.try_acquire(&request) {")
+        gutted = lib_src[:start] + "        // match window.admission() { removed\n" + lib_src[end:]
+
+        original = module.market_data_lib_source
+        module.market_data_lib_source = lambda config, root=None: gutted
+        try:
+            with self.assertRaises(ConnectivityCheckError) as ctx:
+                check_market_data_admission_sites(self.config, self.market_data_src)
+            self.assertIn("request_subscription", str(ctx.exception))
+        finally:
+            module.market_data_lib_source = original
+
+        # Non-vacuity: with the real source restored the check passes again, so
+        # the failure above was the mutation and not the monkeypatch.
+        check_market_data_admission_sites(self.config, self.market_data_src)
+
     def test_a_stale_exemption_is_caught(self) -> None:
         """An exemption for a function that no longer exists is a hole nobody
         is watching."""
@@ -671,7 +714,7 @@ impl ConsolidatedSubscriptionRegistry {
         self.assertNotEqual(mutated, self.market_data_src, "the private-field anchor moved")
         with self.assertRaises(ConnectivityCheckError) as ctx:
             check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("PUBLIC", str(ctx.exception))
+        self.assertIn("not private", str(ctx.exception))
 
 
 class RestartWindowProducerTest(unittest.TestCase):

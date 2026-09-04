@@ -644,10 +644,22 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "the registry — the closure this check relies on is Rust's own privacy, so "
             "if the field moved or became public this scan no longer bounds anything"
         )
-    if re.search(rf"\bpub\s+{re.escape(field)}\s*:", market_data_src):
+    # ANY visibility modifier, not just a bare `pub`. `pub(crate)` re-opens the
+    # field to every sibling module — including `live_feed`, the exact module the
+    # registry was moved into its own file to escape — and `pub(super)` does the
+    # same for the crate root. The closure this check rests on is that NOTHING
+    # outside this file can name the field, so any widening at all breaks it,
+    # and `\bpub\s+` matched none of the parenthesised forms.
+    visibility = re.search(
+        rf"^[^\S\n]*(pub(?:[^\S\n]*\([^)]*\))?)[^\S\n]+{re.escape(field)}[^\S\n]*:",
+        market_data_src,
+        re.M,
+    )
+    if visibility:
         fail(
-            f"`{field}` is PUBLIC — any crate could then admit a subscription without "
-            "passing through a gated function, and no source scan can close that"
+            f"`{field}` is declared `{visibility.group(1)}`, not private — anything "
+            "outside this module could then admit a subscription without passing "
+            "through a gated function, and no source scan can close that"
         )
 
     # The `#[cfg(test)]` module is not shipped, so a test that builds a registry
@@ -692,19 +704,16 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "registry must stay in its own module, or the parent regains visibility of "
             "the private field and this scan stops bounding anything"
         )
+    lib_production_src = _code_only(_without_test_module(lib_src))
     envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
     touchers = {name for name, body in _all_fn_spans(production_src) if field in body} | {
         name
-        for name, body in _all_fn_spans(_code_only(_without_test_module(lib_src)))
+        for name, body in _all_fn_spans(lib_production_src)
         if envelope in re.sub(r"\s+", "", body)
     }
     # Nothing outside the owning module may name the field. This is the property
     # the whole closure rests on, so it is checked rather than assumed.
-    leaked = [
-        name
-        for name, body in _all_fn_spans(_code_only(_without_test_module(lib_src)))
-        if field in body
-    ]
+    leaked = [name for name, body in _all_fn_spans(lib_production_src) if field in body]
     if leaked:
         fail(
             f"crate-root function(s) {', '.join(leaked)} name `{field}`. Rust exposes a "
@@ -755,7 +764,11 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     # A site lives in whichever of the two scanned files declares it: the
     # registry's methods in the owning module, the envelope minters in the root.
     def body_of(name: str) -> str:
-        for source in (production_src, _without_test_module(lib_src)):
+        # BOTH halves comment-stripped. The crate-root half was not, so deleting
+        # the real `match window.admission()` from the manager and leaving a
+        # comment that merely MENTIONS it satisfied the check — a guard a
+        # docstring could pass.
+        for source in (production_src, lib_production_src):
             if re.search(rf"\bfn\s+{re.escape(name)}\b[^;{{]*{{", source):
                 return _fn_body_any(source, name)
         fail(f"admission site `{name}` was discovered but its body cannot be read")

@@ -675,6 +675,38 @@ impl ConsolidatedSubscriptionRegistry {
     check_market_data_admission_sites(config, source)
 
 
+def test_the_privacy_closure_survives_any_widened_visibility() -> None:
+    """The closure IS Rust's privacy, so any widening breaks it.
+
+    `pub(crate)` re-opens the field to every sibling module — including
+    `live_feed`, the exact module the registry was moved into its own file to
+    escape — and the earlier check matched only a bare `pub`.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_market_data_admission_sites,
+            load_config,
+            market_data_source,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    source = market_data_source(config)
+    for visibility in ("pub", "pub(crate)", "pub(super)"):
+        mutated = source.replace(
+            "    subscribers: BTreeMap", f"    {visibility} subscribers: BTreeMap", 1
+        )
+        assert mutated != source, "the field anchor moved"
+        with pytest.raises(ConnectivityCheckError, match="not private"):
+            check_market_data_admission_sites(config, mutated)
+
+    # Non-vacuity: the real source still passes.
+    check_market_data_admission_sites(config, source)
+
+
 def test_the_producer_serves_both_gates_from_one_window() -> None:
     """Two separately-configured gates over one requirement drift, and the
     drift is invisible until a deployment updates only one."""
