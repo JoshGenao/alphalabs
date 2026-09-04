@@ -156,3 +156,19 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   Grep the check tools for the crate path before you move a type, not after.
   `(SRS-MD-005 r6)`
 
+
+- **Enumerate the recorders; do not fix the one that was caught.** `evidence.py` has four
+  commands that write the record, and three re-rendered `EVIDENCE.md` afterwards.
+  `cmd_critic` - the LAST one to run before a close - did not, so the page a reviewer
+  opens in the PR read `critics: none recorded` while `evidence.json` beside it, in the
+  same commit, held a `block`. The guard is an AST walk over `cmd_*` asserting that
+  anything calling `save_record` also refreshes the page; it immediately found a second
+  instance the sweep had missed. When a rendered artifact can lag its source, the class is
+  "every writer of the source", never "this writer". `(SRS-MD-005 r14)`
+- **A row that promises a command must be checked against the state that command reads.**
+  The verification queue told the operator "Nothing" was missing and handed over
+  `close_feature.py --verified --attested-by operator`, which exits 3 while a critic
+  verdict is `block` - `--attested-by` relaxes which STEPS count, never the critic gate.
+  The guard now cross-reads every `close_feature.py <ID>` in the queue against
+  `.harness/runs/<ID>/evidence.json`. Prose that instructs is prose that can be wrong in
+  a way the reader only discovers by running it. `(SRS-MD-005 r14)`

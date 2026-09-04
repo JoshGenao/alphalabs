@@ -11,8 +11,10 @@ event-record calls).
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,6 +38,7 @@ from connectivity_check import (  # noqa: E402
     check_restart_escalation_arm,
     check_restart_phase_enum,
     check_restart_window_defaults,
+    check_restart_window_gate_implementors,
     check_restart_window_producer,
     execution_source,
     load_config,
@@ -785,6 +788,99 @@ class RestartWindowProducerTest(unittest.TestCase):
         self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
         with self.assertRaises(ConnectivityCheckError):
             check_reachability_seam_is_unpinned(self.config, mutated)
+
+
+class GateImplementorScanTest(unittest.TestCase):
+    """The scan that makes the port unforgeable, tested against real bypasses.
+
+    This enumeration is the ONLY thing standing between the tree and a
+    production `impl RestartWindowGate` that always returns `Admitted` — which
+    would bypass the SyRS SYS-75(a) suspension with every other guard, the L7
+    suite and all three CLI proofs still green. A guard in that position gets
+    tested by trying to walk past it, not by being read.
+
+    Both bypasses below were live holes found by adversarial review, not
+    hypotheticals.
+    """
+
+    PRODUCER = "crates/atp-orchestrator/src/restart_window_connectivity.rs"
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # A minimal tree holding the REAL producer, so the only difference
+        # between a clean run and a caught run is the injected bypass.
+        dest = self.tmp / self.PRODUCER
+        dest.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / self.PRODUCER, dest)
+
+    def _inject(self, crate: str, body: str) -> None:
+        path = self.tmp / "crates" / crate / "src" / "sneaky.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_the_clean_tree_passes(self) -> None:
+        """Non-vacuity: without this, both tests below pass on a broken scan."""
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("ScheduledRestartConnectivity", evidence)
+
+    def test_an_arrow_in_the_generic_bounds_does_not_hide_an_implementor(self) -> None:
+        """The `[^>]*` hole: that class terminates on the `>` of `->`.
+
+        The producer's own clock is an `Fn() -> i64`, so this is the shape an
+        implementor in this codebase naturally takes — the guard was blind to
+        precisely the idiom the feature uses.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct AlwaysOpen<C> {
+    clock: C,
+}
+
+impl<C: Fn() -> i64> atp_market_data::RestartWindowGate for AlwaysOpen<C> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_an_implementor_in_any_crate_is_caught(self) -> None:
+        """The hard-coded-crate-list hole.
+
+        The scan listed the four crates that had the trait in view when it was
+        written. Any crate that later gains an atp-market-data dependency could
+        implement the gate unscanned, while the contract claimed the check
+        "walks the crate sources".
+        """
+        self._inject(
+            "atp-simulation",
+            """
+pub struct SimGate;
+
+impl RestartWindowGate for SimGate {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("SimGate", str(ctx.exception))
+
+    def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
+        """An empty tree is the failure mode a scan-based guard dies of."""
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        (empty / "crates").mkdir()
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_window_gate_implementors(self.config, "", root=empty)
 
 
 if __name__ == "__main__":

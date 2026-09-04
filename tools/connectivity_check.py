@@ -849,7 +849,7 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
     )
 
 
-def check_restart_window_gate_implementors(config: dict, _unused: str) -> str:
+def check_restart_window_gate_implementors(config: dict, _unused: str, root: Path = ROOT) -> str:
     """No PRODUCTION type may implement the gate except the declared producer.
 
     The port's own rustdoc used to argue that taking a port rather than a
@@ -872,16 +872,28 @@ def check_restart_window_gate_implementors(config: dict, _unused: str) -> str:
     block = restart_window_block(config)
     spec = block["gate_port"]
     declared = set(spec["production_implementors"])
-    root = ROOT
     found: dict[str, str] = {}
-    for crate in ("atp-types", "atp-market-data", "atp-orchestrator", "atp-execution"):
-        crate_dir = root / "crates" / crate / "src"
-        if not crate_dir.is_dir():
-            continue
+    # EVERY workspace crate, not a hard-coded four. The first version listed the
+    # four crates that had the trait in view at the time; a fifth gaining an
+    # atp-market-data dependency later would have been unscanned, and the
+    # contract claims this walks the sources.
+    crate_roots = sorted((root / "crates").glob("*/src")) if (root / "crates").is_dir() else []
+    if not crate_roots:
+        fail("no crate sources found under crates/*/src — this scan cannot bound anything")
+    for crate_dir in crate_roots:
         for path in sorted(crate_dir.rglob("*.rs")):
             source = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
+            # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
+            # terminates on the `>` of a `->` return arrow, so
+            # `impl<C: Fn() -> i64> RestartWindowGate for AlwaysOpen` slipped
+            # through the guard whose whole purpose is that nothing slips
+            # through it. Excluding `{`/`}`/`;` instead keeps the match inside
+            # one impl header while permitting arrows, lifetimes and where-less
+            # bounds.
             for match in re.finditer(
-                rf"impl(?:<[^>]*>)?\s+(?:\w+::)*{re.escape(spec['trait'])}\s+for\s+(\w+)", source
+                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(spec['trait'])}\s+for\s+(\w+)",
+                source,
+                re.S,
             ):
                 found[match.group(1)] = str(path.relative_to(root))
     if not found:

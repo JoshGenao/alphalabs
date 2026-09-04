@@ -618,16 +618,18 @@ def test_a_window_whose_suspension_predates_the_epoch_is_refused() -> None:
     _assert_one_passed(result, name)
 
 
-def test_a_reachable_outcome_is_never_reused() -> None:
-    """The dangerous direction of a cache on the order path.
+def test_a_reachable_outcome_is_reused_only_briefly() -> None:
+    """Both directions of the cache on the live-order path.
 
-    A cached POSITIVE would mean that for up to the TTL after the gateway died,
-    `state()` still answered `Connected` and the ERR-2 gate handed a live order
-    to an unreachable gateway instead of refusing — trading a safety property
-    for latency on the one path where that must never happen. Only the negative
-    outcome is reused, which is also the only expensive one.
+    Caching a positive for long means that after the gateway dies, `state()`
+    still answers `Connected` and the ERR-2 gate hands a live order to an
+    unreachable gateway. Caching nothing means `state()` — called once per
+    submission — opens a fresh connection per order against a resource this
+    feature elsewhere calls scarce. The answer is a SHORT positive window, and
+    the test pins the bound in both directions: reuse inside it, re-probe just
+    past it.
     """
-    name = "a_reachable_outcome_is_never_reused"
+    name = "a_reachable_outcome_is_reused_only_briefly_and_the_bound_is_what_protects_the_gate"
     _assert_one_passed(_producer_test(name), name)
 
 

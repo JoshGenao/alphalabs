@@ -997,6 +997,14 @@ def cmd_critic(args) -> int:
         entry["rounds"] = args.rounds
     rec.setdefault("critic", {})[args.layer] = entry
     save_record(args.id, rec)
+    # Re-render, exactly as `run`, `record` and `artifact` do. Without this,
+    # `cmd_critic` was the ONE recorder that left EVIDENCE.md behind, and since
+    # the critic layers are the last thing to land before a close, the page a
+    # reviewer opens in the PR read "critics: none recorded" while the record
+    # beside it held a `block`. The page is the human-reviewable form of the
+    # record; a recorder that updates one and not the other publishes a
+    # contradiction.
+    _refresh_markdown(args.id)
     print(f"✓ {args.id} critic[{args.layer}]: {args.verdict}")
     return 0
 

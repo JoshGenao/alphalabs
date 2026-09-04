@@ -235,3 +235,70 @@ def test_the_matcher_does_not_fire_on_a_clean_line(line: str) -> None:
     """
 
     assert _contradictions_in(line, "SRS-NOTIF-001") == []
+
+
+# --- The queue must not hand the operator a command that cannot succeed ------
+
+
+def _blocked_layers(fid: str) -> list[str]:
+    path = ROOT / ".harness" / "runs" / fid / "evidence.json"
+    if not path.exists():
+        return []
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return sorted(
+        layer
+        for layer, entry in (rec.get("critic") or {}).items()
+        if isinstance(entry, dict) and entry.get("verdict") != "approve"
+    )
+
+
+def test_a_queue_row_promising_a_close_discloses_a_standing_critic_block() -> None:
+    """`--attested-by` relaxes which STEPS count, never the critic gate.
+
+    A row that says "Nothing" is missing and hands over
+    `close_feature.py <id> --verified --attested-by operator` sends the operator
+    to a command that exits 3 (`close_feature.py` -> `evidence.py`, which refuses
+    any layer whose verdict is not `approve`). The operator reads a green row,
+    runs the command, and gets an error the row said would not happen.
+
+    This is generic over the queue, so the next feature to record a `block`
+    cannot ship a row that hides it.
+    """
+    queue = ROOT / "docs" / "verification-queue.md"
+    if not queue.exists():
+        pytest.skip("no verification queue in this tree")
+
+    problems = []
+    for line in queue.read_text(encoding="utf-8").splitlines():
+        for fid in set(re.findall(r"close_feature\.py\s+(SRS-[A-Z]+-\d+)", line)):
+            blocked = _blocked_layers(fid)
+            if blocked and "block" not in line.lower():
+                problems.append(f"{fid}: critic {', '.join(blocked)} is not `approve`")
+    assert not problems, (
+        "queue row(s) promise a close that `evidence.py verify` will refuse, "
+        "without disclosing the standing verdict: " + "; ".join(problems)
+    )
+
+
+def test_the_queue_guard_fires_on_a_row_that_hides_a_block(tmp_path, monkeypatch) -> None:
+    """Non-vacuity: the test above passes trivially if nothing records a block."""
+    fid = "SRS-FAKE-001"
+    run = tmp_path / ".harness" / "runs" / fid
+    run.mkdir(parents=True)
+    (run / "evidence.json").write_text(
+        json.dumps({"critic": {"judgment": {"verdict": "block"}}}), encoding="utf-8"
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | Nothing. | `close_feature.py {fid} --verified --attested-by operator` |",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("tests.unit.test_closed_feature_references.ROOT", tmp_path, raising=False)
+    import tests.unit.test_closed_feature_references as mod
+
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="judgment"):
+        mod.test_a_queue_row_promising_a_close_discloses_a_standing_critic_block()

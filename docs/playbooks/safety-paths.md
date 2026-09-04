@@ -330,3 +330,14 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     silently disables the feature the suppression protects. Pair every suppression case with
     the same caller succeeding outside the window, and with the exempt caller succeeding
     inside it. `(RESV-006 r17)`
+
+59. **Caching only the negative outcome trades a latency defect for a churn defect.** The
+    reachability probe cached `Unreachable` (expensive) and re-probed on every `Reachable`,
+    reasoning that a successful connect returns in microseconds. True, and irrelevant: the
+    gate is consulted once per order, so a healthy order stream opened and dropped one TCP
+    connection per order against the gateway the same module elsewhere calls a scarce
+    resource. Cache both, with ASYMMETRIC TTLs - a stale `Connected` is the dangerous
+    direction, so it expires in 100 ms while a stale `Unreachable` may live 1 s. The bound
+    is now the safety property, so pin it at COMPILE time (`const _: () = assert!(...)`)
+    and test both directions: reuse inside the window, re-probe one nanosecond past it.
+    `(SRS-MD-005 r14)`

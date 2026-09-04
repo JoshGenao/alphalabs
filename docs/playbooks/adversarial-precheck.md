@@ -184,3 +184,22 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   turned a compare-and-swap back into read-and-clobber while every commit message said
   otherwise. When you strengthen an identity, grep every caller that *names* that identity
   and check what each one COMPARES, not just what it passes. `(RESV-006 r27)`
+
+- **A character class you wrote to bound a generic list will terminate on the `>` of a
+  `->` return arrow.** `impl(?:<[^>]*>)?\s+Trait\s+for\s+(\w+)` cannot match
+  `impl<C: Fn() -> i64> Trait for AlwaysOpen` - and an injected clock closure is exactly
+  the idiom this codebase uses, so the guard was blind to the shape it would actually
+  meet. Bound the span by what CANNOT appear in it (`[^{};]*?`) rather than by the
+  delimiter you expect to close it. Then inject the shape and watch it get caught.
+  `(SRS-MD-005 r14)`
+- **A scan whose subject list is hard-coded is bounded by the day it was written, not by
+  the tree.** The gate-implementor enumeration listed the four crates that had the trait
+  in view; the contract beside it claimed it "walks the crate sources". A fifth crate
+  gaining the dependency later would be unscanned with every guard still green. Glob the
+  tree, and `fail()` when the glob returns nothing - a scan that finds nothing must be
+  red, never a clean report. `(SRS-MD-005 r14)`
+- **Make a guard's exemption self-expiring, not asserted.** `cmd_gate` legitimately need
+  not refresh the rendered page - because the renderer emits no gate state. Writing that
+  reason in a comment leaves the exemption silently wrong the day gates reach the page.
+  Assert the *condition that justifies it* (`"gates" not in inspect.getsource(render)`),
+  so the exemption fails the moment its premise does. `(SRS-MD-005 r14)`

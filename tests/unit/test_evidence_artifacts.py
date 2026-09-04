@@ -572,3 +572,73 @@ def test_cmd_critic_stamps_the_head_it_judged(rec, monkeypatch):
     got = evidence.load_record(fid)["critic"]["judgment"]
     assert got["head"] == "d00df00d" * 5
     assert got["verdict"] == "approve" and got["reviewer"] == "codex"
+
+
+# --- The page must never contradict the record it renders -------------------
+#
+# `EVIDENCE.md` is the human-reviewable form of `evidence.json` (evidence.py:29),
+# and it is the artifact a reviewer opens in the PR. A recorder that writes the
+# record without re-rendering the page publishes a contradiction: the page said
+# "critics: none recorded" while the record beside it, in the same commit, held a
+# `block`. The reviewer reads "the critics never ran" instead of "the judgment
+# critic blocked". These two tests pin the instance and the class.
+
+
+def test_recording_a_critic_verdict_refreshes_the_page(rec, monkeypatch):
+    """The instance: `critic` was the one recorder that left the page behind."""
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    monkeypatch.setattr(evidence, "_head", lambda: "abc12345" * 5)
+    evidence._write_markdown(fid)
+    page = evidence.RUNS_DIR / fid / "EVIDENCE.md"
+    assert "none recorded" in page.read_text(encoding="utf-8")
+
+    class A:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "block", "codex", 13
+
+    assert evidence.cmd_critic(A()) == 0
+    after = page.read_text(encoding="utf-8")
+    assert "none recorded" not in after, "the page still denies a verdict the record holds"
+    assert "block" in after
+
+
+def test_every_recorder_that_saves_the_record_also_refreshes_the_page():
+    """The class: this catches the NEXT recorder, not just the one that was wrong.
+
+    Enumerated over the source rather than over a hand-written list, so a new
+    `cmd_*` that calls `save_record` cannot join the tree without either
+    refreshing the page or being named here with a reason.
+    """
+    import ast
+    import inspect
+
+    # `cmd_gate` is the one legitimate exemption: `render_markdown` renders no
+    # gate state at all, so a stale page cannot contradict the record about it.
+    # The exemption is checked, not asserted — the moment gates reach the page it
+    # expires by itself rather than quietly becoming wrong.
+    exempt = {"cmd_gate": "render_markdown renders no gate state"}
+    render_src = inspect.getsource(evidence.render_markdown)
+    assert '"gates"' not in render_src and "'gates'" not in render_src, (
+        "render_markdown now renders gate state, so cmd_gate can leave the page "
+        "contradicting the record — remove it from `exempt` and refresh there too"
+    )
+
+    tree = ast.parse(inspect.getsource(evidence))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("cmd_"):
+            continue
+        called = {
+            n.func.id
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        if "save_record" not in called or node.name in exempt:
+            continue
+        if not called & {"_refresh_markdown", "_write_markdown"}:
+            offenders.append(node.name)
+    assert not offenders, (
+        f"{offenders} write the evidence record but leave EVIDENCE.md stale; "
+        "the page a reviewer opens would contradict the record beside it"
+    )
