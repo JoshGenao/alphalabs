@@ -117,6 +117,19 @@ path = "src/bin/resv005_hot_swap_promote_cli.rs"
 name = "safe003_connectivity_block_cli"
 path = "src/bin/safe003_connectivity_block_cli.rs"
 
+# SRS-MD-005 scheduled IB Gateway restart-window operator CLI (SyRS SYS-75). The
+# COMPANION to safe003_connectivity_block_cli: that one fault-injects a
+# ConnectivityState directly to prove the gate refuses; this one proves where
+# that state COMES FROM. It drives the real ScheduledRestartConnectivity producer
+# over the real atp-adapters TCP reachability probe against a real (dead or live)
+# loopback endpoint, so the suspension, the notification suppression, the
+# reconnect attempt and the post-window escalation are all decided by production
+# code at an injected instant. FIXTURE transports only (recording IB gateway,
+# SRS-NOTIF-001 fixture email/push), and it never binds the shared IB ports.
+[[bin]]
+name = "md005_connectivity_restart_window_cli"
+path = "src/bin/md005_connectivity_restart_window_cli.rs"
+
 # SRS-RESV-006 — the SyRS SYS-49e cool-down window: inspect it, configure its period, and
 # record a swap completion. Separate from resv003_hot_swap_trigger_cli deliberately: a
 # tool that decides which triggers fire must not also be the tool that can START the

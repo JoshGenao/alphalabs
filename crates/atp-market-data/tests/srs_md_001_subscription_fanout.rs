@@ -31,14 +31,28 @@
 //! this test pins the structural dedup + fan-out + line-accounting contract.
 
 use atp_market_data::{
-    ConsolidatedSubscriptionRegistry, MarketDataSubscriptionManager, SubscriptionChangeSink,
-    SubscriptionLimitEventSink, SubscriptionLineCounter, SubscriptionRegistryError,
+    ConsolidatedSubscriptionRegistry, MarketDataSubscriptionManager, RestartWindowGate,
+    SubscriptionChangeSink, SubscriptionLimitEventSink, SubscriptionLineCounter,
+    SubscriptionRegistryError,
 };
 use atp_types::{
-    AssetClass, MarketDataTick, OrderErrorCategory, SecurityKey, StrategyId, SubscriptionChange,
-    SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    AssetClass, MarketDataAdmission, MarketDataTick, OrderErrorCategory, SecurityKey, StrategyId,
+    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
+    SubscriptionRequest,
 };
 use std::cell::RefCell;
+
+/// SRS-MD-005: the restart-window port, open. Every ERR-4 / SRS-MD-001
+/// assertion below is about the line limit and the dedup invariant, so the
+/// maintenance window must be out of the way — and stating that explicitly is
+/// what keeps `SuspendedWindow`'s refusals in
+/// `srs_md_005_market_data_suspension.rs` non-vacuous.
+struct OpenWindow;
+impl RestartWindowGate for OpenWindow {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
 
 #[derive(Default)]
 struct ChangeSinkSpy {
@@ -102,14 +116,16 @@ fn srs_md_001_duplicate_subscriptions_consume_one_upstream_line() {
 
     assert_eq!(
         registry
-            .subscribe(&sub("live-alpha", "AAPL"), &sink)
+            .subscribe(&sub("live-alpha", "AAPL"), &OpenWindow, &sink)
             .unwrap(),
         SubscriptionChange::Opened,
         "first subscriber opens one upstream line"
     );
     for strat in ["paper-b", "paper-c", "paper-d", "paper-e"] {
         assert_eq!(
-            registry.subscribe(&sub(strat, "AAPL"), &sink).unwrap(),
+            registry
+                .subscribe(&sub(strat, "AAPL"), &OpenWindow, &sink)
+                .unwrap(),
             SubscriptionChange::SubscriberAdded,
             "additional subscribers must dedup onto the same line"
         );
@@ -132,10 +148,14 @@ fn srs_md_001_fan_out_isolates_by_symbol() {
     let mut registry = ConsolidatedSubscriptionRegistry::new(100);
     let sink = ChangeSinkSpy::default();
     registry
-        .subscribe(&sub("live-alpha", "AAPL"), &sink)
+        .subscribe(&sub("live-alpha", "AAPL"), &OpenWindow, &sink)
         .unwrap();
-    registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
-    registry.subscribe(&sub("paper-c", "MSFT"), &sink).unwrap();
+    registry
+        .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
+    registry
+        .subscribe(&sub("paper-c", "MSFT"), &OpenWindow, &sink)
+        .unwrap();
 
     let aapl = registry.fan_out(&eq_tick("AAPL", 42)).unwrap();
     let aapl_ids: Vec<&str> = aapl.iter().map(StrategyId::as_str).collect();
@@ -165,9 +185,11 @@ fn srs_md_001_unsubscribe_lifecycle_releases_line() {
     let mut registry = ConsolidatedSubscriptionRegistry::new(100);
     let sink = ChangeSinkSpy::default();
     registry
-        .subscribe(&sub("live-alpha", "AAPL"), &sink)
+        .subscribe(&sub("live-alpha", "AAPL"), &OpenWindow, &sink)
         .unwrap();
-    registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
+    registry
+        .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
 
     assert_eq!(
         registry
@@ -190,7 +212,9 @@ fn srs_md_001_unsubscribe_lifecycle_releases_line() {
 
     // Re-subscribing after Closed opens a fresh line.
     assert_eq!(
-        registry.subscribe(&sub("paper-z", "AAPL"), &sink).unwrap(),
+        registry
+            .subscribe(&sub("paper-z", "AAPL"), &OpenWindow, &sink)
+            .unwrap(),
         SubscriptionChange::Opened
     );
     assert_eq!(registry.distinct_subscriptions(), 1);
@@ -204,15 +228,17 @@ fn srs_md_001_change_events_track_consolidation() {
     let mut registry = ConsolidatedSubscriptionRegistry::new(100);
     let sink = ChangeSinkSpy::default();
     registry
-        .subscribe(&sub("live-alpha", "AAPL"), &sink)
+        .subscribe(&sub("live-alpha", "AAPL"), &OpenWindow, &sink)
         .unwrap();
-    registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
+    registry
+        .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
 
     // Idempotent re-subscribe must publish nothing (ForbiddenChangeSink
     // panics on record).
     assert_eq!(
         registry
-            .subscribe(&sub("paper-b", "AAPL"), &ForbiddenChangeSink)
+            .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &ForbiddenChangeSink)
             .unwrap(),
         SubscriptionChange::AlreadySubscribed
     );
@@ -244,7 +270,11 @@ fn srs_md_001_registry_is_concrete_line_counter_for_md_002_gate() {
     // ceiling is rejected with SUBSCRIPTION_LIMIT_REACHED.
     let mut registry = ConsolidatedSubscriptionRegistry::new(1);
     registry
-        .subscribe(&sub("live-alpha", "AAPL"), &ChangeSinkSpy::default())
+        .subscribe(
+            &sub("live-alpha", "AAPL"),
+            &OpenWindow,
+            &ChangeSinkSpy::default(),
+        )
         .unwrap();
 
     let manager = MarketDataSubscriptionManager;
@@ -253,7 +283,7 @@ fn srs_md_001_registry_is_concrete_line_counter_for_md_002_gate() {
     // Duplicate of the already-subscribed security → admitted (dedup
     // consumes no new line even at a limit of 1).
     let accepted = manager
-        .request_subscription(sub("paper-b", "AAPL"), &registry, &limit_sink)
+        .request_subscription(sub("paper-b", "AAPL"), &OpenWindow, &registry, &limit_sink)
         .expect("a duplicate subscription consumes no new line and is admitted");
     assert_eq!(accepted.symbol, "AAPL");
     assert!(
@@ -263,7 +293,7 @@ fn srs_md_001_registry_is_concrete_line_counter_for_md_002_gate() {
 
     // A new security would need a 2nd line against a limit of 1 → rejected.
     let err = manager
-        .request_subscription(sub("paper-b", "MSFT"), &registry, &limit_sink)
+        .request_subscription(sub("paper-b", "MSFT"), &OpenWindow, &registry, &limit_sink)
         .expect_err("a new symbol at the ceiling must be rejected");
     assert_eq!(err.category, OrderErrorCategory::SubscriptionLimitReached);
     assert_eq!(err.category.as_str(), "SUBSCRIPTION_LIMIT_REACHED");
@@ -285,11 +315,11 @@ fn srs_md_001_rejects_empty_symbol_and_strategy() {
     let sink = ChangeSinkSpy::default();
 
     assert_eq!(
-        registry.subscribe(&sub("live-alpha", "   "), &sink),
+        registry.subscribe(&sub("live-alpha", "   "), &OpenWindow, &sink),
         Err(SubscriptionRegistryError::EmptySymbol)
     );
     assert_eq!(
-        registry.subscribe(&sub("", "AAPL"), &sink),
+        registry.subscribe(&sub("", "AAPL"), &OpenWindow, &sink),
         Err(SubscriptionRegistryError::EmptyStrategyId)
     );
     assert_eq!(
@@ -323,7 +353,9 @@ fn srs_md_001_fan_out_holds_across_many_symbols_and_subscribers() {
     ];
     for (symbol, subs) in book {
         for strat in subs {
-            registry.subscribe(&sub(strat, symbol), &sink).unwrap();
+            registry
+                .subscribe(&sub(strat, symbol), &OpenWindow, &sink)
+                .unwrap();
         }
     }
 
@@ -354,15 +386,19 @@ fn srs_md_001_case_and_whitespace_variants_dedup_onto_one_line() {
     // out to every variant's subscriber.
     let mut registry = ConsolidatedSubscriptionRegistry::new(100);
     let sink = ChangeSinkSpy::default();
-    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+    registry
+        .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
     assert_eq!(
         registry
-            .subscribe(&sub("paper-b", "  aapl "), &sink)
+            .subscribe(&sub("paper-b", "  aapl "), &OpenWindow, &sink)
             .unwrap(),
         SubscriptionChange::SubscriberAdded
     );
     assert_eq!(
-        registry.subscribe(&sub("paper-c", "Aapl"), &sink).unwrap(),
+        registry
+            .subscribe(&sub("paper-c", "Aapl"), &OpenWindow, &sink)
+            .unwrap(),
         SubscriptionChange::SubscriberAdded
     );
     assert_eq!(registry.distinct_subscriptions(), 1);
@@ -388,7 +424,7 @@ fn srs_md_001_option_subscriptions_fail_closed() {
         asset_class: AssetClass::Option,
     };
     assert_eq!(
-        registry.subscribe(&option, &sink),
+        registry.subscribe(&option, &OpenWindow, &sink),
         Err(SubscriptionRegistryError::OptionContractUnsupported),
         "an option subscription must fail closed until its contract model lands"
     );
@@ -405,7 +441,7 @@ fn srs_md_001_option_subscriptions_fail_closed() {
 
     // The equity AAPL line is a fully independent, working subscription.
     registry
-        .subscribe(&sub("equity-strat", "AAPL"), &sink)
+        .subscribe(&sub("equity-strat", "AAPL"), &OpenWindow, &sink)
         .unwrap();
     let recipients = registry.fan_out(&eq_tick("AAPL", 1)).unwrap();
     let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
@@ -420,10 +456,14 @@ fn srs_md_001_subscribe_enforces_line_limit_atomically() {
     // and a rejected over-limit subscribe registers nothing.
     let mut registry = ConsolidatedSubscriptionRegistry::new(2);
     let sink = ChangeSinkSpy::default();
-    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
-    registry.subscribe(&sub("paper-b", "MSFT"), &sink).unwrap();
+    registry
+        .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
+    registry
+        .subscribe(&sub("paper-b", "MSFT"), &OpenWindow, &sink)
+        .unwrap();
     assert_eq!(
-        registry.subscribe(&sub("paper-c", "SPY"), &sink),
+        registry.subscribe(&sub("paper-c", "SPY"), &OpenWindow, &sink),
         Err(SubscriptionRegistryError::LineLimitReached {
             configured_limit: 2
         })
@@ -431,7 +471,9 @@ fn srs_md_001_subscribe_enforces_line_limit_atomically() {
     assert_eq!(registry.distinct_subscriptions(), 2);
     // A duplicate of an existing security is still admitted (no new line).
     assert_eq!(
-        registry.subscribe(&sub("paper-c", "AAPL"), &sink).unwrap(),
+        registry
+            .subscribe(&sub("paper-c", "AAPL"), &OpenWindow, &sink)
+            .unwrap(),
         SubscriptionChange::SubscriberAdded
     );
     assert_eq!(registry.distinct_subscriptions(), 2);
@@ -447,9 +489,11 @@ fn srs_md_001_interleaved_probe_then_subscribe_cannot_exceed_limit() {
         registry.try_acquire(&sub("paper-b", "MSFT")),
         SubscriptionLimitState::WithinLimit
     );
-    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+    registry
+        .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+        .unwrap();
     assert_eq!(
-        registry.subscribe(&sub("paper-b", "MSFT"), &sink),
+        registry.subscribe(&sub("paper-b", "MSFT"), &OpenWindow, &sink),
         Err(SubscriptionRegistryError::LineLimitReached {
             configured_limit: 1
         })
@@ -478,7 +522,7 @@ fn srs_md_001_option_request_is_rejected_by_the_md_002_gate() {
     );
     assert!(
         manager
-            .request_subscription(option, &registry, &limit_sink)
+            .request_subscription(option, &OpenWindow, &registry, &limit_sink)
             .is_err(),
         "the gate must not admit an unsupported option"
     );

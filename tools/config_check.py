@@ -106,6 +106,14 @@ def _apply_fixture(fixture: str, env: dict[str, str]) -> dict[str, str]:
         mutated.pop("ATP_LIVE_STRATEGY_MEM_MB", None)
     elif fixture == "invalid-storage-path":
         mutated["ATP_SSD_DATA_DIR"] = ""
+    elif fixture == "invalid-restart-window":
+        # SRS-MD-005 / SyRS SYS-75(b): zero is REFUSED, not read as "disabled".
+        # A zero window collapses the suppression period, so the first blocked
+        # submission after the restart pages as a genuine outage.
+        mutated["ATP_IB_RESTART_WINDOW_SECONDS"] = "0"
+    elif fixture == "invalid-restart-lead":
+        # SyRS SYS-75(a): the lead is what makes the suspension pre-emptive.
+        mutated["ATP_IB_RESTART_SUSPEND_LEAD_SECONDS"] = "not-a-number"
     else:
         raise ValueError(f"unknown fixture: {fixture}")
     return mutated
@@ -121,6 +129,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "invalid-line-limit",
             "missing-resource-limit",
             "invalid-storage-path",
+            "invalid-restart-window",
+            "invalid-restart-lead",
         ],
         help="Run the validator against a synthetic env with one violation.",
     )

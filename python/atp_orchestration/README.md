@@ -19,3 +19,27 @@ behind the frozen SRS-API-001 CLI + REST contract.
   (SRS-EXE-001 / SRS-RESV-*), the durable registry store, the dashboard rollback
   control (SRS-UI-001), and process-composition into a shipped main
   (SRS-API-001).
+
+## `restart_schedule` — the SRS-MD-005 calendar half
+
+`RestartSchedule` / `resolve_restart_instant_ns` turn the configured
+`ATP_IB_RESTART_ET` (default `23:45`, US Eastern) into the epoch-nanosecond
+instant the Rust restart-window classifier takes. It reuses
+`atp_strategy.calendar.EASTERN` — a real `zoneinfo("America/New_York")` — so
+23:45 ET is 03:45 UTC in EDT and 04:45 UTC in EST without any caller knowing
+which.
+
+The split is deliberate: `atp_types::RestartWindow` owns the SYS-75 phase
+arithmetic and stays pure, and the calendar stays here. The Rust workspace has
+no third-party crates and therefore no timezone database, so a Rust
+implementation would hand-roll DST and fork an authority the repo already has —
+and a missed adjustment would move the suspension window by an hour, suspending
+trading at the wrong time while a real restart arrived unsuppressed.
+
+Every malformed value raises `RestartScheduleError` rather than falling back to
+the default. A window that looks configured and fires at the wrong hour is worse
+than a startup failure the operator can read. `RestartSchedule.cli_args(date)`
+hands the resolved instant and both durations to
+`md005_connectivity_restart_window_cli` together, so a caller cannot pass the
+instant while silently keeping default durations.
+

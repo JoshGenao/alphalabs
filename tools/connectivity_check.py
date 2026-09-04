@@ -68,6 +68,80 @@ def types_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def _code_only(source: str) -> str:
+    """Strip line comments so a guard tests CODE, not the prose about it.
+
+    Without this, a doc comment that says "never `to_socket_addrs`" trips the
+    check that forbids `to_socket_addrs` — the guard fires on the sentence
+    explaining why the guard exists. A check that flags its own documentation is
+    one people learn to route around.
+    """
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith(("//", "*"))
+    )
+
+
+def _fn_body_any(source: str, fn_name: str) -> str:
+    """Return a function body, tolerating ``const`` / ``async`` modifiers.
+
+    ``_rust_parser._fn_block`` matches ``pub fn`` exactly, and the restart-window
+    classifiers are ``pub const fn`` (they are pure and evaluated at compile time
+    in the crate's own tests). Widening the SHARED parser would change what ~20
+    other check tools match, so the tolerance lives here instead.
+    """
+    match = re.search(rf"\bpub\s+(?:const\s+|async\s+)*fn\s+{re.escape(fn_name)}\b[^{{]*{{", source)
+    if not match:
+        fail(f"Rust source is missing function `{fn_name}`")
+    start = match.end()
+    depth = 1
+    index = start
+    while index < len(source) and depth:
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        index += 1
+    if depth:
+        fail(f"could not parse function body for `{fn_name}`")
+    return source[start : index - 1]
+
+
+def restart_window_block(config: dict) -> dict:
+    block = connectivity_block(config)
+    if "restart_window" not in block:
+        fail("connectivity_contract is missing the SRS-MD-005 restart_window block")
+    return block["restart_window"]
+
+
+def _crate_lib_source(config: dict, crate_key: str, root: Path = ROOT) -> str:
+    block = restart_window_block(config)
+    source_path = root / block[crate_key]["path"] / "src" / "lib.rs"
+    if not source_path.exists():
+        fail(f"{crate_key} source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
+def market_data_source(config: dict, root: Path = ROOT) -> str:
+    return _crate_lib_source(config, "market_data_crate", root)
+
+
+def producer_source(config: dict, root: Path = ROOT) -> str:
+    block = restart_window_block(config)
+    source_path = root / block["producer"]["module"]
+    if not source_path.exists():
+        fail(f"restart-window producer missing: {block['producer']['module']}")
+    return source_path.read_text(encoding="utf-8")
+
+
+def reachability_source(config: dict, root: Path = ROOT) -> str:
+    block = restart_window_block(config)
+    source_path = root / block["reachability_port"]["module"]
+    if not source_path.exists():
+        fail(f"gateway-reachability seam missing: {block['reachability_port']['module']}")
+    return source_path.read_text(encoding="utf-8")
+
+
 def execution_source(config: dict, root: Path = ROOT) -> str:
     block = connectivity_block(config)
     crate_path = root / block["execution_crate"]["path"]
@@ -234,6 +308,233 @@ def check_connectivity_guard_in_submit_live_order(config: dict, exec_src: str) -
     )
 
 
+# --------------------------------------------------------------------------- #
+# SRS-MD-005 — the scheduled restart window (SyRS SYS-75)
+# --------------------------------------------------------------------------- #
+
+
+def check_restart_phase_enum(config: dict, types_src: str) -> str:
+    spec = restart_window_block(config)["restart_phase"]
+    try:
+        body = _enum_body(types_src, spec["enum"])
+    except AssertionError as error:
+        fail(str(error))
+    missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
+    if missing:
+        fail(f"{spec['enum']} is missing variants: {', '.join(missing)}")
+    return (
+        f"atp-types declares {spec['enum']} with {len(spec['variants'])} phases "
+        f"({', '.join(spec['variants'])}) — the SyRS SYS-75 restart window (SRS-MD-005)"
+    )
+
+
+def check_market_data_admission_enum(config: dict, types_src: str) -> str:
+    spec = restart_window_block(config)["market_data_admission"]
+    try:
+        body = _enum_body(types_src, spec["enum"])
+    except AssertionError as error:
+        fail(str(error))
+    missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
+    if missing:
+        fail(f"{spec['enum']} is missing variants: {', '.join(missing)}")
+    return (
+        f"atp-types declares {spec['enum']} with {len(spec['variants'])} outcomes "
+        f"({', '.join(spec['variants'])}) — a market-data refusal states WHETHER and WHY, "
+        "so planned maintenance is never rendered as an outage or the reverse"
+    )
+
+
+def check_restart_window_defaults(config: dict, types_src: str) -> str:
+    spec = restart_window_block(config)["window_type"]
+    try:
+        body = _struct_body(types_src, spec["struct"])
+    except AssertionError as error:
+        fail(str(error))
+    if re.search(r"\bpub\s+\w+\s*:", body):
+        fail(
+            f"{spec['struct']} exposes a public field — the window is a safety input and "
+            "must be constructible only through its validating constructor"
+        )
+    for method in spec["methods"]:
+        if f"fn {method}(" not in types_src:
+            fail(f"{spec['struct']} is missing the `{method}` method")
+    defaults = spec["defaults"]
+    for const_key, value_key in (
+        ("suspend_lead_seconds_const", "suspend_lead_seconds"),
+        ("window_seconds_const", "window_seconds"),
+    ):
+        name = defaults[const_key]
+        expected = defaults[value_key]
+        match = re.search(rf"{re.escape(name)}\s*:\s*i64\s*=\s*(\d+)\s*;", types_src)
+        if match is None:
+            fail(f"atp-types is missing the `{name}` default constant")
+        if int(match.group(1)) != expected:
+            fail(
+                f"{name} is {match.group(1)} but the SyRS SYS-75 catalogue default is "
+                f"{expected} — a documented default the code does not implement"
+            )
+    return (
+        f"atp-types declares {spec['struct']} with private fields, "
+        f"{len(spec['methods'])} classification methods, and the SyRS SYS-75 defaults "
+        f"({defaults['suspend_lead_seconds']}s lead / {defaults['window_seconds']}s window)"
+    )
+
+
+def check_restart_escalation_arm(config: dict, types_src: str) -> str:
+    """The sharpest clause: the window must END.
+
+    A `RestartPhase::Elapsed` that still returned the maintenance state would
+    suppress a genuine outage forever, and nothing else in the tree would
+    notice — the dispatcher would keep honouring a marker that never cleared.
+    """
+    block = restart_window_block(config)
+    escalation = block["escalation"]
+    body = _fn_body_any(types_src, "connectivity_state")
+    phase = block["restart_phase"]["enum"]
+    elapsed = f"{phase}::{escalation['phase']}"
+    if elapsed not in body:
+        fail(
+            f"connectivity_state does not handle {elapsed} — without it the restart "
+            "window never closes and a real outage stays suppressed"
+        )
+    unreachable = f"ConnectivityState::{escalation['unreachable_state']}"
+    if unreachable not in body:
+        fail(
+            f"connectivity_state never produces {unreachable} — the SyRS SYS-75 "
+            "escalation to standard connectivity-loss handling is unreachable"
+        )
+    if re.search(r"^\s*_\s*=>", body, re.MULTILINE):
+        fail(
+            "connectivity_state uses a catch-all match arm — a phase added later would "
+            "inherit whichever answer happened to be there instead of failing to compile"
+        )
+    return (
+        f"atp-types::connectivity_state maps {elapsed} onto {unreachable} with no "
+        "catch-all arm — the SyRS SYS-75 escalation is exhaustive by construction"
+    )
+
+
+def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
+    """Enumerate the admission functions FROM THE SOURCE, not from a checklist.
+
+    A list of "these two functions consult the guard" passes happily while a
+    third admission path added later admits during the window. So the discovery
+    runs over the source: every public function whose body registers or admits a
+    subscription must consult the gate, and a declared function that has
+    vanished fails too (a broken scan reports a clean tree, which is the failure
+    mode that looks most like working).
+    """
+    block = restart_window_block(config)
+    spec = block["admission_sites"]
+    guard_call = spec["guard_call"]
+    port = block["gate_port"]
+
+    try:
+        trait_body = _trait_body(market_data_src, port["trait"])
+    except AssertionError as error:
+        fail(str(error))
+    for method in port["methods"]:
+        if f"fn {method}(" not in trait_body:
+            fail(f"{port['trait']} is missing the `{method}` method")
+
+    declared = list(spec["functions"])
+    discovered = sorted(
+        set(re.findall(r"pub fn (\w+)\s*<[^>]*W: RestartWindowGate", market_data_src))
+        | set(re.findall(r"pub fn (\w+)[\s\S]{0,400}?window: &W", market_data_src))
+    )
+    if not discovered:
+        fail(
+            "no subscription admission function takes a RestartWindowGate — either the "
+            "guard was removed or this scan no longer matches the source, and a scan "
+            "that finds nothing must fail rather than report a clean tree"
+        )
+    missing = [name for name in declared if name not in discovered]
+    if missing:
+        fail(
+            f"declared admission site(s) {', '.join(missing)} no longer take the "
+            "restart-window port — the contract and the source disagree"
+        )
+    undeclared = [name for name in discovered if name not in declared]
+    if undeclared:
+        fail(
+            f"undeclared admission site(s) {', '.join(undeclared)} take the "
+            "restart-window port; add them to admission_sites.functions so the "
+            "contract enumerates every arm"
+        )
+    for name in discovered:
+        try:
+            body = _fn_block(market_data_src, name)
+        except AssertionError as error:
+            fail(str(error))
+        if guard_call not in body:
+            fail(
+                f"atp-market-data::{name} accepts the restart-window port but never "
+                f"calls `{guard_call}` — SyRS SYS-75(a) requires market-data requests "
+                "to be suspended at EVERY admission point, not just the outermost"
+            )
+    return (
+        f"atp-market-data gates {len(discovered)} subscription admission site(s) "
+        f"({', '.join(discovered)}) on `{guard_call}` through the {port['trait']} port "
+        "— SyRS SYS-75(a) market-data suspension"
+    )
+
+
+def check_restart_window_producer(config: dict, producer_src: str) -> str:
+    block = restart_window_block(config)
+    spec = block["producer"]
+    if f"pub struct {spec['struct']}" not in producer_src:
+        fail(f"{spec['module']} does not declare `{spec['struct']}`")
+    for trait in spec["implements"]:
+        if not re.search(rf"impl<[^>]*>\s+(?:\w+::)*{re.escape(trait)}\s+for", producer_src):
+            fail(
+                f"{spec['struct']} does not implement `{trait}` — the order gate and the "
+                "market-data gate must read ONE window, or they drift"
+            )
+    return (
+        f"atp-orchestrator::{spec['struct']} implements "
+        f"{' + '.join(spec['implements'])} — one producer behind both suspensions "
+        "(SRS-MD-005)"
+    )
+
+
+def check_reachability_seam_is_unpinned(config: dict, reachability_src: str) -> str:
+    """The probe must NOT live in the digest-pinned transport module.
+
+    `tools/ib_adapter_check.py` SHA-256s `interactive_brokers.rs` against the
+    operator's live paper-account evidence, so a probe added there would flip a
+    closed-green feature red and need a fresh live run to recover.
+    """
+    block = restart_window_block(config)
+    spec = block["reachability_port"]
+    if "interactive_brokers" in spec["module"]:
+        fail(
+            "the reachability seam is declared inside the digest-pinned transport "
+            "module; it must be its own file (see connection_control.rs)"
+        )
+    try:
+        trait_body = _trait_body(reachability_src, spec["trait"])
+    except AssertionError as error:
+        fail(str(error))
+    for method in spec["methods"]:
+        if f"fn {method}(" not in trait_body:
+            fail(f"{spec['trait']} is missing the `{method}` method")
+    code = _code_only(reachability_src)
+    if "to_socket_addrs" in code:
+        fail(
+            "the reachability probe resolves a hostname — a blocking getaddrinfo sits "
+            "OUTSIDE connect_timeout's deadline, so the bound would be a suggestion"
+        )
+    if "connect_timeout" not in code:
+        fail(
+            "the reachability probe has no explicit connect deadline — a bare "
+            "TcpStream::connect hangs on the OS default"
+        )
+    return (
+        f"atp-adapters::{spec['trait']} lives outside the digest-pinned transport module, "
+        "probes with an explicit connect deadline, and never resolves a hostname"
+    )
+
+
 def check_cargo_test_smoke(config: dict) -> str:
     block = connectivity_block(config)
     crate = block["execution_crate"]["crate"]
@@ -289,30 +590,39 @@ _STATIC_CHECKS = (
     ("brokerage_connectivity_port", check_brokerage_connectivity_port, "execution"),
     ("connectivity_event_sink_port", check_connectivity_event_sink_port, "execution"),
     ("connectivity_guard", check_connectivity_guard_in_submit_live_order, "execution"),
+    # SRS-MD-005 — the producer of ConnectivityState::ScheduledRestartWindow.
+    ("restart_phase", check_restart_phase_enum, "types"),
+    ("market_data_admission", check_market_data_admission_enum, "types"),
+    ("restart_window_defaults", check_restart_window_defaults, "types"),
+    ("restart_escalation", check_restart_escalation_arm, "types"),
+    ("market_data_admission_sites", check_market_data_admission_sites, "market_data"),
+    ("restart_window_producer", check_restart_window_producer, "producer"),
+    ("reachability_seam", check_reachability_seam_is_unpinned, "reachability"),
 )
+
+
+def _sources(config: dict, root: Path = ROOT) -> dict[str, str]:
+    return {
+        "types": types_source(config, root),
+        "execution": execution_source(config, root),
+        "market_data": market_data_source(config, root),
+        "producer": producer_source(config, root),
+        "reachability": reachability_source(config, root),
+    }
 
 
 def run_checks() -> list[str]:
     config = load_config()
-    types_src = types_source(config)
-    exec_src = execution_source(config)
-    evidence: list[str] = []
-    for _, check, scope in _STATIC_CHECKS:
-        source = types_src if scope == "types" else exec_src
-        evidence.append(check(config, source))
+    sources = _sources(config)
+    evidence = [check(config, sources[scope]) for _, check, scope in _STATIC_CHECKS]
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
 
 def assert_connectivity_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
-    types_src = types_source(config, root)
-    exec_src = execution_source(config, root)
-    evidence: list[str] = []
-    for _, check, scope in _STATIC_CHECKS:
-        source = types_src if scope == "types" else exec_src
-        evidence.append(check(config, source))
-    return evidence
+    sources = _sources(config, root)
+    return [check(config, sources[scope]) for _, check, scope in _STATIC_CHECKS]
 
 
 def main(argv: list[str] | None = None) -> int:

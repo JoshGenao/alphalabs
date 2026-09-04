@@ -30,7 +30,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
 | `notification_channels` | Email (IF-10) and push (IF-11) dispatch credentials and destinations. The push topic is catalogued **secret**: on ntfy, holding the topic is enough to publish. |
 
-## Required keys (26)
+## Required keys (29)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -39,6 +39,9 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_IB_LIVE_PORT` | ib_account | int | `4001` | no | SRS-EXE-006, SyRS:AC-15 |
 | `ATP_IB_PAPER_PORT` | ib_account | int | `4002` | no | SRS-EXE-006, SyRS:AC-15 |
 | `ATP_IB_ACCOUNT` | ib_account | secret | placeholder | yes | SRS-SEC-001, NFR-S1, StRS:C-3 |
+| `ATP_IB_RESTART_ET` | ib_account | string | `23:45` | no | SRS-MD-005, SyRS:SYS-75 |
+| `ATP_IB_RESTART_WINDOW_SECONDS` | ib_account | int | `300` | no | SRS-MD-005, SyRS:SYS-75, SyRS:SYS-46 |
+| `ATP_IB_RESTART_SUSPEND_LEAD_SECONDS` | ib_account | int | `60` | no | SRS-MD-005, SyRS:SYS-75 |
 | `ATP_MARKET_DATA_LINE_LIMIT` | market_data_limits | int | `100` | no | SRS-MD-002, SyRS:SYS-70 |
 | `ATP_SSD_DATA_DIR` | storage_paths | path | `/var/lib/atp/ssd` | no | SRS-DATA-008 |
 | `ATP_NAS_DATA_DIR` | storage_paths | path | `/var/lib/atp/nas` | no | SRS-DATA-008/009 |
@@ -79,6 +82,14 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 - `string`: non-empty string. Deliberately format-free — a notification
   destination's grammar belongs to the transport that sends to it, not to this
   catalogue, so the validator must not reject an address the transport accepts.
+  The same split applies to `ATP_IB_RESTART_ET` (SRS-MD-005): this catalogue
+  checks only that it is present, and the `HH:MM` grammar plus the DST-aware
+  resolution to an epoch instant are enforced fail-closed by
+  `atp_orchestration.restart_schedule`, which reuses the
+  `atp_strategy.calendar` Eastern zone rather than adding a second calendar
+  authority. A malformed restart time raises at load; it never falls back to
+  the default, because a window that looks configured and fires at the wrong
+  hour is worse than a startup failure the operator can read.
 - `enum`: must be one of the declared `choices`.
 - `charset` (on any key): the value must use only the named character set.
   `alnum_dash_underscore` is ntfy's topic alphabet (ASCII letters, digits, `-`,

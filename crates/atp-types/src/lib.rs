@@ -427,6 +427,326 @@ pub struct ConnectivityEvent {
 }
 
 // --------------------------------------------------------------------------- //
+// Scheduled IB Gateway restart window (SRS-MD-005, SyRS SYS-75 / NFR-R2)
+// --------------------------------------------------------------------------- //
+//
+// IB restarts its Gateway once a day (~23:45 ET for live accounts,
+// configurable). That is planned maintenance, not a fault, and SYS-75 says to
+// treat it as such: stop sending 60 s before the expected restart, stay quiet
+// for the configured window, resume as soon as the gateway answers again, and
+// escalate to ordinary connectivity-loss handling (SYS-45 / SYS-46) if it does
+// not come back.
+//
+// Every CONSUMER of that decision already exists — `ScheduledRestartWindow`
+// above, the execution engine's live-order gate, and the notification
+// dispatcher's suppression seam. What did not exist is the thing that DECIDES,
+// and this is it: a validated window plus one total, pure classification over
+// an injected instant. Keeping it here rather than in `atp-market-data` is
+// forced by the dependency direction (SRS-ARCH-002) — both the subscription
+// gate and the execution gate must see it, and `atp-types` is the only crate
+// they share.
+//
+// The type carries NO clock. Reading the instant is the caller's job, at the
+// outermost edge, so every decision below is reproducible from its arguments
+// alone.
+
+/// Nanoseconds in one second — the unit every instant on this type uses.
+pub const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+/// SyRS SYS-75(a): suspension begins this long before the expected restart.
+pub const DEFAULT_RESTART_SUSPEND_LEAD_SECONDS: i64 = 60;
+
+/// SyRS SYS-75(b): the expected restart window, after which a still-dead
+/// gateway is an outage rather than maintenance.
+pub const DEFAULT_RESTART_WINDOW_SECONDS: i64 = 300;
+
+/// Why a [`RestartWindow`] could not be built.
+///
+/// Every variant is a refusal, never a fallback: a window nobody configured
+/// must not silently exist, because a bogus one would either suspend trading
+/// at the wrong hour or silence a genuine outage. Compare
+/// [`ConnectivityState::ScheduledRestartWindow`] — the state this window is the
+/// sole authority for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartWindowError {
+    /// The expected restart instant was negative — not an epoch instant.
+    NegativeRestartInstant { expected_restart_ns: i64 },
+    /// The suspension lead was zero or negative. Zero would mean "suspend at
+    /// the very instant the gateway goes down", which is the behaviour SYS-75(a)
+    /// exists to prevent.
+    NonPositiveSuspendLead { lead_ns: i64 },
+    /// The restart window was zero or negative. Zero would collapse SYS-75(b)
+    /// into nothing, so the first blocked submission after the restart instant
+    /// would page as a genuine outage.
+    NonPositiveWindow { window_ns: i64 },
+    /// The window's start or end instant does not fit in `i64` nanoseconds.
+    /// Reported rather than saturated: a saturated boundary silently moves the
+    /// window, which is the one direction a maintenance window must never move.
+    InstantOverflow,
+}
+
+impl fmt::Display for RestartWindowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NegativeRestartInstant {
+                expected_restart_ns,
+            } => write!(
+                formatter,
+                "SRS-MD-005: expected restart instant must be a non-negative \
+                 epoch-ns value; got {expected_restart_ns}"
+            ),
+            Self::NonPositiveSuspendLead { lead_ns } => write!(
+                formatter,
+                "SRS-MD-005: suspension lead must be positive (SyRS SYS-75(a) \
+                 defaults to {DEFAULT_RESTART_SUSPEND_LEAD_SECONDS}s); got {lead_ns}ns"
+            ),
+            Self::NonPositiveWindow { window_ns } => write!(
+                formatter,
+                "SRS-MD-005: restart window must be positive (SyRS SYS-75(b) \
+                 defaults to {DEFAULT_RESTART_WINDOW_SECONDS}s); got {window_ns}ns"
+            ),
+            Self::InstantOverflow => write!(
+                formatter,
+                "SRS-MD-005: restart window boundaries overflow i64 nanoseconds"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RestartWindowError {}
+
+/// Where an instant sits relative to the configured restart.
+///
+/// Four states, not two, because SYS-75 gives the pre-restart lead and the
+/// window itself different jobs, and because "the window ended and the gateway
+/// is still dead" is the escalation clause — the whole point of the
+/// requirement. A phase is never inferred from a default arm anywhere below;
+/// adding a fifth variant must break compilation rather than inherit whichever
+/// answer happened to be permissive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RestartPhase {
+    /// Outside the window entirely. Ordinary SYS-45 connectivity handling.
+    Normal,
+    /// `[expected - lead, expected)` — SYS-75(a). Submissions and market-data
+    /// requests are suspended even though the gateway is still answering; that
+    /// pre-emption is the requirement, not a side effect of the gateway dying.
+    Suspending,
+    /// `[expected, expected + window)` — SYS-75(b). A disconnect here is
+    /// planned maintenance and its connectivity notification is suppressed.
+    Restarting,
+    /// `>= expected + window` — the SYS-75 escalation boundary. Maintenance is
+    /// over; whatever the gateway is doing now is ordinary SYS-45/SYS-46
+    /// territory.
+    Elapsed,
+}
+
+impl RestartPhase {
+    /// Whether this phase is inside the notification-suppression window.
+    ///
+    /// `Suspending` is included: the gateway can go down slightly early, and a
+    /// disconnect one second before the expected instant is the same planned
+    /// event. `Elapsed` is NOT, which is what makes the escalation reachable.
+    pub const fn is_planned_maintenance(self) -> bool {
+        matches!(self, Self::Suspending | Self::Restarting)
+    }
+}
+
+/// The configured IB Gateway daily-restart window — the SRS-MD-005 authority.
+///
+/// Construct it once from configuration, then ask it about an instant. All
+/// fields are private and there is deliberately no `Default`: a window is a
+/// safety input, and one that materialised from nowhere would suspend trading
+/// on a schedule nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartWindow {
+    suspend_from_ns: i64,
+    expected_restart_ns: i64,
+    window_end_ns: i64,
+}
+
+impl RestartWindow {
+    /// Build a window around `expected_restart_ns`, refusing anything that
+    /// cannot describe a real maintenance period.
+    ///
+    /// `expected_restart_ns` is an absolute epoch-ns instant, not a time of
+    /// day. Resolving "23:45 ET" to an instant needs a DST-aware calendar, and
+    /// the one this repo already trusts is `atp_strategy.calendar` on the
+    /// Python side (SyRS SYS-50); duplicating it in Rust would fork the
+    /// authority. The caller resolves, this type classifies.
+    pub fn new(
+        expected_restart_ns: i64,
+        lead_ns: i64,
+        window_ns: i64,
+    ) -> Result<Self, RestartWindowError> {
+        if expected_restart_ns < 0 {
+            return Err(RestartWindowError::NegativeRestartInstant {
+                expected_restart_ns,
+            });
+        }
+        if lead_ns <= 0 {
+            return Err(RestartWindowError::NonPositiveSuspendLead { lead_ns });
+        }
+        if window_ns <= 0 {
+            return Err(RestartWindowError::NonPositiveWindow { window_ns });
+        }
+        let suspend_from_ns = expected_restart_ns
+            .checked_sub(lead_ns)
+            .ok_or(RestartWindowError::InstantOverflow)?;
+        let window_end_ns = expected_restart_ns
+            .checked_add(window_ns)
+            .ok_or(RestartWindowError::InstantOverflow)?;
+        Ok(Self {
+            suspend_from_ns,
+            expected_restart_ns,
+            window_end_ns,
+        })
+    }
+
+    /// Build a window with the SyRS SYS-75 defaults (60 s lead, 5 min window).
+    pub fn with_defaults(expected_restart_ns: i64) -> Result<Self, RestartWindowError> {
+        Self::new(
+            expected_restart_ns,
+            DEFAULT_RESTART_SUSPEND_LEAD_SECONDS * NANOS_PER_SECOND,
+            DEFAULT_RESTART_WINDOW_SECONDS * NANOS_PER_SECOND,
+        )
+    }
+
+    /// The instant suspension begins — `expected_restart - lead`.
+    pub const fn suspend_from_ns(self) -> i64 {
+        self.suspend_from_ns
+    }
+
+    /// The configured restart instant.
+    pub const fn expected_restart_ns(self) -> i64 {
+        self.expected_restart_ns
+    }
+
+    /// The instant the window closes and escalation becomes possible.
+    pub const fn window_end_ns(self) -> i64 {
+        self.window_end_ns
+    }
+
+    /// Classify an instant. Total: every `i64` lands in exactly one phase.
+    ///
+    /// Boundaries are half-open and closed at the START, so the instant
+    /// `expected_restart - lead` is already `Suspending` and the instant
+    /// `expected_restart + window` is already `Elapsed`. Suspension therefore
+    /// covers the full lead, and the escalation cannot be delayed by a
+    /// tie-break — both the safe direction to round.
+    pub const fn phase(self, now_ns: i64) -> RestartPhase {
+        if now_ns < self.suspend_from_ns {
+            RestartPhase::Normal
+        } else if now_ns < self.expected_restart_ns {
+            RestartPhase::Suspending
+        } else if now_ns < self.window_end_ns {
+            RestartPhase::Restarting
+        } else {
+            RestartPhase::Elapsed
+        }
+    }
+
+    /// The authoritative connectivity state for an instant and an observed
+    /// reachability — the decision `atp-notification` calls "owned by
+    /// SRS-MD-005".
+    ///
+    /// Exhaustive over `RestartPhase`, with no catch-all arm: a new phase must
+    /// fail to compile rather than inherit an answer. The five rows:
+    ///
+    /// * `Normal` — ordinary SYS-45 handling, reachability decides.
+    /// * `Suspending` — always suspended, *even while the gateway still
+    ///   answers*. That pre-emption IS SYS-75(a); deriving it from
+    ///   reachability would make the clause unreachable, because the gateway
+    ///   is by definition still up 60 s before its own restart.
+    /// * `Restarting` + unreachable — planned maintenance, suppressed.
+    /// * `Restarting` + reachable — SYS-75(c)/(d): it came back inside the
+    ///   window, so normal operations resume immediately.
+    /// * `Elapsed` + unreachable — **the escalation**. `Unreachable` carries
+    ///   `scheduled_restart: false` through `ConnectivityEvent`, so the
+    ///   notification path pages instead of suppressing.
+    pub const fn connectivity_state(self, now_ns: i64, reachable: bool) -> ConnectivityState {
+        match self.phase(now_ns) {
+            RestartPhase::Normal | RestartPhase::Elapsed => {
+                if reachable {
+                    ConnectivityState::Connected
+                } else {
+                    ConnectivityState::Unreachable
+                }
+            }
+            RestartPhase::Suspending => ConnectivityState::ScheduledRestartWindow,
+            RestartPhase::Restarting => {
+                if reachable {
+                    ConnectivityState::Connected
+                } else {
+                    ConnectivityState::ScheduledRestartWindow
+                }
+            }
+        }
+    }
+
+    /// Whether a market-data subscription request may be admitted, and if not,
+    /// WHY.
+    ///
+    /// SYS-75(a) suspends order submission *and market-data requests*
+    /// together, so this is derived from the SAME decision the order gate
+    /// consults rather than computed alongside it — two predicates over one
+    /// requirement drift, and the drift would be invisible.
+    ///
+    /// It returns a reason rather than a boolean because the two refusals mean
+    /// opposite things to an operator. Inside the window, "suspended" means
+    /// wait, this is scheduled. After it, the identical refusal is a genuine
+    /// outage, and labelling that as maintenance would tell the operator to
+    /// wait through an incident.
+    ///
+    /// Written as an allowlist: only `Connected` admits. A future state
+    /// inherits a refusal, which is an under-claim; a denylist would have
+    /// inherited admission, which is a fail-open.
+    pub const fn market_data_admission(self, now_ns: i64, reachable: bool) -> MarketDataAdmission {
+        match self.connectivity_state(now_ns, reachable) {
+            ConnectivityState::Connected => MarketDataAdmission::Admitted,
+            ConnectivityState::ScheduledRestartWindow => {
+                MarketDataAdmission::SuspendedForScheduledRestart
+            }
+            ConnectivityState::Unreachable => MarketDataAdmission::ConnectivityLost,
+        }
+    }
+
+    /// Convenience predicate over [`market_data_admission`](Self::market_data_admission)
+    /// for callers that only need the decision.
+    pub const fn admits_market_data_requests(self, now_ns: i64, reachable: bool) -> bool {
+        self.market_data_admission(now_ns, reachable).is_admitted()
+    }
+}
+
+/// Whether a market-data subscription request may proceed, and the reason when
+/// it may not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MarketDataAdmission {
+    /// The request may proceed to the line-limit gate.
+    Admitted,
+    /// SRS-MD-005 / SyRS SYS-75(a): planned maintenance. The identical request
+    /// succeeds unchanged once the window closes.
+    SuspendedForScheduledRestart,
+    /// SyRS SYS-45: the IB Gateway is unreachable. Not maintenance — this is
+    /// the state an operator is paged about.
+    ConnectivityLost,
+}
+
+impl MarketDataAdmission {
+    pub const fn is_admitted(self) -> bool {
+        matches!(self, Self::Admitted)
+    }
+
+    /// A stable label for operator output and structured records.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "ADMITTED",
+            Self::SuspendedForScheduledRestart => "SCHEDULED_RESTART_WINDOW",
+            Self::ConnectivityLost => "CONNECTIVITY_LOST",
+        }
+    }
+}
+
+// --------------------------------------------------------------------------- //
 // Market-data freshness state and structured event (SRS-MD-004, NFR-P5)
 // --------------------------------------------------------------------------- //
 //
@@ -580,6 +900,57 @@ impl StructuredSubscriptionError {
         Self {
             category,
             error_type: "SubscriptionLimitReached".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+
+    /// Build the SRS-MD-005 rejection for a request that arrived while the
+    /// scheduled IB Gateway restart window was suspending market-data traffic
+    /// (SyRS SYS-75(a)).
+    ///
+    /// The category is `ConnectivityBlocked`, deliberately the SAME bucket the
+    /// execution engine's live-order gate uses for this window, so an operator
+    /// reading either surface sees one event class. It is not a new
+    /// `OrderErrorCategory` variant: that taxonomy is pinned by many check
+    /// tools and a one-off variant is exactly what they exist to prevent — the
+    /// precise reason travels in `error_type` instead.
+    pub fn suspended_for_scheduled_restart(request: SubscriptionRequest) -> Self {
+        let message = format!(
+            "SRS-MD-005 + SyRS SYS-75: market-data subscription for {symbol} from \
+             {strategy} suspended — the scheduled IB Gateway restart window is \
+             active (planned maintenance, not a fault)",
+            symbol = request.symbol,
+            strategy = request.strategy_id.as_str(),
+        );
+        Self {
+            category: OrderErrorCategory::ConnectivityBlocked,
+            error_type: "ScheduledRestartWindow".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+
+    /// Build the rejection for a request that arrived while the IB Gateway was
+    /// genuinely unreachable (SyRS SYS-45) rather than inside a planned
+    /// maintenance window.
+    ///
+    /// Separate from [`suspended_for_scheduled_restart`](Self::suspended_for_scheduled_restart)
+    /// because the two refusals mean opposite things to an operator: one says
+    /// "wait, this is scheduled", the other says "connectivity is lost". Both
+    /// use the same `ConnectivityBlocked` category — as does the live-order
+    /// gate — and are told apart by `error_type`, which mirrors the wording the
+    /// order path already uses for each case. Reporting an outage as
+    /// maintenance would be the silence bug wearing a label.
+    pub fn connectivity_lost(request: SubscriptionRequest) -> Self {
+        let message = format!(
+            "SRS-SAFE-003 + SyRS SYS-45: market-data subscription for {symbol} from              {strategy} blocked — IB Gateway is unreachable",
+            symbol = request.symbol,
+            strategy = request.strategy_id.as_str(),
+        );
+        Self {
+            category: OrderErrorCategory::ConnectivityBlocked,
+            error_type: "IbGatewayUnreachable".to_string(),
             message,
             original_request: request,
         }
@@ -4487,6 +4858,187 @@ mod tests {
         };
         assert!(event.scheduled_restart);
         assert_eq!(event.state, ConnectivityState::ScheduledRestartWindow);
+    }
+
+    // ----------------------------------------------------------------- //
+    // SRS-MD-005 — the scheduled restart window (SyRS SYS-75, NFR-R2)
+    // ----------------------------------------------------------------- //
+
+    /// A fixed, readable restart instant: 2026-09-04T03:45:00Z, which is
+    /// 23:45 America/New_York on 2026-09-03 (EDT, UTC-4).
+    const RESTART_NS: i64 = 1_788_493_500 * NANOS_PER_SECOND;
+    const LEAD_NS: i64 = DEFAULT_RESTART_SUSPEND_LEAD_SECONDS * NANOS_PER_SECOND;
+    const WINDOW_NS: i64 = DEFAULT_RESTART_WINDOW_SECONDS * NANOS_PER_SECOND;
+
+    fn window() -> RestartWindow {
+        RestartWindow::with_defaults(RESTART_NS).expect("SYS-75 defaults are valid")
+    }
+
+    #[test]
+    fn restart_window_refuses_a_configuration_that_cannot_describe_maintenance() {
+        // Every refusal is a fail-closed: a window that materialised from a
+        // bogus value would suspend trading on a schedule nobody chose, or
+        // collapse the suppression window and page on planned maintenance.
+        assert_eq!(
+            RestartWindow::new(-1, LEAD_NS, WINDOW_NS),
+            Err(RestartWindowError::NegativeRestartInstant {
+                expected_restart_ns: -1
+            })
+        );
+        assert_eq!(
+            RestartWindow::new(RESTART_NS, 0, WINDOW_NS),
+            Err(RestartWindowError::NonPositiveSuspendLead { lead_ns: 0 })
+        );
+        assert_eq!(
+            RestartWindow::new(RESTART_NS, LEAD_NS, 0),
+            Err(RestartWindowError::NonPositiveWindow { window_ns: 0 })
+        );
+        // The end instant overflows i64 rather than saturating: a saturated
+        // boundary silently MOVES the window, the one direction it must not.
+        assert_eq!(
+            RestartWindow::new(i64::MAX, LEAD_NS, WINDOW_NS),
+            Err(RestartWindowError::InstantOverflow)
+        );
+    }
+
+    #[test]
+    fn restart_phase_boundaries_are_half_open_and_closed_at_the_start() {
+        let w = window();
+        // One nanosecond before the lead begins is still ordinary operation.
+        assert_eq!(w.phase(RESTART_NS - LEAD_NS - 1), RestartPhase::Normal);
+        // The lead instant itself is already suspending, so the full 60 s is
+        // covered rather than 60 s minus one tick.
+        assert_eq!(w.phase(RESTART_NS - LEAD_NS), RestartPhase::Suspending);
+        assert_eq!(w.phase(RESTART_NS - 1), RestartPhase::Suspending);
+        assert_eq!(w.phase(RESTART_NS), RestartPhase::Restarting);
+        assert_eq!(
+            w.phase(RESTART_NS + WINDOW_NS - 1),
+            RestartPhase::Restarting
+        );
+        // The window-end instant is already elapsed, so escalation is never
+        // delayed by a tie-break.
+        assert_eq!(w.phase(RESTART_NS + WINDOW_NS), RestartPhase::Elapsed);
+    }
+
+    #[test]
+    fn suspension_begins_before_the_restart_even_while_the_gateway_answers() {
+        // SyRS SYS-75(a). The gateway is by definition still up 60 s before
+        // its own restart, so a rule derived from reachability would make this
+        // clause unreachable. Both reachabilities must suspend.
+        let w = window();
+        let during_lead = RESTART_NS - LEAD_NS + 1;
+        assert_eq!(
+            w.connectivity_state(during_lead, true),
+            ConnectivityState::ScheduledRestartWindow
+        );
+        assert_eq!(
+            w.connectivity_state(during_lead, false),
+            ConnectivityState::ScheduledRestartWindow
+        );
+        // Non-vacuity: the SAME reachable gateway one nanosecond earlier is
+        // Connected, so this gate is not simply refusing everything.
+        assert_eq!(
+            w.connectivity_state(RESTART_NS - LEAD_NS - 1, true),
+            ConnectivityState::Connected
+        );
+    }
+
+    #[test]
+    fn a_gateway_that_returns_inside_the_window_resumes_normal_operations() {
+        // SyRS SYS-75(c)/(d): reconnect once available, then resume.
+        let w = window();
+        let inside = RESTART_NS + 1;
+        assert_eq!(
+            w.connectivity_state(inside, true),
+            ConnectivityState::Connected
+        );
+        // Non-vacuity: unreachable at the same instant stays suppressed
+        // maintenance, so "Connected" is the reachability talking.
+        assert_eq!(
+            w.connectivity_state(inside, false),
+            ConnectivityState::ScheduledRestartWindow
+        );
+    }
+
+    #[test]
+    fn a_gateway_still_dead_after_the_window_escalates_to_unreachable() {
+        // The SYS-75 escalation clause, and the reason this feature's
+        // verification method is fault injection: Unreachable carries
+        // scheduled_restart:false, so the notifier pages instead of
+        // suppressing.
+        let w = window();
+        assert_eq!(
+            w.connectivity_state(RESTART_NS + WINDOW_NS, false),
+            ConnectivityState::Unreachable
+        );
+        // Non-vacuity in both directions: one nanosecond earlier the same dead
+        // gateway is still planned maintenance, and a live one after the
+        // window is simply Connected.
+        assert_eq!(
+            w.connectivity_state(RESTART_NS + WINDOW_NS - 1, false),
+            ConnectivityState::ScheduledRestartWindow
+        );
+        assert_eq!(
+            w.connectivity_state(RESTART_NS + WINDOW_NS, true),
+            ConnectivityState::Connected
+        );
+    }
+
+    #[test]
+    fn market_data_requests_are_suspended_exactly_when_order_submission_is() {
+        // SYS-75(a) suspends both together. Deriving the market-data answer
+        // from the SAME decision is what stops the two drifting apart, so the
+        // property under test is agreement across every phase, not a second
+        // hand-written table.
+        let w = window();
+        let instants = [
+            RESTART_NS - LEAD_NS - 1,
+            RESTART_NS - LEAD_NS,
+            RESTART_NS - 1,
+            RESTART_NS,
+            RESTART_NS + WINDOW_NS - 1,
+            RESTART_NS + WINDOW_NS,
+        ];
+        for now_ns in instants {
+            for reachable in [true, false] {
+                let admits = w.admits_market_data_requests(now_ns, reachable);
+                let connected =
+                    w.connectivity_state(now_ns, reachable) == ConnectivityState::Connected;
+                assert_eq!(
+                    admits, connected,
+                    "market-data admission disagreed with the order gate at \
+                     now_ns={now_ns} reachable={reachable}"
+                );
+            }
+        }
+        // Non-vacuity: the loop above would pass if BOTH sides were constant,
+        // so pin one admitting and one refusing instant outright.
+        assert!(w.admits_market_data_requests(RESTART_NS - LEAD_NS - 1, true));
+        assert!(!w.admits_market_data_requests(RESTART_NS - LEAD_NS, true));
+    }
+
+    #[test]
+    fn restart_window_defaults_match_the_syrs_sys_75_values() {
+        // The 60 s lead and 5-minute window are quoted in SYS-75 and in the
+        // ARCH-005 configuration catalogue; a drift here is a documented
+        // default the code does not implement.
+        assert_eq!(DEFAULT_RESTART_SUSPEND_LEAD_SECONDS, 60);
+        assert_eq!(DEFAULT_RESTART_WINDOW_SECONDS, 300);
+        let w = window();
+        assert_eq!(w.suspend_from_ns(), RESTART_NS - 60 * NANOS_PER_SECOND);
+        assert_eq!(w.expected_restart_ns(), RESTART_NS);
+        assert_eq!(w.window_end_ns(), RESTART_NS + 300 * NANOS_PER_SECOND);
+    }
+
+    #[test]
+    fn only_the_lead_and_window_phases_are_planned_maintenance() {
+        // is_planned_maintenance decides suppression. Elapsed must be excluded
+        // or the escalation can never page; Normal must be excluded or an
+        // ordinary outage would be silenced.
+        assert!(RestartPhase::Suspending.is_planned_maintenance());
+        assert!(RestartPhase::Restarting.is_planned_maintenance());
+        assert!(!RestartPhase::Normal.is_planned_maintenance());
+        assert!(!RestartPhase::Elapsed.is_planned_maintenance());
     }
 
     #[test]

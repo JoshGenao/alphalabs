@@ -893,7 +893,123 @@
       "event_call": "events.record",
       "reconnect_call": "connectivity.request_reconnect"
     },
-    "rejection_category": "ConnectivityBlocked"
+    "rejection_category": "ConnectivityBlocked",
+    "restart_window": {
+      "requirement": "SRS-MD-005",
+      "syrs_refs": [
+        "SYS-75",
+        "SYS-45",
+        "SYS-46",
+        "NFR-R2"
+      ],
+      "what": "The PRODUCER of ConnectivityState::ScheduledRestartWindow. Every consumer of that state predates this block -- the execution engine's live-order gate, the notification dispatcher's suppression seam, the dashboard marker -- but nothing decided WHEN the window was open; atp-notification's own docs say the decision is owned by SRS-MD-005. This is that decision.",
+      "market_data_crate": {
+        "crate": "atp-market-data",
+        "path": "crates/atp-market-data"
+      },
+      "orchestrator_crate": {
+        "crate": "atp-orchestrator",
+        "path": "crates/atp-orchestrator"
+      },
+      "adapters_crate": {
+        "crate": "atp-adapters",
+        "path": "crates/atp-adapters"
+      },
+      "restart_phase": {
+        "enum": "RestartPhase",
+        "variants": [
+          "Normal",
+          "Suspending",
+          "Restarting",
+          "Elapsed"
+        ]
+      },
+      "market_data_admission": {
+        "enum": "MarketDataAdmission",
+        "variants": [
+          "Admitted",
+          "SuspendedForScheduledRestart",
+          "ConnectivityLost"
+        ]
+      },
+      "window_type": {
+        "struct": "RestartWindow",
+        "methods": [
+          "phase",
+          "connectivity_state",
+          "market_data_admission"
+        ],
+        "defaults": {
+          "suspend_lead_seconds_const": "DEFAULT_RESTART_SUSPEND_LEAD_SECONDS",
+          "suspend_lead_seconds": 60,
+          "window_seconds_const": "DEFAULT_RESTART_WINDOW_SECONDS",
+          "window_seconds": 300
+        }
+      },
+      "gate_port": {
+        "trait": "RestartWindowGate",
+        "methods": [
+          "admission"
+        ]
+      },
+      "reachability_port": {
+        "trait": "GatewayReachability",
+        "methods": [
+          "probe"
+        ],
+        "module": "crates/atp-adapters/src/gateway_reachability.rs",
+        "why_separate_module": "crates/atp-adapters/src/interactive_brokers.rs and its wire.rs are SHA-256 pinned by tools/ib_adapter_check.py against the operator's live paper-account evidence; adding a probe there would flip closed-green SRS-EXE-006 red. connection_control.rs set the precedent for a control-plane seam in its own file."
+      },
+      "producer": {
+        "struct": "ScheduledRestartConnectivity",
+        "module": "crates/atp-orchestrator/src/restart_window_connectivity.rs",
+        "implements": [
+          "BrokerageConnectivity",
+          "RestartWindowGate"
+        ],
+        "why_orchestrator": "SRS-ARCH-002: atp-execution must not depend on atp-adapters, so only the composition layer can bind the execution ports to the reachability probe."
+      },
+      "admission_sites": {
+        "crate_path": "crates/atp-market-data/src/lib.rs",
+        "guard_call": "window.admission(",
+        "functions": [
+          "request_subscription",
+          "subscribe"
+        ],
+        "why": "SYS-75(a) suspends market-data requests as well as order submission, and `subscribe` is the MUTATING admission point -- gating only the outer manager would leave it as a bypass. The check enumerates these from the source rather than trusting the list, so a new admission function that skips the guard fails."
+      },
+      "escalation": {
+        "phase": "Elapsed",
+        "unreachable_state": "Unreachable",
+        "why": "The sharpest clause: once the configured window closes, a gateway that is still unreachable is an OUTAGE. Unreachable carries scheduled_restart:false into ConnectivityEvent, which is what makes ConnectivityNotifierSink::suppression_for page instead of suppress. A window that stayed open would silence a real failure indefinitely."
+      },
+      "operator_cli": {
+        "bin": "md005_connectivity_restart_window_cli",
+        "path": "crates/atp-orchestrator/src/bin/md005_connectivity_restart_window_cli.rs",
+        "proof_lines": [
+          "restart-window-suspension-proven:true",
+          "restart-window-escalation-proven:true",
+          "restart-window-resume-proven:true"
+        ],
+        "fault_injection": "The gateway endpoint is a loopback port the binary binds and releases itself, so 'the gateway is dead' is a genuinely dead TCP port rather than a stub. This is why SRS-MD-005's verification method is `integration` and not `live-ib`: the acceptance criterion is about behaviour during an outage, and an outage needs no gateway. It never binds 4001/4002."
+      },
+      "calendar_authority": {
+        "module": "python/atp_orchestration/restart_schedule.py",
+        "reuses": "atp_strategy.calendar.EASTERN",
+        "why": "SYS-75 puts the restart at 23:45 US Eastern, which shifts with daylight saving. The Rust workspace has zero third-party crates and therefore no timezone database, so a Rust implementation would hand-roll DST and fork an authority this repo already has. Python resolves the instant; Rust classifies it."
+      },
+      "config_keys": [
+        "ATP_IB_RESTART_ET",
+        "ATP_IB_RESTART_WINDOW_SECONDS",
+        "ATP_IB_RESTART_SUSPEND_LEAD_SECONDS"
+      ],
+      "deferred": [
+        "The CONTINUOUS connectivity watcher. This producer answers when asked (at order routing, at a subscription request); the loop that watches the gateway between those moments -- so a disconnect is detected rather than sampled -- is SRS-EXE-001's named scope, restated in connectivity_notification.rs's module docs.",
+        "Readiness folded into Connected. A Reachable probe means the gateway accepts TCP, not that the API answers a handshake; the gateway listens before it is ready. The 'readiness checks pass' half of the ERR-2 acceptance criterion is owned by ERR-9 / SRS-MD-006 (atp_readiness), and claiming it here would be a false green.",
+        "Wire-level reconnection. request_reconnect records the attempt and its NFR-R2 deadline; re-opening the API session is the transport's job and sits behind the operator-only ib-live-transport feature.",
+        "A live IB observation of the real 23:45 ET restart. Everything above is provable by fault injection against a dead port, which is why the feature verifies as `integration`; watching the real gateway go down and come back is an operator window, not a gate."
+      ]
+    }
   },
   "freshness_contract": {
     "requirement": "ERR-3",
@@ -1192,8 +1308,8 @@
         "what": "The concrete MarketDataFreshnessProbe adapter (orchestrator layer) that reads combined_line_freshness()/staleness_ms() so submit_live_order blocks MARKET_DATA_STALE on a time-stale or gap-stale line. Owned by the SRS-MD-004 / ERR-3 port surface together with the symbol-only-vs-SecurityKey port-shape issue already recorded in sequence_gap_contract.deferred[]; atp-execution must not depend on atp-market-data (SRS-ARCH-002), so the bridge lives above both."
       },
       {
-        "feature": "SRS-MD-005 (scheduled restart window)",
-        "what": "Suppression of heartbeat staleness NOTIFICATIONS during the configured IB Gateway daily-restart window. The monitor stays truthful (the feed IS stale during a restart); events carry evaluated_at_ns so the notification layer can apply the window without touching the monitor."
+        "feature": "SRS-MD-005 (scheduled restart window) -- PARTLY LANDED",
+        "what": "LANDED: the restart-window decision itself (connectivity_contract.restart_window). ScheduledRestartConnectivity now produces ConnectivityState::ScheduledRestartWindow from a configured schedule, which is what the operator notification dispatcher suppresses CONNECTIVITY-LOSS alerts on, and market-data requests are suspended alongside order submission. STILL DEFERRED HERE, unchanged: suppression of HEARTBEAT STALENESS notifications specifically. That is a different alert class from connectivity loss: the operator dispatcher it would use is built and green, but nothing routes HEARTBEAT_STALE transitions into it yet, and that wiring is the missing part named in the SRS-MD-006 entry below. It does not travel through ConnectivityEventSink, which is the only channel this restart window feeds. The design point is also unchanged and deliberate: the monitor stays truthful (the feed IS stale during a restart) and events carry evaluated_at_ns, so the notification layer applies the window without a third state ever entering the two-valued announced baseline inside HeartbeatFreshnessMonitor."
       },
       {
         "feature": "SRS-MD-006 / SRS-NOTIF-001",
@@ -2823,6 +2939,54 @@
           "SRS-SEC-001",
           "NFR-S1",
           "StRS:C-3"
+        ]
+      },
+      {
+        "name": "ATP_IB_RESTART_ET",
+        "category": "ib_account",
+        "type": "string",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "23:45",
+        "secret": false,
+        "note": "SyRS SYS-75: the IB Gateway daily restart time, US Eastern, HH:MM 24-hour. The catalogue validates presence only, because the STRING validator deliberately encodes no format; the HH:MM grammar and the DST-aware resolution to an epoch instant are enforced fail-closed by atp_orchestration.restart_schedule, which reuses atp_strategy.calendar.EASTERN rather than forking a second calendar authority.",
+        "srs_trace": [
+          "SRS-MD-005",
+          "SyRS:SYS-75"
+        ]
+      },
+      {
+        "name": "ATP_IB_RESTART_WINDOW_SECONDS",
+        "category": "ib_account",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 86400
+        },
+        "default": "300",
+        "secret": false,
+        "note": "SyRS SYS-75(b): how long connectivity-loss notifications stay suppressed after the expected restart. Zero is refused rather than read as 'disabled' — it would collapse the window so the first blocked submission after the restart pages as a genuine outage.",
+        "srs_trace": [
+          "SRS-MD-005",
+          "SyRS:SYS-75",
+          "SyRS:SYS-46"
+        ]
+      },
+      {
+        "name": "ATP_IB_RESTART_SUSPEND_LEAD_SECONDS",
+        "category": "ib_account",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 3600
+        },
+        "default": "60",
+        "secret": false,
+        "note": "SyRS SYS-75(a): how long before the expected restart order submission and market-data requests are suspended. Zero is refused: suspending at the instant the gateway goes down is the behaviour this lead exists to prevent.",
+        "srs_trace": [
+          "SRS-MD-005",
+          "SyRS:SYS-75"
         ]
       },
       {

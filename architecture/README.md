@@ -388,11 +388,11 @@ every submission:
   enum. The contract refuses any `broker`, `ib_session_id`, `vendor`,
   or `provider` leak on the event payload.
 - `BrokerageConnectivity { state, request_reconnect }` is the port the
-  execution engine consults at every live submission. The
-  implementation (later: the IB adapter wired by the orchestrator)
-  owns the actual TCP probe / readiness check / restart-window
-  detection. Keeping the port at the execution layer preserves the
-  SRS-ARCH-002 dependency direction.
+  execution engine consults at every live submission. Keeping the port
+  at the execution layer preserves the SRS-ARCH-002 dependency
+  direction. Its first non-fixture implementation is
+  `atp-orchestrator::restart_window_connectivity::ScheduledRestartConnectivity`
+  (SRS-MD-005) — see the `restart_window` sub-block below.
 - `ConnectivityEventSink { record }` is the publication channel for
   the structured event; concrete sinks route it to logs, the dashboard
   WebSocket (`ALERTS` / `ACCOUNT_STATUS` channels), and the
@@ -408,6 +408,57 @@ every submission:
   `crates/atp-execution/tests/err_2_connectivity_blocked.rs`
   integration test pins this with spy implementations of all three
   ports.
+
+`SRS-MD-005` (the scheduled IB Gateway restart window, SyRS SYS-75) is the
+PRODUCER of `ConnectivityState::ScheduledRestartWindow`, declared by the
+`connectivity_contract.restart_window` sub-block. Every consumer of that state
+predates it — the live-order gate above, the SRS-NOTIF-001 suppression seam,
+the dashboard marker — but until SRS-MD-005 nothing decided when the window was
+open, and every `impl BrokerageConnectivity` in the tree was a test fixture.
+
+- `RestartWindow { phase, connectivity_state, market_data_admission }` in
+  `crates/atp-types/src/lib.rs` is the pure, clock-free classifier. It takes an
+  injected epoch-nanosecond instant and maps it onto one of four
+  `RestartPhase`s — `Normal`, `Suspending` (the SYS-75(a) 60 s pre-restart
+  lead), `Restarting` (the SYS-75(b) window, 5 minutes by default) and
+  `Elapsed`. The mapping onto `ConnectivityState` is exhaustive with no
+  catch-all arm, so a phase added later fails to compile rather than inheriting
+  whichever answer happened to be permissive.
+- The `Elapsed` row is the requirement's sharpest clause: once the configured
+  window closes, a gateway that is still unreachable becomes `Unreachable`
+  rather than `ScheduledRestartWindow`. That carries `scheduled_restart: false`
+  into `ConnectivityEvent`, which is what makes
+  `ConnectivityNotifierSink::suppression_for` page instead of suppress. A
+  window that stayed open would silence a real failure indefinitely.
+- `MarketDataAdmission { Admitted, SuspendedForScheduledRestart,
+  ConnectivityLost }` carries the reason, not just the decision, because the two
+  refusals are opposite instructions to an operator: inside the window
+  "suspended" means wait, this is scheduled; after it the identical refusal is
+  an incident.
+- `atp-market-data::RestartWindowGate { admission }` is the port BOTH
+  subscription admission points take as a required parameter —
+  `MarketDataSubscriptionManager::request_subscription` and the mutating
+  `ConsolidatedSubscriptionRegistry::subscribe`. Gating only the outer manager
+  would leave the mutating one as a bypass. The guard runs ahead of the ERR-4
+  line-limit match, so those arms stay byte-identical.
+- `atp-adapters::gateway_reachability::{GatewayReachability,
+  TcpGatewayReachability}` is the bounded TCP probe, in its own module for the
+  same reason as `connection_control.rs`: `interactive_brokers.rs` and its
+  `wire.rs` are SHA-256 pinned by `tools/ib_adapter_check.py` against the
+  operator's live paper-account evidence.
+- `ScheduledRestartConnectivity` composes the three and implements BOTH
+  `BrokerageConnectivity` and `RestartWindowGate`, so the order gate and the
+  market-data gate read one window and cannot disagree about an instant.
+- `python/atp_orchestration/restart_schedule.py` resolves the configured
+  `ATP_IB_RESTART_ET` (default 23:45 US Eastern) to an epoch instant through the
+  DST-aware `atp_strategy.calendar` authority. Python resolves, Rust classifies:
+  the Rust workspace has zero third-party crates and therefore no timezone
+  database, so implementing DST there would fork a calendar this repo already
+  has.
+- `md005_connectivity_restart_window_cli` is the operator surface. It binds and
+  releases its own loopback port, so "the gateway is dead" is a genuinely dead
+  TCP port rather than a stub — which is why the feature's verification method
+  is `integration` and not `live-ib`, and why it never touches 4001/4002.
 
 ```bash
 python3 tools/connectivity_check.py

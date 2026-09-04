@@ -20,6 +20,15 @@ pub use interactive_brokers::{
 pub mod connection_control;
 pub use connection_control::IbConnectionControl;
 
+/// SRS-MD-005 — the "is the IB Gateway answering?" control-plane seam the
+/// scheduled-restart producer consults. Kept out of `interactive_brokers` for
+/// the same reason as [`connection_control`]: that module is digest-pinned by
+/// the SRS-EXE-006 live evidence.
+pub mod gateway_reachability;
+pub use gateway_reachability::{
+    GatewayReachability, ReachabilityOutcome, TcpGatewayReachability, REACHABILITY_PROBE_TIMEOUT,
+};
+
 /// SRS-NOTIF-001 — the concrete operator-notification transports (IF-10 email
 /// over SMTP submission, IF-11 push over the gateway relay) behind
 /// [`atp_notification::NotificationChannelClient`].

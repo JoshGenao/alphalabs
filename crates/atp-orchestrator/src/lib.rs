@@ -49,6 +49,13 @@ pub mod kill_switch_timeout;
 /// loop (operator-gated `ib-live-transport`).
 pub mod live_market_data;
 pub mod order_routing_wiring;
+/// SRS-MD-005 — the scheduled IB Gateway restart-window connectivity producer:
+/// the decision `atp-notification`'s suppression seam and `atp-execution`'s
+/// live-order gate have both been waiting on.
+pub mod restart_window_connectivity;
+/// SRS-MD-005 — the end-to-end restart-window scenario: one instant, all
+/// four SYS-75 clauses, driven through the real authority chain.
+pub mod restart_window_scenario;
 pub mod trigger_config_store;
 
 /// Why a manual Hot-Swap promotion did not become actionable (SRS-RESV-003 / SYS-49a(a)).

@@ -36,13 +36,25 @@
 //!     post-condition at the behavioral layer.
 
 use atp_market_data::{
-    MarketDataSubscriptionManager, SubscriptionLimitEventSink, SubscriptionLineCounter,
+    MarketDataSubscriptionManager, RestartWindowGate, SubscriptionLimitEventSink,
+    SubscriptionLineCounter,
 };
 use atp_types::{
-    AssetClass, OrderErrorCategory, StrategyId, SubscriptionLimitEvent, SubscriptionLimitState,
-    SubscriptionRequest,
+    AssetClass, MarketDataAdmission, OrderErrorCategory, StrategyId, SubscriptionLimitEvent,
+    SubscriptionLimitState, SubscriptionRequest,
 };
 use std::cell::{Cell, RefCell};
+
+/// SRS-MD-005: the restart-window port, open, so every assertion below stays
+/// about the ERR-4 line limit. The suspension's own coverage — including the
+/// proof that the limit gate is never even probed while suspended — lives in
+/// `srs_md_005_market_data_suspension.rs`.
+struct OpenWindow;
+impl RestartWindowGate for OpenWindow {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
 
 struct LineCounterSpy {
     state: Cell<SubscriptionLimitState>,
@@ -139,7 +151,7 @@ fn err_4_exceeded_state_blocks_request_with_structured_error() {
     let req = request("live-alpha-1", "AAPL");
 
     let error = manager
-        .request_subscription(req.clone(), &counter, &sink)
+        .request_subscription(req.clone(), &OpenWindow, &counter, &sink)
         .expect_err("ERR-4: ExceededLimit must reject the subscription request");
 
     assert_eq!(
@@ -217,7 +229,7 @@ fn err_4_within_limit_state_returns_accepted_and_emits_no_event() {
     let req = request("paper-alpha-7", "AAPL");
 
     let accepted = manager
-        .request_subscription(req, &counter, &sink)
+        .request_subscription(req, &OpenWindow, &counter, &sink)
         .expect("WithinLimit must accept the request");
 
     assert_eq!(accepted.strategy_id.as_str(), "paper-alpha-7");
@@ -260,7 +272,7 @@ fn err_4_exceeded_state_holds_across_many_requests() {
         counter.configured_limit.set(limit);
         let req = request(strategy, symbol);
         let err = manager
-            .request_subscription(req.clone(), &counter, &sink)
+            .request_subscription(req.clone(), &OpenWindow, &counter, &sink)
             .expect_err("ExceededLimit always blocks");
         assert_eq!(err.category, OrderErrorCategory::SubscriptionLimitReached);
         assert_eq!(err.original_request, req);
@@ -300,10 +312,10 @@ fn err_4_identical_contract_for_live_and_paper_subscribers() {
     let paper_req = request("paper-bravo-7", "AAPL");
 
     let live_err = manager
-        .request_subscription(live_req.clone(), &counter, &sink)
+        .request_subscription(live_req.clone(), &OpenWindow, &counter, &sink)
         .expect_err("ExceededLimit must reject the live subscriber");
     let paper_err = manager
-        .request_subscription(paper_req.clone(), &counter, &sink)
+        .request_subscription(paper_req.clone(), &OpenWindow, &counter, &sink)
         .expect_err("ExceededLimit must reject the paper subscriber identically");
 
     // The wire form must be byte-identical across modes — that's
@@ -365,7 +377,7 @@ fn err_4_exceeded_state_anchors_zero_mutation_via_port_shape() {
     let req = request("live-alpha-1", "AAPL");
 
     let before = counter.current_lines.get();
-    let _ = manager.request_subscription(req, &counter, &sink);
+    let _ = manager.request_subscription(req, &OpenWindow, &counter, &sink);
     let after = counter.current_lines.get();
 
     assert_eq!(

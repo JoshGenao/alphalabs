@@ -29,8 +29,18 @@ from connectivity_check import (  # noqa: E402
     check_connectivity_event_struct,
     check_connectivity_guard_in_submit_live_order,
     check_connectivity_state_enum,
+    check_market_data_admission_enum,
+    check_market_data_admission_sites,
+    check_reachability_seam_is_unpinned,
+    check_restart_escalation_arm,
+    check_restart_phase_enum,
+    check_restart_window_defaults,
+    check_restart_window_producer,
     execution_source,
     load_config,
+    market_data_source,
+    producer_source,
+    reachability_source,
     run_checks,
     types_source,
 )
@@ -62,6 +72,15 @@ class ConnectivityCheckScriptTest(unittest.TestCase):
             "connectivity.request_reconnect",
             "zero broker side effect (ERR-2)",
             "err_2_connectivity_blocked",
+            # SRS-MD-005 — the restart-window producer.
+            "RestartPhase with 4 phases",
+            "Normal, Suspending, Restarting, Elapsed",
+            "MarketDataAdmission with 3 outcomes",
+            "60s lead / 300s window",
+            "RestartPhase::Elapsed onto ConnectivityState::Unreachable",
+            "request_subscription, subscribe",
+            "ScheduledRestartConnectivity implements BrokerageConnectivity + RestartWindowGate",
+            "outside the digest-pinned transport module",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -221,16 +240,211 @@ class ConnectivityGuardTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_six_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 5 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 6)
+    """The count is the pin: a check that silently stops running is invisible.
 
-    def test_assert_connectivity_static_emits_five_evidence_items(self) -> None:
+    Both numbers grew by 7 when SRS-MD-005 added the restart-window guards
+    (5 -> 12 static). Keeping them EXACT rather than `>=` is deliberate — a
+    lower bound would let a check be dropped without anything going red, which
+    is the whole failure this assertion exists to catch.
+    """
+
+    def test_run_checks_emits_every_static_item_plus_the_cargo_smoke(self) -> None:
+        evidence = run_checks()
+        # 12 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 13)
+
+    def test_assert_connectivity_static_emits_twelve_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_connectivity_static(config, ROOT)
-        self.assertEqual(len(evidence), 5)
+        self.assertEqual(len(evidence), 12)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------- #
+# SRS-MD-005 — the scheduled restart window (SyRS SYS-75)
+# --------------------------------------------------------------------------- #
+#
+# Every guard below gets a mutation that must make it fail. A guard with no test
+# of its own cannot tell you it is inert, and an inert guard over a safety bypass
+# is worse than no guard: it reports a clean tree forever.
+
+
+class RestartWindowTypesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.types_src = types_source(self.config)
+
+    def test_all_four_phases_present(self) -> None:
+        evidence = check_restart_phase_enum(self.config, self.types_src)
+        for variant in ("Normal", "Suspending", "Restarting", "Elapsed"):
+            self.assertIn(variant, evidence)
+
+    def test_a_dropped_phase_is_caught(self) -> None:
+        mutated = self.types_src.replace("    Suspending,", "", 1)
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_phase_enum(self.config, mutated)
+
+    def test_all_three_admission_outcomes_present(self) -> None:
+        evidence = check_market_data_admission_enum(self.config, self.types_src)
+        self.assertIn("ConnectivityLost", evidence)
+
+    def test_collapsing_the_outage_outcome_is_caught(self) -> None:
+        # Losing ConnectivityLost is how a genuine outage starts being reported
+        # to the operator as planned maintenance.
+        mutated = self.types_src.replace("    ConnectivityLost,", "", 1)
+        with self.assertRaises(ConnectivityCheckError):
+            check_market_data_admission_enum(self.config, mutated)
+
+    def test_defaults_match_the_syrs_sys_75_values(self) -> None:
+        evidence = check_restart_window_defaults(self.config, self.types_src)
+        self.assertIn("60s lead / 300s window", evidence)
+
+    def test_a_drifted_default_is_caught(self) -> None:
+        # A documented default the code does not implement is a lie with a fuse.
+        mutated = self.types_src.replace(
+            "DEFAULT_RESTART_WINDOW_SECONDS: i64 = 300;",
+            "DEFAULT_RESTART_WINDOW_SECONDS: i64 = 30;",
+            1,
+        )
+        self.assertNotEqual(mutated, self.types_src, "the default constant anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_window_defaults(self.config, mutated)
+
+    def test_a_public_window_field_is_caught(self) -> None:
+        # A public field lets a caller build a window that skipped validation.
+        mutated = self.types_src.replace(
+            "pub struct RestartWindow {\n    suspend_from_ns: i64,",
+            "pub struct RestartWindow {\n    pub suspend_from_ns: i64,",
+            1,
+        )
+        self.assertNotEqual(mutated, self.types_src, "the RestartWindow field anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_window_defaults(self.config, mutated)
+
+
+class RestartEscalationTest(unittest.TestCase):
+    """The window must END.
+
+    An `Elapsed` phase that kept returning the maintenance state would suppress
+    a real outage indefinitely, and no other test in the tree would notice — the
+    notification dispatcher would go on honouring a marker that never cleared.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.types_src = types_source(self.config)
+
+    def test_escalation_is_declared(self) -> None:
+        evidence = check_restart_escalation_arm(self.config, self.types_src)
+        self.assertIn("RestartPhase::Elapsed", evidence)
+        self.assertIn("ConnectivityState::Unreachable", evidence)
+
+    def test_a_window_that_never_closes_is_caught(self) -> None:
+        mutated = self.types_src.replace(
+            "RestartPhase::Normal | RestartPhase::Elapsed => {",
+            "RestartPhase::Normal => {",
+            1,
+        )
+        self.assertNotEqual(mutated, self.types_src, "the escalation arm anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_escalation_arm(self.config, mutated)
+
+    def test_a_catch_all_arm_is_caught(self) -> None:
+        # A catch-all means a phase added later inherits whichever answer
+        # happened to be there rather than failing to compile.
+        mutated = self.types_src.replace(
+            "            RestartPhase::Suspending => ConnectivityState::ScheduledRestartWindow,",
+            "            _ => ConnectivityState::ScheduledRestartWindow,",
+            1,
+        )
+        self.assertNotEqual(mutated, self.types_src, "the Suspending arm anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_escalation_arm(self.config, mutated)
+
+
+class MarketDataAdmissionSitesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.market_data_src = market_data_source(self.config)
+
+    def test_both_admission_sites_are_gated(self) -> None:
+        evidence = check_market_data_admission_sites(self.config, self.market_data_src)
+        self.assertIn("request_subscription", evidence)
+        self.assertIn("subscribe", evidence)
+
+    def test_an_ungated_admission_site_is_caught(self) -> None:
+        # Remove the guard from the MUTATING admission point. The function still
+        # takes the port, so a checklist naming "these two functions accept a
+        # window" would still pass — only reading the body catches it.
+        marker = "        match window.admission() {"
+        self.assertEqual(
+            self.market_data_src.count(marker),
+            2,
+            "expected exactly two admission guards; the anchor has drifted",
+        )
+        last = self.market_data_src.rindex(marker)
+        mutated = self.market_data_src[:last] + self.market_data_src[last:].replace(
+            marker, "        match MarketDataAdmission::Admitted {", 1
+        )
+        with self.assertRaises(ConnectivityCheckError):
+            check_market_data_admission_sites(self.config, mutated)
+
+    def test_a_scan_that_matches_nothing_fails_rather_than_reporting_clean(self) -> None:
+        # A broken discovery reports a clean tree, which is the failure mode
+        # that looks most like the guard working.
+        mutated = self.market_data_src.replace("RestartWindowGate", "RenamedAwayGate")
+        with self.assertRaises(ConnectivityCheckError):
+            check_market_data_admission_sites(self.config, mutated)
+
+
+class RestartWindowProducerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.producer_src = producer_source(self.config)
+        self.reachability_src = reachability_source(self.config)
+
+    def test_one_producer_serves_both_gates(self) -> None:
+        evidence = check_restart_window_producer(self.config, self.producer_src)
+        self.assertIn("BrokerageConnectivity", evidence)
+        self.assertIn("RestartWindowGate", evidence)
+
+    def test_dropping_the_market_data_gate_is_caught(self) -> None:
+        # Two separately-configured gates over one requirement is a defect
+        # waiting for a deployment where only one of them was updated.
+        mutated = self.producer_src.replace(
+            "impl<P, C> atp_market_data::RestartWindowGate for ScheduledRestartConnectivity<P, C>",
+            "impl<P, C> SomethingElse for ScheduledRestartConnectivity<P, C>",
+            1,
+        )
+        self.assertNotEqual(mutated, self.producer_src, "the producer impl anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_window_producer(self.config, mutated)
+
+    def test_the_probe_seam_is_bounded_and_unpinned(self) -> None:
+        evidence = check_reachability_seam_is_unpinned(self.config, self.reachability_src)
+        self.assertIn("never resolves a hostname", evidence)
+
+    def test_a_hostname_resolving_probe_is_caught(self) -> None:
+        # getaddrinfo blocks OUTSIDE connect_timeout's deadline, so a hostname
+        # turns the bound into a suggestion.
+        mutated = self.reachability_src.replace(
+            "TcpStream::connect_timeout(&self.endpoint, self.timeout)",
+            "self.endpoint.to_socket_addrs().and_then(TcpStream::connect)",
+            1,
+        )
+        self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_reachability_seam_is_unpinned(self.config, mutated)
+
+    def test_an_unbounded_connect_is_caught(self) -> None:
+        mutated = self.reachability_src.replace(
+            "TcpStream::connect_timeout(&self.endpoint, self.timeout)",
+            "TcpStream::connect(self.endpoint)",
+            1,
+        )
+        self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
+        with self.assertRaises(ConnectivityCheckError):
+            check_reachability_seam_is_unpinned(self.config, mutated)

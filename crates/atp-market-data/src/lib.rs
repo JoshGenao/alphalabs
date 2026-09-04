@@ -7,11 +7,11 @@ use std::fmt;
 pub mod live_feed;
 
 use atp_types::{
-    HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataFreshness,
-    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, SecurityKeyError,
-    SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionChange,
-    SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
-    HEARTBEAT_STALENESS_THRESHOLD_MS,
+    HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataAdmission,
+    MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,
+    SecurityKeyError, SequenceGapEvent, StrategyId, StructuredSubscriptionError,
+    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
+    SubscriptionRequest, HEARTBEAT_STALENESS_THRESHOLD_MS,
 };
 
 #[derive(Debug, Default)]
@@ -60,6 +60,37 @@ pub trait SubscriptionLimitEventSink {
     fn record(&self, event: SubscriptionLimitEvent);
 }
 
+/// SRS-MD-005 / SyRS SYS-75(a): the port both subscription admission points
+/// consult to learn whether the scheduled IB Gateway restart window is
+/// currently suspending market-data traffic.
+///
+/// A PORT, not a boolean parameter, on purpose. A caller-supplied
+/// `suspended: bool` is a forgeable proof: any caller could pass `false` and
+/// subscribe straight through the window the flag exists to enforce. It also
+/// closes a staleness gap — the fact is read at the instant the decision is
+/// made rather than whenever the caller last looked.
+///
+/// The implementation is the composition layer's restart-window producer,
+/// which derives the answer from [`atp_types::RestartWindow`] so that this
+/// gate and the execution engine's live-order gate cannot disagree about the
+/// same window.
+pub trait RestartWindowGate {
+    /// Whether market-data requests may proceed right now, and the reason when
+    /// they may not.
+    ///
+    /// A reason rather than a boolean, because the two refusals mean opposite
+    /// things to the operator reading them: inside the window "suspended" says
+    /// wait, this is scheduled; after it the identical refusal is a genuine
+    /// outage. A single `false` would have made an incident look like planned
+    /// maintenance — the one direction this feature must never round.
+    ///
+    /// Implementors return `MarketDataAdmission::Admitted` only for the states
+    /// they have positively decided are safe, so a state nobody thought about
+    /// yields a refusal (an under-claim) rather than an admission (a
+    /// fail-open).
+    fn admission(&self) -> MarketDataAdmission;
+}
+
 /// Happy-path admission envelope. Echoes back the request identity so the
 /// caller can correlate the acceptance with the originating strategy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,16 +133,45 @@ impl MarketDataSubscriptionManager {
     /// an identical error contract for live and paper modes, and SyRS
     /// SYS-70 places the gate over the consolidated subscription set
     /// for all active strategies regardless of mode.
-    pub fn request_subscription<C, S>(
+    pub fn request_subscription<C, S, W>(
         &self,
         request: SubscriptionRequest,
+        window: &W,
         counter: &C,
         events: &S,
     ) -> Result<SubscriptionAccepted, StructuredSubscriptionError>
     where
         C: SubscriptionLineCounter,
         S: SubscriptionLimitEventSink,
+        W: RestartWindowGate,
     {
+        // SRS-MD-005 / SyRS SYS-75(a): the restart-window suspension is
+        // decided BEFORE the line-limit probe, and returns early rather than
+        // becoming a third match arm. Two reasons, and the second is the
+        // load-bearing one:
+        //
+        //  * Precedence. During planned maintenance the honest answer is "we
+        //    are not sending right now", not "you are over your line budget" —
+        //    a request refused here has consumed nothing and will succeed
+        //    unchanged once the window closes.
+        //  * The WithinLimit / ExceededLimit arms below are pinned by
+        //    `tools/subscription_limit_check.py`, which asserts the acceptance
+        //    envelope is constructed in exactly one leaf and that the rejection
+        //    leaf mutates nothing. Gating ahead of the match leaves both arms
+        //    byte-identical, so this feature cannot weaken ERR-4's guarantees.
+        //
+        // No event is recorded: a suspended request is not a limit breach, and
+        // routing it through `SubscriptionLimitEventSink` would put planned
+        // maintenance into the operator's line-exhaustion trail.
+        match window.admission() {
+            MarketDataAdmission::Admitted => {}
+            MarketDataAdmission::SuspendedForScheduledRestart => {
+                return Err(StructuredSubscriptionError::suspended_for_scheduled_restart(request));
+            }
+            MarketDataAdmission::ConnectivityLost => {
+                return Err(StructuredSubscriptionError::connectivity_lost(request));
+            }
+        }
         match counter.try_acquire(&request) {
             SubscriptionLimitState::WithinLimit => Ok(SubscriptionAccepted {
                 strategy_id: request.strategy_id,
@@ -195,6 +255,24 @@ pub enum SubscriptionRegistryError {
     /// follow-up) rather than conflating distinct contracts on one underlying
     /// onto a single upstream line.
     OptionContractUnsupported,
+    /// The scheduled IB Gateway restart window is suspending market-data
+    /// requests (SRS-MD-005, SyRS SYS-75(a)). Distinct from the line-limit
+    /// refusal on purpose: nothing was consumed and nothing is misconfigured, so the
+    /// identical request succeeds unchanged once the window closes. Conflating
+    /// the two would send an operator hunting for a line-budget problem that
+    /// does not exist.
+    SuspendedForScheduledRestart,
+    /// The IB Gateway is unreachable (SyRS SYS-45). Distinct from the
+    /// scheduled-restart refusal above: this one is an incident the operator is
+    /// paged about, and reporting it as planned maintenance would tell them to
+    /// wait out an outage.
+    ///
+    /// The neighbouring doc comments deliberately name the sibling refusals in
+    /// prose rather than as `Variant` tokens. `tools/subscription_fanout_check.py`
+    /// looks for each variant by name inside this enum body, and a sibling test
+    /// proves the check notices a DELETED declaration — a prose mention of the
+    /// same token would keep it alive and silently disarm that guard.
+    ConnectivityLost,
 }
 
 impl From<SecurityKeyError> for SubscriptionRegistryError {
@@ -222,6 +300,14 @@ impl fmt::Display for SubscriptionRegistryError {
             Self::OptionContractUnsupported => formatter.write_str(
                 "SRS-MD-001: option subscriptions are not yet supported \
                  (deferred to SRS-DATA-004 / SRS-EXE-004)",
+            ),
+            Self::SuspendedForScheduledRestart => formatter.write_str(
+                "SRS-MD-005/SYS-75: market-data requests are suspended for the \
+                 scheduled IB Gateway restart window (planned maintenance)",
+            ),
+            Self::ConnectivityLost => formatter.write_str(
+                "SRS-SAFE-003/SYS-45: market-data requests are blocked — IB Gateway \
+                 is unreachable",
             ),
         }
     }
@@ -311,11 +397,31 @@ impl ConsolidatedSubscriptionRegistry {
     /// unchanged. Only the FIRST subscriber returns `Opened` and adds a line,
     /// and only when the configured ceiling has headroom — otherwise
     /// `subscribe` returns `LineLimitReached` WITHOUT registering anything.
-    pub fn subscribe<S: SubscriptionChangeSink>(
+    /// SRS-MD-005 / SyRS SYS-75(a): `window` is a required port, not an
+    /// option. This is the mutating admission point — the one that actually
+    /// opens an upstream IB line — so a caller that could reach it without
+    /// passing the window would open lines straight through the suspension
+    /// that `request_subscription` refuses. Gating only the outer manager
+    /// would leave exactly that bypass, so both entry points take the port and
+    /// both consult it before touching any state.
+    pub fn subscribe<S: SubscriptionChangeSink, W: RestartWindowGate>(
         &mut self,
         request: &SubscriptionRequest,
+        window: &W,
         events: &S,
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
+        // Ahead of validation and ahead of every mutation: a refusal here must
+        // leave the registry exactly as it found it, and the cheapest way to
+        // guarantee that is to refuse before anything is borrowed mutably.
+        match window.admission() {
+            MarketDataAdmission::Admitted => {}
+            MarketDataAdmission::SuspendedForScheduledRestart => {
+                return Err(SubscriptionRegistryError::SuspendedForScheduledRestart);
+            }
+            MarketDataAdmission::ConnectivityLost => {
+                return Err(SubscriptionRegistryError::ConnectivityLost);
+            }
+        }
         let key = request.security_key()?;
         Self::validate_strategy_id(&request.strategy_id)?;
 
@@ -1196,6 +1302,19 @@ mod tests {
     use atp_types::AssetClass;
     use std::cell::{Cell, RefCell};
 
+    /// SRS-MD-005 test doubles for the restart-window port.
+    ///
+    /// Deliberately NOT exported from the crate. An always-admitting
+    /// implementation in production code is a ready-made bypass of the very
+    /// suspension this feature adds; the only such implementation in the tree
+    /// derives its answer from a real `RestartWindow`.
+    struct OpenWindow;
+    impl RestartWindowGate for OpenWindow {
+        fn admission(&self) -> MarketDataAdmission {
+            MarketDataAdmission::Admitted
+        }
+    }
+
     #[test]
     fn identifies_market_data_subscription_manager() {
         let manager = MarketDataSubscriptionManager;
@@ -1251,7 +1370,7 @@ mod tests {
         };
 
         let accepted = manager
-            .request_subscription(request, &counter, &sink)
+            .request_subscription(request, &OpenWindow, &counter, &sink)
             .expect("WithinLimit must accept the request");
         assert_eq!(accepted.strategy_id.as_str(), "paper-alpha-1");
         assert_eq!(accepted.symbol, "AAPL");
@@ -1277,7 +1396,7 @@ mod tests {
         };
 
         let error = manager
-            .request_subscription(request.clone(), &counter, &sink)
+            .request_subscription(request.clone(), &OpenWindow, &counter, &sink)
             .expect_err("ExceededLimit must reject the request");
         assert_eq!(error.category, OrderErrorCategory::SubscriptionLimitReached);
         assert_eq!(error.category.as_str(), "SUBSCRIPTION_LIMIT_REACHED");
@@ -1327,7 +1446,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             asset_class: AssetClass::Equity,
         };
-        let _ = manager.request_subscription(request, &counter, &sink);
+        let _ = manager.request_subscription(request, &OpenWindow, &counter, &sink);
         assert_eq!(
             counter.try_acquire_calls.get(),
             1,
@@ -1388,15 +1507,21 @@ mod tests {
         let sink = ChangeSinkSpy::default();
 
         assert_eq!(
-            registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap(),
+            registry
+                .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+                .unwrap(),
             SubscriptionChange::Opened
         );
         assert_eq!(
-            registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap(),
+            registry
+                .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+                .unwrap(),
             SubscriptionChange::SubscriberAdded
         );
         assert_eq!(
-            registry.subscribe(&sub("paper-c", "AAPL"), &sink).unwrap(),
+            registry
+                .subscribe(&sub("paper-c", "AAPL"), &OpenWindow, &sink)
+                .unwrap(),
             SubscriptionChange::SubscriberAdded
         );
 
@@ -1412,13 +1537,17 @@ mod tests {
     fn idempotent_resubscribe_is_a_silent_noop() {
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         registry
-            .subscribe(&sub("live-a", "AAPL"), &ChangeSinkSpy::default())
+            .subscribe(
+                &sub("live-a", "AAPL"),
+                &OpenWindow,
+                &ChangeSinkSpy::default(),
+            )
             .unwrap();
         // The second identical subscribe must NOT publish (ForbiddenSink
         // panics if it does) and must not double-count.
         assert_eq!(
             registry
-                .subscribe(&sub("live-a", "AAPL"), &ForbiddenChangeSink)
+                .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &ForbiddenChangeSink)
                 .unwrap(),
             SubscriptionChange::AlreadySubscribed
         );
@@ -1432,9 +1561,15 @@ mod tests {
         // subscribers only — never the MSFT subscriber.
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
-        registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
-        registry.subscribe(&sub("paper-c", "MSFT"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
+        registry
+            .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
+        registry
+            .subscribe(&sub("paper-c", "MSFT"), &OpenWindow, &sink)
+            .unwrap();
 
         let recipients = registry.fan_out(&tick("AAPL", 1)).unwrap();
         let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
@@ -1456,8 +1591,12 @@ mod tests {
     fn last_unsubscribe_releases_the_upstream_line() {
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
-        registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
+        registry
+            .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
 
         assert_eq!(
             registry
@@ -1499,8 +1638,12 @@ mod tests {
     fn change_event_carries_post_transition_counts() {
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
-        registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
+        registry
+            .subscribe(&sub("paper-b", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
 
         let events = sink.events.borrow();
         assert_eq!(events.len(), 2);
@@ -1518,11 +1661,11 @@ mod tests {
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
         assert_eq!(
-            registry.subscribe(&sub("live-a", "   "), &sink),
+            registry.subscribe(&sub("live-a", "   "), &OpenWindow, &sink),
             Err(SubscriptionRegistryError::EmptySymbol)
         );
         assert_eq!(
-            registry.subscribe(&sub("", "AAPL"), &sink),
+            registry.subscribe(&sub("", "AAPL"), &OpenWindow, &sink),
             Err(SubscriptionRegistryError::EmptyStrategyId)
         );
         assert_eq!(
@@ -1547,7 +1690,9 @@ mod tests {
         // SRS-MD-002 deferred to SRS-MD-001.
         let mut registry = ConsolidatedSubscriptionRegistry::new(1);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
 
         // Duplicate of the already-subscribed security → within limit.
         assert_eq!(
@@ -1563,14 +1708,19 @@ mod tests {
         let manager = MarketDataSubscriptionManager;
         let limit_sink = StubSink::default();
         // Routed through the real gate: the duplicate is accepted ...
-        let dup = manager.request_subscription(sub("paper-b", "AAPL"), &registry, &limit_sink);
+        let dup = manager.request_subscription(
+            sub("paper-b", "AAPL"),
+            &OpenWindow,
+            &registry,
+            &limit_sink,
+        );
         assert!(
             dup.is_ok(),
             "a duplicate subscription is admitted (no new line)"
         );
         // ... and the new symbol is rejected with SUBSCRIPTION_LIMIT_REACHED.
         let err = manager
-            .request_subscription(sub("paper-b", "MSFT"), &registry, &limit_sink)
+            .request_subscription(sub("paper-b", "MSFT"), &OpenWindow, &registry, &limit_sink)
             .expect_err("a new symbol at the ceiling must be rejected");
         assert_eq!(err.category, OrderErrorCategory::SubscriptionLimitReached);
         assert_eq!(registry.lines_in_use(), 1);
@@ -1586,10 +1736,12 @@ mod tests {
         // open three lines and silently drop fan-out for the variants.
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
         assert_eq!(
             registry
-                .subscribe(&sub("paper-b", "  aapl "), &sink)
+                .subscribe(&sub("paper-b", "  aapl "), &OpenWindow, &sink)
                 .unwrap(),
             SubscriptionChange::SubscriberAdded,
             "a case/whitespace variant must dedup onto the existing line"
@@ -1609,8 +1761,10 @@ mod tests {
         // race against.
         let mut registry = ConsolidatedSubscriptionRegistry::new(1);
         let sink = ChangeSinkSpy::default();
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
-        let result = registry.subscribe(&sub("paper-b", "MSFT"), &sink);
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
+        let result = registry.subscribe(&sub("paper-b", "MSFT"), &OpenWindow, &sink);
         assert!(
             result.is_err(),
             "a NEW security past the line limit must be rejected by subscribe itself"
@@ -1644,7 +1798,7 @@ mod tests {
         );
         assert!(
             manager
-                .request_subscription(option, &registry, &limit_sink)
+                .request_subscription(option, &OpenWindow, &registry, &limit_sink)
                 .is_err(),
             "the gate must not admit an unsupported option even with capacity headroom"
         );
@@ -1671,10 +1825,12 @@ mod tests {
             SubscriptionLimitState::WithinLimit
         );
         // Another request consumes the only line.
-        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        registry
+            .subscribe(&sub("live-a", "AAPL"), &OpenWindow, &sink)
+            .unwrap();
         // The stale-probed subscribe must now be refused atomically.
         assert_eq!(
-            registry.subscribe(&sub("paper-b", "MSFT"), &sink),
+            registry.subscribe(&sub("paper-b", "MSFT"), &OpenWindow, &sink),
             Err(SubscriptionRegistryError::LineLimitReached {
                 configured_limit: 1
             })
@@ -1699,7 +1855,7 @@ mod tests {
             asset_class: AssetClass::Option,
         };
         assert_eq!(
-            registry.subscribe(&option, &sink),
+            registry.subscribe(&option, &OpenWindow, &sink),
             Err(SubscriptionRegistryError::OptionContractUnsupported)
         );
         let option_tick = MarketDataTick {
@@ -1714,7 +1870,7 @@ mod tests {
         // Nothing registered; the equity AAPL line is independent and works.
         assert_eq!(registry.distinct_subscriptions(), 0);
         registry
-            .subscribe(&sub("equity-strat", "AAPL"), &sink)
+            .subscribe(&sub("equity-strat", "AAPL"), &OpenWindow, &sink)
             .unwrap();
         assert_eq!(registry.distinct_subscriptions(), 1);
         assert!(sink.events.borrow()[0].change.changes_line_count());
