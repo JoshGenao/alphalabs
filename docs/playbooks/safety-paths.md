@@ -330,3 +330,29 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     silently disables the feature the suppression protects. Pair every suppression case with
     the same caller succeeding outside the window, and with the exempt caller succeeding
     inside it. `(RESV-006 r17)`
+
+59. **Caching only the negative outcome trades a latency defect for a churn defect.** The
+    reachability probe cached `Unreachable` (expensive) and re-probed on every `Reachable`,
+    reasoning that a successful connect returns in microseconds. True, and irrelevant: the
+    gate is consulted once per order, so a healthy order stream opened and dropped one TCP
+    connection per order against the gateway the same module elsewhere calls a scarce
+    resource. Cache both, with ASYMMETRIC TTLs - a stale `Connected` is the dangerous
+    direction, so it expires in 100 ms while a stale `Unreachable` may live 1 s. The bound
+    is now the safety property, so pin it at COMPILE time (`const _: () = assert!(...)`)
+    and test both directions: reuse inside the window, re-probe one nanosecond past it.
+    `(SRS-MD-005 r14)`
+
+60. **When you change a cache's policy, grep every surface that FILTERS on the old TTL.**
+    Adding a 100 ms positive TTL to the probe cache left `last_outcome()` - the retained-
+    fact accessor - still filtering on the 1 s negative TTL, so
+    a `Reachable` could escape for ten times the bound the module had just installed as
+    its safety property. Extract the decision into one `ttl_for(outcome, configured)` and
+    route both call sites through it: two copies of a bound drift within a single round.
+    And re-read the rustdoc of every method you touched - `state()` still promised "a
+    fresh probe on every read" on the trait method the order gate calls.
+    Corrected later: an earlier version of this entry called `last_outcome()` "the method
+    that reports reachability to an operator". It has no production caller at all - the
+    CLI reads `observe_if_needed()`. The BOUND still had to agree across both, which is
+    the rule; the surface was overstated, which is the kind of small false claim these
+    entries exist to stop. `(SRS-MD-005 r21)`
+    `(SRS-MD-005 r15)`

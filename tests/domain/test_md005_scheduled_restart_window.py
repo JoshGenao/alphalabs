@@ -618,16 +618,18 @@ def test_a_window_whose_suspension_predates_the_epoch_is_refused() -> None:
     _assert_one_passed(result, name)
 
 
-def test_a_reachable_outcome_is_never_reused() -> None:
-    """The dangerous direction of a cache on the order path.
+def test_a_reachable_outcome_is_reused_only_briefly() -> None:
+    """Both directions of the cache on the live-order path.
 
-    A cached POSITIVE would mean that for up to the TTL after the gateway died,
-    `state()` still answered `Connected` and the ERR-2 gate handed a live order
-    to an unreachable gateway instead of refusing — trading a safety property
-    for latency on the one path where that must never happen. Only the negative
-    outcome is reused, which is also the only expensive one.
+    Caching a positive for long means that after the gateway dies, `state()`
+    still answers `Connected` and the ERR-2 gate hands a live order to an
+    unreachable gateway. Caching nothing means `state()` — called once per
+    submission — opens a fresh connection per order against a resource this
+    feature elsewhere calls scarce. The answer is a SHORT positive window, and
+    the test pins the bound in both directions: reuse inside it, re-probe just
+    past it.
     """
-    name = "a_reachable_outcome_is_never_reused"
+    name = "a_reachable_outcome_is_reused_only_briefly_and_the_bound_is_what_protects_the_gate"
     _assert_one_passed(_producer_test(name), name)
 
 
@@ -952,3 +954,232 @@ def test_a_malformed_restart_schedule_is_refused_rather_than_defaulted() -> None
     accepted = RestartSchedule()
     assert accepted.window_seconds == 300
     assert accepted.suspend_lead_seconds == 60
+
+
+def test_the_reporting_surface_honours_the_same_bound_as_the_gate() -> None:
+    """A bound that only half the module respects is not a bound.
+
+    Once positives began to be cached, `last_outcome()` - the surface that
+    describes reachability to an operator - still filtered on the 1 s NEGATIVE
+    TTL, so a `Reachable` could be reported as current for ten times the 100 ms
+    bound the module installs as its safety property. Both the gate and the
+    report now route through one `ttl_for`, and this pins that they agree.
+
+    NOT proven here: that the bound is the right length. It is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time; this test only proves the two surfaces cannot drift apart.
+    """
+    name = "the_reporting_surface_honours_the_same_bound_as_the_gate"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_no_public_doc_still_describes_the_replaced_cache_policy() -> None:
+    """Prose that ARGUES for a design is worse than absent prose when it is stale.
+
+    The reachability cache changed policy once (r14: cache both outcomes, with
+    a short bound on the positive). Its documentation did not, and the drift
+    blocked three consecutive reviews:
+
+      r15  the constant's rustdoc still called the OLD policy "the whole design"
+      r15  `state()` still promised "a fresh probe on every read"
+      r16  `last_outcome()` still told callers `None` meant the gateway had
+           answered again
+
+    Each was a public doc comment a reader would reasonably trust. This pins the
+    claims that are now false, so the next policy change cannot leave them
+    behind a fourth time.
+
+    NOT proven here: that the current prose is a GOOD description. Only that the
+    specific superseded claims are gone and the replacement names both bounds.
+    """
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    docs = "\n".join(line for line in source.splitlines() if line.strip().startswith("///"))
+    # Drop QUOTED spans first. A rustdoc that says: this comment once said
+    # "a fresh probe on every read", and that stopped being true - is recording
+    # the drift, not repeating it. This guard flagged exactly that on its first
+    # run, which is the third time in this feature a source-scanning check has
+    # accused its own documentation (docs/playbooks/adversarial-precheck.md).
+    normalised = " ".join(re.sub(r'"[^"]*"', " ", docs).split())
+
+    superseded = {
+        "only-a-negative-is-cached": "Only a NEGATIVE outcome is cached",
+        "a-positive-is-never-retained": "never retained",
+        "state-probes-on-every-read": "a fresh probe on\n/// every read",
+        "none-means-healthy": "`None` once the gateway answers again",
+    }
+    still_present = {
+        label: text
+        for label, text in superseded.items()
+        if " ".join(text.replace("///", " ").split()) in normalised
+    }
+    assert not still_present, (
+        "public rustdoc still describes the cache policy replaced in round 14: "
+        f"{sorted(still_present)}"
+    )
+
+    # Non-vacuity: the replacement must actually name BOTH bounds, or this test
+    # would pass just as well against a module with no documentation at all.
+    assert "REACHABLE_CACHE_TTL_NS" in normalised
+    assert "REACHABILITY_CACHE_TTL_NS" in normalised
+    assert "Both outcomes are cached" in normalised or "Both outcomes are retained" in normalised
+
+
+def test_with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() -> None:
+    """A public builder must not be able to widen a safety bound.
+
+    `with_probe_ttl` promised "reuse for `ttl_ns`" for a round after `ttl_for`
+    began capping a REACHABLE observation at 100 ms, so a caller passing 2 s was
+    silently getting 100 ms for a positive. The prose is fixed; this pins the
+    behaviour, in all three directions: asking for more gets the cap, asking for
+    more still gets the FULL value for a negative, and asking for zero disables
+    reuse entirely.
+
+    NOT proven here: that 100 ms is the right ceiling. That is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time.
+    """
+    name = "with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_a_shortened_ttl_shortens_both_directions() -> None:
+    """The compile asserts relate the DEFAULTS, not the runtime bounds.
+
+    An earlier comment claimed the cache asymmetry was compiler-enforced. It is
+    not: the negative bound is `self.ttl_ns`, which the public `with_probe_ttl`
+    may set to any non-negative value, so a caller passing 100 ms or less gets
+    equal bounds in both directions and no asymmetry at all.
+
+    That is safe, because `ttl_for` takes a `min` and both directions can only
+    ever SHORTEN - shorter is the cautious side of every one of these trades.
+    But safe-by-construction still has to be pinned, or the next refactor is
+    free to make the cap a constant and silently lengthen a negative.
+
+    NOT proven here: that any particular configured TTL is a good choice. Only
+    that lowering it lowers BOTH bounds.
+    """
+    name = "a_shortened_ttl_shortens_both_directions"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
+    """Two ways past the guard that closes SyRS SYS-75(a), both verified live.
+
+    The gate-implementor enumeration and the exempt-function scan are the only
+    things standing between the tree and a production type that always returns
+    `Admitted`. Round 19 walked past both:
+
+      * `use atp_market_data::RestartWindowGate as Gate;` then `impl Gate for X`
+        matched nothing, while the check still printed "this enumeration is what
+        makes it unforgeable".
+      * `fn is_subscribed<T: Into<Vec<u8>>>` exceeded the one nesting level the
+        generic-list pattern allowed, so the exemption was inherited by a second
+        declaration that writes the consolidated registry.
+
+    Both are exercised against the real checker in
+    `tests/test_connectivity_contract.py`; this L7 test asserts the SHIPPED
+    tools still reject them, so a refactor of either scan cannot quietly reopen
+    the bypass.
+
+    NOT proven here: that no OTHER spelling evades them. That is what the round
+    log is for.
+    """
+    import subprocess
+
+    checker = REPO_ROOT / "tests" / "test_connectivity_contract.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(checker),
+            "-q",
+            "-k",
+            "renamed_trait_import or nested_generic_bound",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_implementor_enumeration_refuses_what_it_cannot_parse() -> None:
+    """The backstop that ends "your regex did not anticipate this shape".
+
+    Five separate review rounds found a shape the gate-implementor scan could
+    not read: an arrow in the generics, a reference or tuple target, a
+    parenthesised bound, two levels of nesting, an aliased trait name. Each fix
+    was correct and each round found the next one, because a scan that fails to
+    MATCH reports nothing and nothing reads as clean.
+
+    The scan now counts what a loose pattern can see and refuses when the strict
+    pass accounts for fewer. Any future unreadable shape turns the guard red
+    instead of silently shrinking the set it calls closed - which is the only
+    property that makes the "closed set" claim honest, and the one this L7 test
+    protects because SyRS SYS-75(a) rests on it.
+
+    NOT proven here: that the loose pattern sees every impl either. It is a
+    lower bound, and a lower bound that fails closed is worth more than a
+    precise one that fails open.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "cannot_name or scan_that_finds_nothing",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
+    """The round that showed a backstop can share the blind spot it backs up.
+
+    Round 20 added a completeness count so an unreadable impl would turn the
+    gate-implementor scan red instead of shrinking the set it calls closed.
+    Round 21 showed it was bounded by `[^;]` - the SAME boundary the strict
+    pattern used - so `impl<T: Into<[u8; 4]>> RestartWindowGate for AlwaysOpen`
+    defeated both and scanned as clean. The same `;` made the exempt-declaration
+    counter drop a declaration entirely rather than refuse it, so a second
+    `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption and reached the
+    consolidated registry without consulting the window.
+
+    Both are SyRS SYS-75(a) bypasses that leave every other guard, this suite
+    and all three CLI proofs green, which is why they are pinned at L7.
+
+    NOT proven here: that no further syntax defeats them. The backstop is what
+    converts "unreadable" into a red gate, and that is the property under test.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "semicolon_inside_a_generic_bound or backstop_does_not_share or two_hop_rename",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "3 passed" in combined, combined[-2000:]

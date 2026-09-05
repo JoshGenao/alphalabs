@@ -28,6 +28,7 @@ Invoke:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import re
 import shutil
@@ -558,7 +559,12 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
     """
     receivers = spec["exempt_receivers"]
     for name in exempt:
-        declarations = re.findall(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(([^)]*)", source)
+        # The generic list may contain PARENTHESES: `<F: Fn() -> bool>` is a
+        # legal bound, and excluding `(` meant a second declaration carrying one
+        # was invisible - the scan still found exactly one, so the exemption was
+        # inherited by a function that could reach the consolidated registry
+        # without ever consulting the window.
+        declarations = _fn_declarations(source, name)
         if len(declarations) != 1:
             fail(
                 f"exempt function `{name}` is declared {len(declarations)} times in the "
@@ -837,7 +843,12 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
     if f"pub struct {spec['struct']}" not in producer_src:
         fail(f"{spec['module']} does not declare `{spec['struct']}`")
     for trait in spec["implements"]:
-        if not re.search(rf"impl<[^>]*>\s+(?:\w+::)*{re.escape(trait)}\s+for", producer_src):
+        # `[^{};]*?`, not `<[^>]*>`: the latter cannot span a `Fn() -> i64`
+        # bound, so a producer refactored to carry one would make this
+        # `fail()` claiming the trait is not implemented at all. Same defect
+        # as the implementor scan below; fixed in both, not just the one the
+        # reviewer pointed at.
+        if not re.search(rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(trait)}\s+for", producer_src):
             fail(
                 f"{spec['struct']} does not implement `{trait}` — the order gate and the "
                 "market-data gate must read ONE window, or they drift"
@@ -849,7 +860,108 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
     )
 
 
-def check_restart_window_gate_implementors(config: dict, _unused: str) -> str:
+# A generic list, allowing parenthesised bounds (`Fn() -> bool`) and one level of
+# nesting (`Foo<Bar>`). `->` is an explicit alternative because its `>` is
+# otherwise excluded by the same class that stops the match running away - the
+# THIRD time in this feature an arrow has defeated a bracket-matching pattern.
+# Stops at `{`, `}` or `;`, none of which can appear inside a generic list.
+def _local_aliases(source: str, trait: str) -> set[str]:
+    """Names this file has bound to `trait` through `use ... as ...`.
+
+    Handles both `use path::Trait as Alias;` and a braced group
+    `use path::{Trait as Alias, Other};`. A guard keyed on one spelling is a
+    guard a two-word rename walks past.
+    """
+    out: set[str] = set()
+    t = re.escape(trait)
+    out.update(re.findall(rf"\buse\s+[\w:]*\b{t}\s+as\s+(\w+)\s*;", source))
+    for group in re.findall(r"\buse\s+[\w:]*\{([^}]*)\}\s*;", source):
+        out.update(re.findall(rf"\b{t}\s+as\s+(\w+)", group))
+    return out
+
+
+def _skip_generic_list(text: str, i: int) -> int:
+    """Index just past a `<...>` starting at `i`, or `i` if there is none.
+
+    Counted, not pattern-matched. Every regex attempt at this failed on a shape
+    it did not anticipate - one nesting level was enough until
+    `<T: Into<Vec<u8>>>` arrived, and before that a `->` closed the list early.
+    A counter has no depth limit and needs no alternation for the arrow, which
+    is simply "a `>` whose predecessor is `-`".
+    """
+    if i >= len(text) or text[i] != "<":
+        return i
+    depth, brackets, j, prev = 0, 0, i, ""
+    while j < len(text):
+        ch = text[j]
+        if ch in "{}":
+            return -1  # cannot be inside a generic list: unparseable
+        if ch == ";" and brackets == 0:
+            # A `;` is legal INSIDE an array type - `<T: Into<[u8; 4]>>` - and
+            # illegal outside one. Returning the start index here made
+            # `_fn_declarations` silently DROP the declaration, so a second
+            # `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption. -1
+            # says "unparseable" so the caller can refuse instead of guess.
+            return -1
+        if ch == "[":
+            brackets += 1
+        elif ch == "]":
+            brackets = max(0, brackets - 1)
+        elif ch == "<":
+            depth += 1
+        elif ch == ">" and prev != "-":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        prev = ch
+        j += 1
+    return -1
+
+
+def _fn_declarations(source: str, name: str) -> list[str]:
+    """Every `fn <name>(...)` parameter list in `source`, generics of any depth."""
+    out: list[str] = []
+    for m in re.finditer(rf"\bfn\s+{re.escape(name)}\s*", source):
+        i = _skip_generic_list(source, m.end())
+        if i < 0:
+            # UNPARSEABLE IS NOT ABSENT. Dropping it kept the declaration count
+            # at 1, so the exemption was inherited by a function this scan could
+            # not read. Counting it makes the count wrong, which makes the
+            # exemption check fail, which is the correct outcome.
+            out.append("<unparseable generic list>")
+            continue
+        while i < len(source) and source[i].isspace():
+            i += 1
+        if i < len(source) and source[i] == "(":
+            close = source.find(")", i)
+            if close != -1:
+                out.append(source[i + 1 : close])
+    return out
+
+
+def _strip_generic_args(text: str) -> str:
+    """Drop `<...>` spans so type PARAMETERS are not read as type names.
+
+    `ScheduledRestartConnectivity<P, C>` must yield one name, not three.
+    """
+    out, depth, prev = [], 0, ""
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and prev != "-":
+            # NOT the `>` of a `->`. Closing on it made depth fall to 0 inside
+            # `Wrapper<fn() -> EpochNanos>`, so ` EpochNanos` was emitted at
+            # depth 0 and reported as an undeclared production implementor: the
+            # guard failing on a legal shape. Fourth arrow-versus-bracket defect
+            # in this feature.
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+        prev = ch
+    return "".join(out)
+
+
+def check_restart_window_gate_implementors(config: dict, _unused: str, root: Path = ROOT) -> str:
     """No PRODUCTION type may implement the gate except the declared producer.
 
     The port's own rustdoc used to argue that taking a port rather than a
@@ -872,18 +984,105 @@ def check_restart_window_gate_implementors(config: dict, _unused: str) -> str:
     block = restart_window_block(config)
     spec = block["gate_port"]
     declared = set(spec["production_implementors"])
-    root = ROOT
     found: dict[str, str] = {}
-    for crate in ("atp-types", "atp-market-data", "atp-orchestrator", "atp-execution"):
-        crate_dir = root / "crates" / crate / "src"
-        if not crate_dir.is_dir():
-            continue
+    # EVERY workspace crate, not a hard-coded four. The first version listed the
+    # four crates that had the trait in view at the time; a fifth gaining an
+    # atp-market-data dependency later would have been unscanned, and the
+    # contract claims this walks the sources.
+    crate_roots = sorted((root / "crates").glob("*/src")) if (root / "crates").is_dir() else []
+    if not crate_roots:
+        fail("no crate sources found under crates/*/src — this scan cannot bound anything")
+    # Aliases are collected across the WHOLE tree first, because a rename can be
+    # two hops: `pub use RestartWindowGate as Gate;` in one module, then
+    # `use crate::gates::Gate; impl Gate for AlwaysOpen` in another. Reading
+    # only the file being scanned found neither the strict nor the loose match,
+    # and reported a clean set - while the playbook recorded the rename class as
+    # closed.
+    crate_aliases: set[str] = set()
+    sources: dict = {}
+    for crate_dir in crate_roots:
         for path in sorted(crate_dir.rglob("*.rs")):
-            source = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
-            for match in re.finditer(
-                rf"impl(?:<[^>]*>)?\s+(?:\w+::)*{re.escape(spec['trait'])}\s+for\s+(\w+)", source
-            ):
-                found[match.group(1)] = str(path.relative_to(root))
+            src = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
+            sources[path] = src
+            crate_aliases |= _local_aliases(src, spec["trait"])
+    # A second hop renames an ALIAS, so close over what we just found.
+    for _ in range(3):
+        grown = set(crate_aliases)
+        for src in sources.values():
+            for alias in list(crate_aliases):
+                grown |= _local_aliases(src, alias)
+        if grown == crate_aliases:
+            break
+        crate_aliases = grown
+    for path, source in sources.items():
+        # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
+        # terminates on the `>` of a `->` return arrow, so
+        # `impl<C: Fn() -> i64> RestartWindowGate for AlwaysOpen` slipped
+        # through the guard whose whole purpose is that nothing slips
+        # through it. Excluding `{`/`}`/`;` instead keeps the match inside
+        # one impl header while permitting arrows, lifetimes and where-less
+        # bounds.
+        # The impl TARGET is a type, not an identifier. Requiring `(\w+)`
+        # after `for` meant `impl Gate for &AlwaysOpen`,
+        # `impl<'a> Gate for &'a AlwaysOpen` and `impl Gate for (AlwaysOpen, u8)`
+        # all returned no match, so the "closed set" stayed open to exactly
+        # the always-admitting production gate it exists to forbid. Take the
+        # whole target span, strip its generic arguments (or `P` and `C` in
+        # `ScheduledRestartConnectivity<P, C>` would each read as a type),
+        # and collect every type name left.
+        # The trait may be RENAMED at the use site:
+        # `use atp_market_data::RestartWindowGate as Gate;` then
+        # `impl Gate for AlwaysOpen`. Keying on the literal spelling made
+        # that produce no match at all, while the check went on printing
+        # "this enumeration is what makes it unforgeable". Collect the local
+        # aliases first and search for every name the trait answers to.
+        names = {spec["trait"], *crate_aliases, *_local_aliases(source, spec["trait"])}
+        alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+        # How many impls of this trait EXIST in the file, by the loosest
+        # possible reading. The strict pattern below must account for every
+        # one of them; if it matches fewer, some shape slipped past it and
+        # the enumeration is not closed. This is the backstop for every
+        # "the regex did not anticipate that" defect at once - five of them
+        # so far, each found by a reviewer rather than by the check.
+        # WIDER than the strict pattern, deliberately. The first version
+        # bounded this with `[^;]` - the same boundary the strict pattern
+        # used - so any shape a `;` defeated defeated BOTH, giving
+        # expected == matched == 0 and a clean report. A backstop that
+        # shares the blind spot it backs up is not a backstop. Braces are
+        # the only delimiter an impl header genuinely cannot contain.
+        expected = len(
+            re.findall(rf"\bimpl\b[^{{}}]*?\b(?:{alternation})\b[^{{}}]*?\bfor\b", source, re.S)
+        )
+        matched = 0
+        for match in re.finditer(
+            rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
+            r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
+            source,
+            re.S,
+        ):
+            matched += 1
+            target = _strip_generic_args(match.group(1))
+            names = re.findall(r"\b([A-Z]\w*)", target)
+            if not names:
+                # An impl target with no uppercase identifier - a primitive
+                # (`impl Gate for i64`), a lowercase type alias, a bare
+                # `[u8; 4]` - collected NOTHING, so the "closed set" stayed
+                # open while the check reported a clean tree. Unnameable is
+                # not absent (CLAUDE.md rule 3): report the raw span.
+                fail(
+                    f"`{spec['trait']}` is implemented for `{target.strip()}` in "
+                    f"{path.relative_to(root)}, whose type this scan cannot name. "
+                    "An implementor it cannot name is one it cannot bound, so this "
+                    "fails rather than reporting a closed set"
+                )
+            for name in names:
+                found[name] = str(path.relative_to(root))
+        if matched < expected:
+            fail(
+                f"{path.relative_to(root)} contains {expected} `impl ... {spec['trait']} "
+                f"... for` header(s) but this scan could parse only {matched}. A shape it "
+                "cannot parse is one it cannot bound, so the enumeration is not closed"
+            )
     if not found:
         fail(
             f"no production type implements `{spec['trait']}` — either the producer was "
@@ -1035,10 +1234,28 @@ def run_checks() -> list[str]:
     return evidence
 
 
+def _accepts_root(check) -> bool:
+    return "root" in inspect.signature(check).parameters
+
+
 def assert_connectivity_static(config: dict, root: Path = ROOT) -> list[str]:
-    """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
+    """Static checks usable from ``tools/architecture_check.py`` (no cargo).
+
+    `root` reaches EVERY check that can take it, decided from the signature
+    rather than from a list somebody has to remember to update. It previously
+    reached only `_sources`, so `check_restart_window_gate_implementors` - which
+    walks the tree itself rather than reading a prepared source string - scanned
+    the real repository while its twelve siblings scanned the caller's. That is
+    the same finding round 14 recorded as fixed and left half-done: the
+    parameter was added to the check and never passed to it.
+    """
     sources = _sources(config, root)
-    return [check(config, sources[scope]) for _, check, scope in _STATIC_CHECKS]
+    return [
+        check(config, sources[scope], root=root)
+        if _accepts_root(check)
+        else check(config, sources[scope])
+        for _, check, scope in _STATIC_CHECKS
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

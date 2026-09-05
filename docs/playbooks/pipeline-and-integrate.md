@@ -308,3 +308,17 @@ one `main`. Most of this playbook is about that sharing.
   The first version matched a bare `"-p"` and flagged nine innocent files running
   `cargo test -p <crate>`. Give such a guard tests in BOTH directions plus a planted
   offender, so "found nothing" is distinguishable from "scanned nothing". `(2026-09-02)`
+
+- **A chore commit that carries evidence must carry NOTHING else.** `evidence.py` treats
+  only `.harness/runs/` and `progress.d/` as evidence-only paths, so a chore commit that
+  also touched a playbook and a test file moved code out from under its own transcript -
+  and the guard added in that same commit went RED at the shipping HEAD, which is how it
+  was found. Split it: code, tests and docs in the fix commit; re-stamp the deterministic
+  critic; re-capture the transcript; then commit `.harness/runs/` and `progress.d/` alone.
+  `(SRS-MD-005 r17)`
+- **Stamp a round count FROM the ledger, never by hand.** `evidence.py critic --rounds N`
+  takes whatever the caller types, and the caller typed 15 while `review.jsonl` held 16.
+  The document guard then checked the prose against that stale field and PASSED - a guard
+  anchored to an unverified number certifies the drift instead of catching it. Read
+  `adversarial_review.count_rounds` and assert the stamp equals it.
+  `(SRS-MD-005 r17)`

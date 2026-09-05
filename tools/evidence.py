@@ -525,6 +525,252 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
     return (not problems), problems
 
 
+def _queue_row_problems(fid: str) -> list[str]:
+    """Queue rows promising a close that this record would refuse.
+
+    `--attested-by` relaxes which STEPS count, never the critic gate, so a row
+    saying "Nothing" is missing beside a `block` sends the operator to an error.
+    Absent, unreadable and unknown are each fatal here, not empty: `verify`
+    needs BOTH layers to say `approve`.
+    """
+    queue = ROOT / "docs" / "verification-queue.md"
+    if not queue.exists():
+        return []
+    try:
+        rec = load_record(fid)
+    except EvidenceError:
+        return []
+    critic = rec.get("critic")
+    if not isinstance(critic, dict):
+        blocked = ["no critic block recorded"]
+    else:
+        blocked = []
+        for layer in ("deterministic", "judgment"):
+            entry = critic.get(layer)
+            if not isinstance(entry, dict) or "verdict" not in entry:
+                blocked.append(f"{layer} (no verdict recorded)")
+            elif entry["verdict"] != "approve":
+                blocked.append(f"{layer} (`{entry['verdict']}`)")
+    if not blocked:
+        return []
+    # A queue ROW, not a line. A markdown table row can be reflowed across
+    # several lines, and the previous version inspected only lines that
+    # themselves contained `close_feature.py <fid>` - so a reflowed row escaped
+    # entirely. Rows are split on the leading `|` of a table line.
+    text = queue.read_text(encoding="utf-8", errors="replace")
+    rows, current, start = [], [], 1
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("|") and current:
+            rows.append((start, "\n".join(current)))
+            current, start = [line], n
+        elif line.lstrip().startswith("|"):
+            current, start = [line], n
+        elif current:
+            current.append(line)
+    if current:
+        rows.append((start, "\n".join(current)))
+
+    out = []
+    for n, row in rows:
+        if not re.search(rf"close_feature\.py\s+{re.escape(fid)}\b", row):
+            continue
+        # The disclosure must NAME THE LAYER, beside the verdict as a code span.
+        # Accepting any `` `block` `` anywhere on the row passed a row that
+        # disclosed the deterministic layer while hiding a judgment `block`, and
+        # passed one that merely quoted the word for another feature. And the
+        # substring "block" alone would not do: "unblocks", "blocked on the VM"
+        # and "blocking" all contain it.
+        undisclosed = [
+            b
+            for b in blocked
+            if not re.search(
+                rf"\b{re.escape(b.split()[0])}\b[^|]{{0,120}}?`(block|warn|none)`"
+                rf"|`(block|warn|none)`[^|]{{0,120}}?\b{re.escape(b.split()[0])}\b",
+                row,
+                re.S,
+            )
+        ]
+        if undisclosed:
+            out.append(
+                f"{_rel(queue)}:{n} promises a close for {fid} without disclosing "
+                f"{', '.join(undisclosed)}"
+            )
+    return out
+
+
+_ROUND_TOTAL_RE = re.compile(r"\brounds\s*[:=]\s*(\d+)\b|\b(?:at|after)\s+(\d+)\s+rounds?\b", re.I)
+
+
+_RENDERING: dict[str, bool] = {}
+
+
+def _round_count_drift(fid: str, counted: int) -> list[str]:
+    """Documents claiming a round TOTAL that the ledger does not support.
+
+    A total ("Adversarial rounds: 13", "block after 13 rounds") goes stale; an
+    ordinal ("round 12 found X") stays true forever, so only totals are checked.
+    Matching both raised 38 accusations against session notes doing nothing
+    wrong; matching only `<digit> rounds` missed two of the three live claims.
+    """
+    out: list[str] = []
+    docs = [ROOT / "docs" / "verification-queue.md"]
+    for extra in (RUNS_DIR / fid / "VERIFICATION.md", ROOT / "progress.d" / f"session-{fid}.md"):
+        if extra.exists():
+            docs.append(extra)
+    for doc in docs:
+        if not doc.exists():
+            continue
+        owns = doc.name != "verification-queue.md"
+        for n, line in enumerate(doc.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            stated = {int(g) for m in _ROUND_TOTAL_RE.findall(line) for g in m if g}
+            if not stated:
+                continue
+            if not owns and fid not in line:
+                continue
+            if counted not in stated:
+                out.append(
+                    f"{_rel(doc)}:{n} states {sorted(stated)} round(s) for {fid}, "
+                    f"but the ledger holds {counted}"
+                )
+    return out
+
+
+def record_self_consistency_problems(fid: str) -> list[str]:
+    """Ways the record can disagree with the artifacts sitting beside it.
+
+    These belong at CLOSE time, not in the test suite. Evidence is committed
+    AFTER the code it describes, so a pytest asserting on live evidence state is
+    red at every code commit by construction -- which is exactly what happened
+    when these three checks were first written as unit tests: CI went red on the
+    commit that introduced them, for a lag the workflow requires.
+
+    `verify` already asks "is this record current?" for critic heads. This is the
+    same question for the round count and the transcript.
+    """
+    problems: list[str] = []
+    run_dir = RUNS_DIR / fid
+
+    # 1. The stamped round count is hand-typed; the ledger counts. It read 15
+    #    while review.jsonl held 16, and a document guard anchored to that stale
+    #    field certified the drift instead of catching it.
+    ledger = run_dir / "review.jsonl"
+    counted = _count_review_rounds(ledger) if ledger.exists() else None
+    rec = load_record(fid)
+    stamped = {
+        layer: entry["rounds"]
+        for layer, entry in (rec.get("critic") or {}).items()
+        if isinstance(entry, dict) and isinstance(entry.get("rounds"), int)
+    }
+    if counted is None:
+        # ABSENT and UNREADABLE are not "consistent" (CLAUDE.md rule 3). Guarding
+        # the whole check behind `ledger.exists()` meant a hand-typed
+        # `--rounds N`, stamped without the reviewer ever having run, passed
+        # unconditionally - which is precisely the case this exists to catch.
+        if stamped:
+            problems.append(
+                f"critic {sorted(stamped)} record a round count, but {_rel(ledger)} is "
+                f"{'missing' if not ledger.exists() else 'unreadable'}, so the count "
+                "cannot be corroborated"
+            )
+    else:
+        for layer, n in stamped.items():
+            if n != counted:
+                problems.append(
+                    f"critic[{layer}].rounds={n} but {_rel(ledger)} "
+                    f"holds {counted} verdict-bearing round(s)"
+                )
+
+    # 4. The rendered page must equal what the record renders to RIGHT NOW.
+    #    `cmd_critic` re-renders, but anything written afterwards - a
+    #    re-captured transcript, a later verify - leaves the page behind again,
+    #    and the page is the artifact a reviewer opens. It published two
+    #    outstanding problems that no longer existed and named a transcript
+    #    revision the transcript beside it had moved past. Comparing it to
+    #    `render_markdown` is exact and needs no memory of when to re-run.
+    page = run_dir / "EVIDENCE.md"
+    # Skipped WHILE RENDERING, for two reasons. `render_markdown` calls `verify`
+    # which calls this, so rendering again here recurses without bound - the
+    # first run of this check hit exactly that. And the page EMBEDS verify's
+    # problems, so a page that reported on its own staleness would have no fixed
+    # point: writing it would change what a fresh render says, forever.
+    if page.exists() and not _RENDERING.get(fid):
+        try:
+            if page.read_text(encoding="utf-8") != render_markdown(fid):
+                problems.append(
+                    f"{_rel(page)} is stale - it no longer matches what the record renders "
+                    f"to. Re-run `tools/evidence.py render {fid}`."
+                )
+        except (EvidenceError, OSError) as exc:
+            problems.append(f"{_rel(page)} cannot be compared to the record ({type(exc).__name__})")
+
+    # 3. A queue row that hands over `close_feature.py <id> --verified` must
+    #    disclose a standing non-approve verdict, or it sends the operator to a
+    #    command that exits 3. Same code-path/evidence-path split as above, so
+    #    the same home.
+    problems.extend(_queue_row_problems(fid))
+
+    # 2. Documents that state a round count must match the ledger. This is a
+    #    CLOSE-time check for the same reason as the others, and it took three
+    #    attempts to see why: `docs/verification-queue.md` is a code-path file
+    #    while `review.jsonl` is an evidence-path file, so they necessarily
+    #    change in different commits. ANY guard comparing the two sides is red
+    #    across that boundary no matter how the commits are ordered. Only here,
+    #    with the whole working tree in hand, are they comparable.
+    if counted is not None:
+        problems.extend(_round_count_drift(fid, counted))
+
+    # 2. A verification transcript must certify the tree it ships with. One said
+    #    its commands "were re-run against the integrated tree (ed36c790)" while
+    #    the diff carrying it had rewritten 215 lines underneath -- real
+    #    captures, certifying different code, which a reader cannot see.
+    transcript = run_dir / "VERIFICATION.md"
+    if transcript.exists():
+        m = re.search(
+            r"\$ git rev-parse HEAD\n([0-9a-f]{40})\n",
+            transcript.read_text(encoding="utf-8", errors="replace"),
+        )
+        if not m:
+            problems.append(f"{_rel(transcript)} records no captured HEAD, so it cannot be checked")
+        else:
+            moved = code_changed_since(m.group(1))
+            if moved is None:
+                problems.append(
+                    f"{_rel(transcript)} was captured at {m.group(1)[:8]}, which cannot be "
+                    "checked against this commit"
+                )
+            elif moved:
+                problems.append(
+                    f"{_rel(transcript)} was captured at {m.group(1)[:8]}, but "
+                    f"{len(moved)} code path(s) have changed since ({', '.join(moved[:3])}) -- "
+                    "re-run it rather than editing its numbers"
+                )
+    return problems
+
+
+def _count_review_rounds(path: Path) -> int | None:
+    """Verdict-bearing rounds in a review ledger, or None if unreadable.
+
+    Mirrors `tools/adversarial_review.py::count_rounds` without importing it, so
+    `evidence.py` keeps no dependency on the reviewer.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    n = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(rec, dict) and rec.get("verdict") in ("approve", "warn", "block"):
+            n += 1
+    return n
+
+
 def verify(
     fid: str, features: list | None = None, *, allow_attested: bool = False
 ) -> tuple[bool, list[str], dict]:
@@ -735,6 +981,44 @@ def verify(
                 f"{ac_n or 'N'} --file <screenshot.png> --caption '...'`"
             )
 
+    # A STEP certifies the code it ran on, exactly as an image and a verdict do.
+    # This was checked for images only (`step_artifacts` above), so a feature
+    # with no images - every `integration`, `solo` or `live-ib` method - had its
+    # steps' currency never checked at all. SRS-MD-005's own four steps were
+    # stale by 13 code paths when a reviewer pointed this out: step 3 recorded
+    # `48 passed` for a command that by then collected 53.
+    #
+    # Same fail-closed shape as everywhere else: equality with HEAD is not the
+    # test (evidence precedes the commit carrying it), and `code_changed_since`
+    # returning None means the question could not be answered, which is not a
+    # pass.
+    stale_steps, uncheckable_steps = [], []
+    for n in range(1, len(steps) + 1):
+        entry = by_n.get(n)
+        if not entry or entry.get("status") != "pass":
+            continue
+        moved = code_changed_since(entry.get("head"))
+        if moved is None:
+            uncheckable_steps.append(n)
+        elif moved:
+            stale_steps.append((n, moved))
+    if stale_steps:
+        worst = max(len(m) for _, m in stale_steps)
+        problems.append(
+            f"step(s) {[n for n, _ in stale_steps]} ran against code that has since moved "
+            f"({worst} path(s) changed, e.g. "
+            f"{', '.join(sorted(stale_steps[0][1])[:3])}) - re-run them with "
+            f"`tools/evidence.py run {fid} --step N -- <command>`"
+        )
+    if uncheckable_steps:
+        problems.append(
+            f"step(s) {uncheckable_steps} record a commit that cannot be checked against "
+            "this one (missing, unknown, unreadable, or on another line of history); "
+            "an unverifiable step is not a fresh one"
+        )
+
+    problems.extend(record_self_consistency_problems(fid))
+
     summary = {
         "steps_total": len(steps),
         "steps_evidenced": sum(
@@ -747,6 +1031,21 @@ def verify(
 
 
 def render_markdown(fid: str, features: list | None = None) -> str:
+    """Render the reviewable page. See `_render_markdown` for the body.
+
+    The wrapper marks "a render is in progress" so the page-staleness check in
+    `record_self_consistency_problems` stands down: this function calls `verify`
+    to embed its problems, and a page reporting on its own staleness could never
+    settle.
+    """
+    _RENDERING[fid] = True
+    try:
+        return _render_markdown(fid, features)
+    finally:
+        _RENDERING.pop(fid, None)
+
+
+def _render_markdown(fid: str, features: list | None = None) -> str:
     """The reviewable form of the record, for GitHub.
 
     evidence.json is the machine's copy; nobody reviews a 3 KB blob of escaped
@@ -995,8 +1294,32 @@ def cmd_critic(args) -> int:
         entry["reviewer"] = args.reviewer
     if args.rounds is not None:
         entry["rounds"] = args.rounds
+    else:
+        # READ the count from the ledger. It belongs there, not to whoever typed
+        # the last command.
+        #
+        # Carrying the PREVIOUS stamp forward - the first fix here - could not
+        # work: the round that produces an `approve` appends its own line to
+        # `review.jsonl`, so the documented close recipe stamped N against a
+        # ledger of N+1 and `verify` refused. The recipe was unrunnable and the
+        # tool was the reason.
+        counted = _count_review_rounds(RUNS_DIR / args.id / "review.jsonl")
+        if counted is not None:
+            entry["rounds"] = counted
+        else:
+            previous = (rec.get("critic") or {}).get(args.layer)
+            if isinstance(previous, dict) and isinstance(previous.get("rounds"), int):
+                entry["rounds"] = previous["rounds"]
     rec.setdefault("critic", {})[args.layer] = entry
     save_record(args.id, rec)
+    # Re-render, exactly as `run`, `record` and `artifact` do. Without this,
+    # `cmd_critic` was the ONE recorder that left EVIDENCE.md behind, and since
+    # the critic layers are the last thing to land before a close, the page a
+    # reviewer opens in the PR read "critics: none recorded" while the record
+    # beside it held a `block`. The page is the human-reviewable form of the
+    # record; a recorder that updates one and not the other publishes a
+    # contradiction.
+    _refresh_markdown(args.id)
     print(f"✓ {args.id} critic[{args.layer}]: {args.verdict}")
     return 0
 

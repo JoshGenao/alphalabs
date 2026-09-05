@@ -184,3 +184,98 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   turned a compare-and-swap back into read-and-clobber while every commit message said
   otherwise. When you strengthen an identity, grep every caller that *names* that identity
   and check what each one COMPARES, not just what it passes. `(RESV-006 r27)`
+
+- **A character class you wrote to bound a generic list will terminate on the `>` of a
+  `->` return arrow.** `impl(?:<[^>]*>)?\s+Trait\s+for\s+(\w+)` cannot match
+  `impl<C: Fn() -> i64> Trait for AlwaysOpen` - and an injected clock closure is exactly
+  the idiom this codebase uses, so the guard was blind to the shape it would actually
+  meet. Bound the span by what CANNOT appear in it (`[^{};]*?`) rather than by the
+  delimiter you expect to close it. Then inject the shape and watch it get caught.
+  `(SRS-MD-005 r14)`
+- **A scan whose subject list is hard-coded is bounded by the day it was written, not by
+  the tree.** The gate-implementor enumeration listed the four crates that had the trait
+  in view; the contract beside it claimed it "walks the crate sources". A fifth crate
+  gaining the dependency later would be unscanned with every guard still green. Glob the
+  tree, and `fail()` when the glob returns nothing - a scan that finds nothing must be
+  red, never a clean report. `(SRS-MD-005 r14)`
+- **Make a guard's exemption self-expiring, not asserted.** `cmd_gate` legitimately need
+  not refresh the rendered page - because the renderer emits no gate state. Writing that
+  reason in a comment leaves the exemption silently wrong the day gates reach the page.
+  Assert the *condition that justifies it* (`"gates" not in inspect.getsource(render)`),
+  so the exemption fails the moment its premise does. `(SRS-MD-005 r14)`
+
+- **An impl target is a TYPE, not an identifier.** `for\s+(\w+)` misses
+  `impl Gate for &AlwaysOpen`, `impl<'a> Gate for &'a AlwaysOpen` and
+  `impl Gate for (AlwaysOpen, u8)` - all legal Rust, all production implementors, all
+  invisible to a "closed set" enumeration. Capture the span up to `where` or `{`, strip
+  its generic arguments (or `P` and `C` in `Foo<P, C>` each read as a type and the guard
+  cries wolf on the declared producer), then take the type names. `(SRS-MD-005 r15)`
+- **When you fix a regex defect, grep the file for the same shape before you write the
+  playbook entry about it.** The `[^>]*` fix landed 54 lines below two siblings carrying
+  the identical class, one of which would have `fail()`ed claiming the producer did not
+  implement the trait the moment it grew an `Fn() -> i64` bound. `(SRS-MD-005 r15)`
+- **A "class" guard that keys on a DIRECT call sees only the odd path.** The recorder
+  check looked for `save_record` by name, which caught the two commands that call it
+  directly and missed `run`, `record` and `artifact` - the three that persist through
+  `_store_step`, i.e. the normal way to write one. Close the relation transitively and
+  assert the closure reaches the known helper, so the walk itself is tested.
+  `(SRS-MD-005 r15)`
+- **Scope a cross-file consistency check to the LINE, not the file.** Comparing every
+  "N rounds" claim in the queue against every feature id in the queue produced seven
+  false accusations on its first run. A row is one line; keep the claim and its subject
+  together. `(SRS-MD-005 r15)`
+
+- **A `->` will defeat your bracket matcher. Again.** Three separate patterns in one
+  feature: `(?:<[^>]*>)?` for an impl's generics (r14), `for\s+(\w+)` for its target
+  (r15), and `<[^{}();]*?>` for a `fn` declaration's generics (r17, where excluding `(`
+  broke on `<F: Fn() -> bool>`). Write ONE named pattern for "a generic list" that admits
+  `->` explicitly, use it everywhere, and test it against a bound containing both a
+  parenthesis and an arrow. `(SRS-MD-005 r17)`
+- **A gate that is real is not automatically a gate that is RELEVANT.**
+  `cargo build && echo 'builds clean'` is honest; `ls && echo '176 suites ok'` is not, and
+  a check that only asked "is the gating command a no-op?" accepted both. Require the
+  claim and its gate to be about the same thing - at least one substantial word of what
+  is printed appearing in the command that gates it. `(SRS-MD-005 r17)`
+
+- **When the same defect class appears a fourth time, stop patching call sites and go
+  count them.** A `->` defeated four separate patterns in this one feature: impl generics
+  (r14), the impl target (r15), a `fn` declaration's generics (r17), and the manual depth
+  counter in `_strip_generic_args` (r18), which decremented on the `>` of the arrow and so
+  reported a RETURN TYPE as an undeclared production implementor. Each fix was correct and
+  each round found the next one, because the fix was always local. `grep -n '\[^>\]\|>' `
+  over every pattern in the file, once, would have ended it four rounds earlier.
+  `(SRS-MD-005 r18)`
+- **Test the false-positive direction of a guard, not only the bypass.** A guard that
+  `fail()`s on a legal shape gets disabled by the next person who meets it, so it is as
+  dead as one that never fires. Every bypass test here now has a sibling asserting the
+  legal shape stays quiet. `(SRS-MD-005 r18)`
+
+- **Stop writing regexes for nested syntax; count.** Bounding a Rust generic list by
+  pattern failed four times in a row on shapes each version had not anticipated: a `->`
+  closed it early, then a parenthesised bound, then `<T: Into<Vec<u8>>>` exceeded the one
+  nesting level the regex allowed. A bracket counter has no depth limit and needs no
+  alternation for the arrow, which is simply "a `>` whose predecessor is `-`". Twenty
+  lines, and the class is closed. `(SRS-MD-005 r19)`
+- **A guard keyed on a NAME is defeated by a rename.** `use atp_market_data::RestartWindowGate as Gate;`
+  then `impl Gate for AlwaysOpen` produced no match, while the check went on printing
+  "this enumeration is what makes it unforgeable". Collect the file's `use ... as` aliases
+  (braced groups too) and search for every name the trait answers to.
+  `(SRS-MD-005 r19)`
+
+- **A backstop bounded like the pattern it backs up is not a backstop.** The completeness
+  check written to end five rounds of "your regex missed this shape" counted with `[^;]`,
+  the same boundary the strict pattern used - so any shape a `;` defeated defeated BOTH,
+  and `expected == matched == 0` read as a clean, closed set with an always-admitting
+  implementor sitting in it. A backstop must be bounded by something the thing it guards
+  genuinely cannot contain (here: braces), and it must be TESTED against a shape the
+  strict pass fails. `(SRS-MD-005 r21)`
+- **A hand-written parser must return "unparseable", never "nothing".** Replacing the
+  regex with a bracket counter fixed the depth problem and introduced a worse one: on a
+  `;` inside `<T: Into<[u8; 4]>>` it returned the start index, so the caller silently
+  DROPPED that declaration and the exemption was inherited by a function the scan could
+  not read. Return a sentinel and make the caller refuse. Failing open is the one outcome
+  a guard may never have. `(SRS-MD-005 r21)`
+- **A rename can be two hops.** Collecting `use ... as` aliases from the file being scanned
+  missed `pub use Trait as Gate;` in one module followed by `use crate::gates::Gate;` in
+  another - no strict match, no loose match, clean report. Collect aliases across the whole
+  tree and close over them, because an alias can itself be renamed. `(SRS-MD-005 r21)`

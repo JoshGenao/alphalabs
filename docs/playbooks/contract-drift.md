@@ -156,3 +156,64 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   Grep the check tools for the crate path before you move a type, not after.
   `(SRS-MD-005 r6)`
 
+
+- **Enumerate the recorders; do not fix the one that was caught.** `evidence.py` has four
+  commands that write the record, and three re-rendered `EVIDENCE.md` afterwards.
+  `cmd_critic` - the LAST one to run before a close - did not, so the page a reviewer
+  opens in the PR read `critics: none recorded` while `evidence.json` beside it, in the
+  same commit, held a `block`. The guard is an AST walk over `cmd_*` asserting that
+  anything calling `save_record` also refreshes the page; it immediately found a second
+  instance the sweep had missed. When a rendered artifact can lag its source, the class is
+  "every writer of the source", never "this writer". `(SRS-MD-005 r14)`
+- **A row that promises a command must be checked against the state that command reads.**
+  The verification queue told the operator "Nothing" was missing and handed over
+  `close_feature.py --verified --attested-by operator`, which exits 3 while a critic
+  verdict is `block` - `--attested-by` relaxes which STEPS count, never the critic gate.
+  The guard now cross-reads every `close_feature.py <ID>` in the queue against
+  `.harness/runs/<ID>/evidence.json`. Prose that instructs is prose that can be wrong in
+  a way the reader only discovers by running it. `(SRS-MD-005 r14)`
+
+- **A rustdoc that argues for a design outlives the design by rounds.** The reachability
+  cache changed policy in r14; the constant's rustdoc still called the OLD policy "the
+  whole design" in r16, `state()` still promised "a fresh probe on every read", and
+  `last_outcome()` still told callers `None` meant the gateway had answered again. Three
+  separate reviews, three separate blocks, one root cause: prose that ARGUES is prose a
+  reader trusts, so it is worse than absent when it is stale. When you change a policy,
+  grep the constant's name and every method that reads it, and re-read those doc comments
+  in the same edit. `(SRS-MD-005 r15, r16)`
+- **A session note's "Key decisions" is a claim about the shipped code, not a diary.**
+  The note still recorded "Only an UNREACHABLE observation is reused" two rounds after
+  the code stopped doing that, and the same file said the opposite 200 lines later. Record
+  the decision that SHIPPED, and where it was reversed, say so in the same bullet.
+  Per-round narration belongs in the round log below it. `(SRS-MD-005 r16)`
+- **Distinguish a TOTAL from an ordinal before writing a consistency guard.** "Adversarial
+  rounds: 13" is a claim that goes stale; "round 12 found X" is narration that stays true
+  forever. A guard matching both raised 38 accusations against session notes doing nothing
+  wrong - and one that matched only `<digit> rounds` missed two of the three claims that
+  had actually drifted. Match `rounds: N` and `at|after N rounds`; leave ordinals alone.
+  `(SRS-MD-005 r16)`
+
+- **A verification transcript must certify the tree it SHIPS with, and re-running is the
+  only honest repair.** `VERIFICATION.md` said its commands "were re-run against the
+  integrated tree (`ed36c790`)" while the diff carrying it had rewritten 215 lines of the
+  module those captures covered; its pytest block reported 101 collected where the same
+  command now collected 110. The captures were real - they just certified different code,
+  which a reader cannot see. Re-run every block (scripted, so nothing is retyped), and
+  re-apply each deliberate mutation around its own command for the sections that capture
+  a broken tree. `tests/unit/test_evidence_artifacts.py::test_a_verification_transcript_certifies_the_tree_it_ships_with`
+  now compares the transcript's own `git rev-parse HEAD` capture against
+  `code_changed_since`. `(SRS-MD-005 r16)`
+
+- **A rendered page that EMBEDS a checker's output cannot also be checked by it.** Adding
+  "is EVIDENCE.md current?" to `verify` made `render_markdown` -> `verify` -> render
+  recurse without bound, and once that was guarded, the page began reporting its own
+  staleness - which changed what a fresh render said, so no fixed point existed and the
+  page could never be current. The flag has to wrap the RENDER, not the check: while a
+  render is in progress the self-check stands down, so the page never makes a claim about
+  itself. `(SRS-MD-005 r19)`
+- **A command that rebuilds a record entry silently drops the fields you did not pass.**
+  `evidence.py critic` builds a fresh entry, so the re-stamp prescribed by the
+  verification queue erased `rounds` - and the corroboration check only compares counts
+  that are PRESENT, so following the documented command turned off the guard the same
+  change had just added. Carry unspecified fields forward, and test that an explicit value
+  still wins. `(SRS-MD-005 r19)`
