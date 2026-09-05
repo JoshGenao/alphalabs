@@ -10,7 +10,9 @@
 
 ## Outstanding
 
+- deterministic critic approved at an unrecorded commit, which cannot be checked against this one (missing, unknown, unreadable, or on another line of history). An unverifiable verdict is not a current one — re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
+- step(s) [1, 2, 3, 4] ran against code that has since moved (213 path(s) changed, e.g. .env.example, .github/workflows/ci.yml, .github/workflows/security.yml) - re-run them with `tools/evidence.py run SRS-RESV-005 --step N -- <command>`
 
 ## Acceptance criterion
 

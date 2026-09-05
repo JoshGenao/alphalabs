@@ -10,7 +10,10 @@
 
 ## Outstanding
 
+- deterministic critic approved at 3f0afcf9, but 153 non-evidence path(s) have changed since (.env.example, .github/workflows/security.yml, .gitleaks.toml…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
+- verification_method is 'e2e' and 2 image artifact(s) are attached to step 3, but code has changed since they were captured (.env.example, .github/workflows/security.yml, .gitleaks.toml, SECURITY.md, architecture/README.md …). A screenshot of the previous version cannot certify this one — re-run the step.
+- step(s) [1, 2, 3, 4] ran against code that has since moved (153 path(s) changed, e.g. .env.example, .github/workflows/security.yml, .gitleaks.toml) - re-run them with `tools/evidence.py run SRS-RESV-006 --step N -- <command>`
 
 ## Acceptance criterion
 

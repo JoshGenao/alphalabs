@@ -4,14 +4,15 @@
 
 - **method**: `integration`
 - **steps evidenced**: 4/4
-- **critics**: none recorded
+- **critics**: deterministic `approve`, judgment `block`
 - **artifacts**: 0
 - **record complete**: NO
 
 ## Outstanding
 
-- no deterministic critic verdict recorded
-- no judgment critic verdict recorded
+- deterministic critic approved at c8cbe20f, but 76 non-evidence path(s) have changed since (.env.example, .github/workflows/security.yml, .gitleaks.toml…) — the approval describes code this close would not ship. Re-run the deterministic review.
+- judgment critic verdict is 'block', not 'approve'
+- step(s) [1, 2, 3, 4] ran against code that has since moved (97 path(s) changed, e.g. .env.example, .github/workflows/security.yml, .gitleaks.toml) - re-run them with `tools/evidence.py run SRS-NOTIF-001 --step N -- <command>`
 
 ## Acceptance criterion
 

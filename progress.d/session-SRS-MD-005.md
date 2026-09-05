@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 22 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 23 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 22 - the loop has not reached APPROVE.** The feature first
+  standing at round 23 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 22 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 23 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,7 +398,7 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away, across all 22
+Every finding was fixed; none was overridden or argued away, across all 23
 rounds. Where a finding's recommendation would have been wrong I did not
 diverge: I have not yet had to. That is itself worth recording - a reviewer
 that is right every time is one whose next block should be believed, not
@@ -463,6 +463,23 @@ count.
       to "contain the word `no`" - the most fail-open record producing the
       weakest check; and the playbook count in this note went stale a THIRD
       time, so it is gone, replaced by the command that computes it.
+
+  r23 block/6  - the round-22 class fix fixed THREE of five copies. The two it
+      missed were the public `with_probe_ttl` rustdoc ("a caller passing 2 s
+      gets 2 s for an unreachable gateway") and the L7 docstring ("asking for
+      more still gets the FULL value for a negative"), so the safety layer
+      described the negation of what the code does for one more round. A class
+      fix that fixes part of the class is how the same defect returns.
+      Worse, the test the module comment NAMED as pinning the invariant could
+      not fail: it configured 50 ms, below both defaults, so the `min` on the
+      negative branch never bit and deleting it left the test green. Citing a
+      test by name is a claim about coverage; it has to be mutation-checked like
+      any other. Also: the EVIDENCE.md staleness check added in r19 made FOUR
+      sibling features' pages mismatch. Re-rendering them changed nothing about
+      their state - it printed what their own records already held (SRS-MD-003's
+      page said "critics: none recorded" beside two recorded verdicts;
+      SRS-NOTIF-001's steps had run against a tree 97 files ago). Those are
+      their features' problems, now visible instead of hidden.
 
 ## Playbook updates
 
@@ -554,7 +571,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 22**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 23**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
