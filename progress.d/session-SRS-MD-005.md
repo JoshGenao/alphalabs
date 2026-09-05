@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 20 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 21 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 20 - the loop has not reached APPROVE.** The feature first
+  standing at round 21 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 20 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 21 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,7 +398,7 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away, across all 20
+Every finding was fixed; none was overridden or argued away, across all 21
 rounds. Where a finding's recommendation would have been wrong I did not
 diverge: I have not yet had to. That is itself worth recording - a reviewer
 that is right every time is one whose next block should be believed, not
@@ -423,6 +423,28 @@ count.
       "all nine were correct" was a round-13 figure standing through six more
       rounds, and the playbook section said "rounds 14-17, 23 entries" while
       printing the command that would have shown r18 and r19.
+
+  r21 block/7  - the backstop added in r20 to end "your regex missed this
+      shape" was bounded by `[^;]`, the SAME boundary the strict pattern used,
+      so any shape a `;` defeated defeated both and the scan reported a clean,
+      closed set with an always-admitting implementor in it. A backstop bounded
+      like the thing it backs up is not a backstop. The same `;` broke the
+      bracket COUNTER that had replaced the regex, and worse: it returned the
+      start index, so the caller silently DROPPED the declaration and the
+      exemption was inherited by a function the scan could not read. Failing
+      open is the one outcome a guard may never have; it returns an explicit
+      unparseable sentinel now. Also: a rename can be TWO hops (`pub use ... as
+      Gate` in one module, `use crate::gates::Gate` in another) and neither
+      pattern saw it; `cmd_critic` carrying the previous round count forward
+      could not work, because the round that produces an APPROVE appends its own
+      ledger line - so the documented close recipe stamped N against a ledger of
+      N+1 and `verify` refused, making the recipe unrunnable and the tool the
+      reason; the queue disclosure accepted any verdict span anywhere on a row,
+      so one disclosing the DETERMINISTIC layer while hiding a judgment `block`
+      passed; and `last_outcome()`'s rustdoc claimed the probe reason surfaces
+      "through the operator CLI" when the method has no production caller at
+      all - a claim a playbook entry had already repeated, which is how a small
+      false statement becomes project memory.
 
 ## Playbook updates
 
@@ -504,7 +526,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 20**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 21**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
