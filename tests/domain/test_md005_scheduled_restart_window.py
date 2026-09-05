@@ -1029,10 +1029,12 @@ def test_with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() -> Non
 
     `with_probe_ttl` promised "reuse for `ttl_ns`" for a round after `ttl_for`
     began capping a REACHABLE observation at 100 ms, so a caller passing 2 s was
-    silently getting 100 ms for a positive. The prose is fixed; this pins the
-    behaviour, in all three directions: asking for more gets the cap, asking for
-    more still gets the FULL value for a negative, and asking for zero disables
-    reuse entirely.
+    silently getting 100 ms for a positive. It then said "2 s gets 2 s for an
+    unreachable gateway" for a round after round 22 capped that branch too.
+
+    This pins the behaviour in all three directions: asking for more gets each
+    outcome's OWN cap (100 ms reachable, 1 s unreachable - not the 2 s asked
+    for), and asking for zero disables reuse entirely.
 
     NOT proven here: that 100 ms is the right ceiling. That is argued against
     NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile

@@ -214,12 +214,19 @@ where
     /// Reuse a reachability observation for up to `ttl_ns` instead of the
     /// default.
     ///
-    /// **UP TO.** A REACHABLE observation is additionally capped at
-    /// [`REACHABLE_CACHE_TTL_NS`] (100 ms), so a caller passing 2 s gets 2 s for
-    /// an unreachable gateway and 100 ms for a reachable one. The cap is not
-    /// negotiable through this builder: a stale `Connected` is what hands a live
-    /// order to a dead gateway, and no caller may raise that ceiling. Pass a
-    /// SHORTER value and both directions shorten, because the cap is a `min`.
+    /// **UP TO.** Each outcome is additionally capped at its own default:
+    /// [`REACHABLE_CACHE_TTL_NS`] (100 ms) for a reachable gateway and
+    /// [`REACHABILITY_CACHE_TTL_NS`] (1 s) for an unreachable one. A caller
+    /// passing 2 s therefore gets 1 s and 100 ms, not 2 s and 100 ms. Neither
+    /// cap is negotiable through this builder: a stale `Connected` is what hands
+    /// a live order to a dead gateway, and a longer stale `Unreachable` is a
+    /// longer outage the operator is not told about. Pass a SHORTER value and
+    /// both directions shorten, because each cap is a `min`.
+    ///
+    /// This rustdoc said "a caller passing 2 s gets 2 s for an unreachable
+    /// gateway" for one round after round 22 made that false - the same
+    /// stale-prose class the round before it, missed because the class fix
+    /// corrected three copies of the invariant and not five.
     ///
     /// Zero disables reuse in both directions - every read probes. Useful for a
     /// test that wants to count probes, and honest for a caller that would
@@ -849,6 +856,30 @@ mod tests {
             tight.probe.calls.get(),
             2,
             "a NEGATIVE must not outlive a configured TTL shorter than the positive cap"
+        );
+
+        // The OTHER direction, and the half this test was missing. Configuring
+        // 50 ms is below both defaults, so the `min` on the negative branch
+        // never bit: removing `.min(REACHABILITY_CACHE_TTL_NS)` from `ttl_for`
+        // left this test green while the module comment above named it as the
+        // thing pinning the shorten-only invariant. A test cited as proof of an
+        // invariant has to exercise the branch that could break it.
+        let generous =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+                now.load(Ordering::SeqCst)
+            })
+            .with_probe_ttl(REACHABILITY_CACHE_TTL_NS * 4);
+        assert_eq!(generous.state(), ConnectivityState::Unreachable);
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABILITY_CACHE_TTL_NS * 2,
+            Ordering::SeqCst,
+        );
+        let _ = generous.state();
+        assert_eq!(
+            generous.probe.calls.get(),
+            2,
+            "a configured TTL LONGER than the negative default must be capped to it, \
+             or `with_probe_ttl` lengthens a window it may only shorten"
         );
     }
 

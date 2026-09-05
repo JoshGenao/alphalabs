@@ -99,3 +99,18 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
   parsed, and `fail()` when the strict pass accounts for fewer. Any future shape the
   parser cannot read then turns the guard red instead of silently shrinking the set it
   claims is closed. `(SRS-MD-005 r20)`
+
+- **A new currency check does not "break" sibling records; it reveals them.** Adding the
+  EVIDENCE.md staleness check turned four other features' pages from clean to
+  problem-carrying. Re-rendering them changed nothing about their state - it printed what
+  their own records had held all along: SRS-MD-003's page said "critics: none recorded"
+  beside a record holding two verdicts, and SRS-NOTIF-001's steps had run against a tree
+  97 files ago. Re-render every sibling when you add a check to `verify`, and read the
+  diff: what appears is a list of things that were already true and unsaid.
+  `(SRS-MD-005 r23)`
+- **A test cited as proof of an invariant must exercise the branch that could break it.**
+  A module comment named `a_shortened_ttl_shortens_both_directions` as the thing pinning
+  the runtime shorten-only invariant. That test configured 50 ms - below BOTH defaults -
+  so the `min` on the negative branch never bit, and deleting it left the test green.
+  Citing a test by name is a claim about what it covers; check the citation by mutating
+  the thing it is supposed to pin. `(SRS-MD-005 r23)`
