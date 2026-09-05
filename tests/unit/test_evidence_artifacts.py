@@ -668,6 +668,54 @@ def test_every_recorder_that_saves_the_record_also_refreshes_the_page():
 # --- A transcript that promises captured output must not carry typed results -
 
 
+# Commands whose success proves nothing, so `<noop> && echo "all green"` is a
+# fabrication wearing the shape of a conditional report.
+_NOOP_COMMANDS = frozenset({"true", ":", "echo", "printf", "test", "["})
+
+
+def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
+    """Lines that PRINT a result rather than capture one.
+
+    A print is legitimate when the value comes from a command that ran - `$?`,
+    an `xargs` placeholder, a substitution, a pipe - or when a real command
+    gates it with `&&`, since then the text is only reached if that command
+    succeeded. It is a fabrication when the text is typed and nothing that ran
+    could have contradicted it.
+    """
+    import re
+
+    claim = re.compile(
+        r"\b(ok|pass(ed)?|fail(ed|ures)?|green|clean|success|\d+\s*(suites?|tests?))\b",
+        re.I,
+    )
+    printer = re.compile(r"\b(?:echo|printf)\s+(['\"])(.*?)\1")
+    out = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line.startswith("$"):
+            continue
+        cmd = line[1:].strip()
+        for m in printer.finditer(cmd):
+            printed = m.group(2)
+            if not claim.search(printed):
+                continue
+            # Derived from something that ran: a captured exit code, an xargs
+            # placeholder, a substitution, or a printf conversion whose values
+            # are supplied by the program that computed them.
+            if any(tok in printed for tok in ("$?", "{}", "$(", "`")):
+                continue
+            if re.search(r"%[-+ #0-9.]*[difsuxXeEgGc]", printed):
+                continue
+            # Gated by a real command: everything left of this `&&`.
+            before = cmd[: m.start()]
+            gate = before.rsplit("&&", 1)[0].strip() if "&&" in before else ""
+            head = gate.split()[0] if gate else ""
+            if head and head not in _NOOP_COMMANDS:
+                continue
+            out.append((n, line))
+    return out
+
+
 def test_no_verification_transcript_asserts_a_result_it_did_not_run():
     """The worst defect this feature produced, made impossible to repeat.
 
@@ -680,11 +728,13 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
 
     The `[exit 0]` is `echo`'s exit code. The number happened to be right, which
     is exactly why a reader could not tell: a typed result and a captured one
-    look identical once they are on the page. So the shape is banned outright
-    rather than spot-checked - an `echo` may report a real exit code it captured
-    (`; echo "... exit $?"`), but it may never state a result of its own.
+    look identical once they are on the page.
+
+    The first version of this guard matched only a line beginning `$ echo "`,
+    which `printf`, a trailing `echo`, or `true && echo "all green"` walks
+    straight past - and the guarded document already carried two `&& echo`
+    lines. It now reads what is PRINTED and asks where the value came from.
     """
-    import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
@@ -692,20 +742,45 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
     if not runs.is_dir():
         pytest.skip("no evidence runs in this tree")
 
-    # A result claim: a verdict word or a count, in text `echo` invents rather
-    # than reads. `$?` and `{}` mean the value came from a command that ran.
-    claim = re.compile(
-        r"\b(ok|pass(ed)?|fail(ed|ures)?|green|clean|\d+\s*(suites?|tests?))\b", re.I
-    )
     offenders = []
     for doc in sorted(runs.rglob("*.md")):
         text = doc.read_text(encoding="utf-8", errors="replace")
         if "captured terminal output" not in text:
             continue
-        for n, line in enumerate(text.splitlines(), 1):
-            m = re.match(r"\$\s*echo\s+(['\"])(.*)\1\s*$", line.strip())
-            if m and claim.search(m.group(2)) and "$?" not in m.group(2) and "{}" not in m.group(2):
-                offenders.append(f"{doc.relative_to(root)}:{n}: {line.strip()}")
+        offenders += [
+            f"{doc.relative_to(root)}:{n}: {line}" for n, line in _fabricated_result_claims(text)
+        ]
     assert not offenders, "typed result(s) under a promise of captured output:\n  " + "\n  ".join(
         offenders
     )
+
+
+@pytest.mark.parametrize(
+    ("label", "line", "fabricated"),
+    [
+        ("bare echo", '$ echo "cargo test --workspace : 176 suites ok, 0 failed"', True),
+        ("printf instead", '$ printf "176 suites ok"', True),
+        ("no-op gate", '$ true && echo "176 suites ok"', True),
+        ("echo gating echo", '$ echo hi && echo "all tests passed"', True),
+        ("real command gate", "$ cargo build -q && echo 'restored: builds clean again'", False),
+        ("captured exit code", '$ cargo clippy > /dev/null; echo "clippy : exit $?"', False),
+        (
+            "xargs placeholder",
+            "$ cargo fmt --check | xargs -I{} echo '{} files need reformatting'",
+            False,
+        ),
+        ("not a result claim", '$ echo "--- SECTION 9 ---"', False),
+        (
+            "awk printf over a real pipeline",
+            "$ cargo test --workspace | awk 'END {printf \"%d suites, %d ok\\n\", s, ok}'",
+            False,
+        ),
+        ("output line, not a command", "176 suites, 176 ok, 0 failed", False),
+    ],
+)
+def test_the_fabrication_matcher_separates_typed_results_from_captured_ones(
+    label, line, fabricated
+):
+    """Every bypass the reviewer named, plus the honest shapes it must not break."""
+    hits = _fabricated_result_claims(line)
+    assert bool(hits) is fabricated, f"{label}: {line!r} -> {hits}"

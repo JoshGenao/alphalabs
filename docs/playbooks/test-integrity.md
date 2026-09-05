@@ -410,3 +410,17 @@ Read this whenever you write a test, and before you believe a green one.
   `tests/unit/test_evidence_artifacts.py::test_no_verification_transcript_asserts_a_result_it_did_not_run`,
   which permits `; echo "... exit $?"` (a real captured code) and rejects an `echo` that
   states a result of its own. `(SRS-MD-005 r15)`
+
+- **A spy whose default equals the expected value cannot fail.** The test proving the
+  dispatcher passes `root` used `def spy(config, source, root=cc.ROOT)` and asserted the
+  spy saw `ROOT` - so it passed with the fix reverted, because the default supplied the
+  answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
+  arrived. Found on the guard's own first mutation run, which is the only reason it was
+  found at all. `(SRS-MD-005 r16)`
+- **Ban a shape by what it MEANS, not by how it was written.** The typed-result ban
+  matched `^\$ echo "..."`, so `printf`, a trailing `echo`, or `true && echo "all green"`
+  walked past - and the guarded document already carried two `&& echo` lines. Read what is
+  PRINTED and ask where the value came from: `$?`, `{}`, a substitution or a `%d`
+  conversion means a command produced it; a real command before `&&` means the print is
+  conditional on that command succeeding; anything else is typed. Then pin the whole truth
+  table, honest shapes included, so the fix cannot over-fire either. `(SRS-MD-005 r16)`

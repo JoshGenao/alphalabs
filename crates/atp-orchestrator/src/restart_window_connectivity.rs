@@ -260,12 +260,16 @@ where
         }
     }
 
-    /// The last UNREACHABLE observation, while it is still within the reuse
-    /// window; `None` once the gateway answers again.
+    /// The last reachability observation, while it is still within ITS reuse
+    /// window; `None` once that window has passed.
     ///
-    /// `None` is the normal healthy answer, not missing information: a
-    /// reachable outcome is deliberately never retained (see
-    /// [`REACHABILITY_CACHE_TTL_NS`]). Ask
+    /// Both outcomes are retained, under the same asymmetric bounds the gate
+    /// uses: [`REACHABLE_CACHE_TTL_NS`] for a positive, and the longer
+    /// [`REACHABILITY_CACHE_TTL_NS`] for a negative. So `None` means "no
+    /// observation current enough to report", NOT "the gateway is healthy" -
+    /// an earlier version of this method cached negatives only and this
+    /// rustdoc said `None` meant the gateway had answered again, which stopped
+    /// being true one round before the text did. Ask
     /// [`observe_if_needed`](Self::observe_if_needed) for the current answer.
     ///
     /// It exists because the collapsed boolean loses the difference between
@@ -326,15 +330,12 @@ where
         }
     }
 
-    /// Probe, or reuse an observation younger than the TTL.
+    /// How long THIS outcome may be reused.
     ///
-    /// The cache is checked and refreshed under ONE lock hold, so two threads
-    /// cannot both decide the entry is stale and both pay the deadline.
-    /// How long THIS outcome may be reused. One function, because the bound is
-    /// the safety property and two copies of it drifted within a single round:
-    /// `observe_cached` capped a positive at 100 ms while `last_outcome`, the
-    /// method that reports the fact to an operator, still filtered on the 1 s
-    /// negative TTL.
+    /// One function, because the bound is the safety property and two copies of
+    /// it drifted within a single round: `observe_cached` capped a positive at
+    /// 100 ms while `last_outcome`, the method that reports the fact to an
+    /// operator, still filtered on the 1 s negative TTL.
     ///
     /// `with_probe_ttl(0)` disables reuse entirely, in both directions, because
     /// the cap is a `min` rather than a constant.
@@ -346,6 +347,10 @@ where
         }
     }
 
+    /// Probe, or reuse an observation younger than its per-outcome TTL.
+    ///
+    /// The cache is checked and refreshed under ONE lock hold, so two threads
+    /// cannot both decide the entry is stale and both pay the deadline.
     fn observe_cached(&self, now_ns: i64) -> ReachabilityOutcome {
         let mut cached = self
             .last_outcome

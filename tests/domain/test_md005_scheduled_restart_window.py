@@ -971,3 +971,54 @@ def test_the_reporting_surface_honours_the_same_bound_as_the_gate() -> None:
     """
     name = "the_reporting_surface_honours_the_same_bound_as_the_gate"
     _assert_one_passed(_producer_test(name), name)
+
+
+def test_no_public_doc_still_describes_the_replaced_cache_policy() -> None:
+    """Prose that ARGUES for a design is worse than absent prose when it is stale.
+
+    The reachability cache changed policy once (r14: cache both outcomes, with
+    a short bound on the positive). Its documentation did not, and the drift
+    blocked three consecutive reviews:
+
+      r15  the constant's rustdoc still called the OLD policy "the whole design"
+      r15  `state()` still promised "a fresh probe on every read"
+      r16  `last_outcome()` still told callers `None` meant the gateway had
+           answered again
+
+    Each was a public doc comment a reader would reasonably trust. This pins the
+    claims that are now false, so the next policy change cannot leave them
+    behind a fourth time.
+
+    NOT proven here: that the current prose is a GOOD description. Only that the
+    specific superseded claims are gone and the replacement names both bounds.
+    """
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    docs = "\n".join(line for line in source.splitlines() if line.strip().startswith("///"))
+    # Drop QUOTED spans first. A rustdoc that says: this comment once said
+    # "a fresh probe on every read", and that stopped being true - is recording
+    # the drift, not repeating it. This guard flagged exactly that on its first
+    # run, which is the third time in this feature a source-scanning check has
+    # accused its own documentation (docs/playbooks/adversarial-precheck.md).
+    normalised = " ".join(re.sub(r'"[^"]*"', " ", docs).split())
+
+    superseded = {
+        "only-a-negative-is-cached": "Only a NEGATIVE outcome is cached",
+        "a-positive-is-never-retained": "never retained",
+        "state-probes-on-every-read": "a fresh probe on\n/// every read",
+        "none-means-healthy": "`None` once the gateway answers again",
+    }
+    still_present = {
+        label: text
+        for label, text in superseded.items()
+        if " ".join(text.replace("///", " ").split()) in normalised
+    }
+    assert not still_present, (
+        "public rustdoc still describes the cache policy replaced in round 14: "
+        f"{sorted(still_present)}"
+    )
+
+    # Non-vacuity: the replacement must actually name BOTH bounds, or this test
+    # would pass just as well against a module with no documentation at all.
+    assert "REACHABLE_CACHE_TTL_NS" in normalised
+    assert "REACHABILITY_CACHE_TTL_NS" in normalised
+    assert "Both outcomes are cached" in normalised or "Both outcomes are retained" in normalised

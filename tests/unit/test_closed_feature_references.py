@@ -240,19 +240,38 @@ def test_the_matcher_does_not_fire_on_a_clean_line(line: str) -> None:
 # --- The queue must not hand the operator a command that cannot succeed ------
 
 
+# Both critic layers must APPROVE for a close to succeed, so a layer with no
+# recorded verdict is as fatal as a `block` (`evidence.py` appends "no judgment
+# critic verdict recorded" and the command exits 3). CLAUDE.md rule 3: absent,
+# unreadable and unknown are each their own fail-closed state, never empty.
+REQUIRED_CRITIC_LAYERS = ("deterministic", "judgment")
+
+
 def _blocked_layers(fid: str) -> list[str]:
+    """Every reason `close_feature.py` would refuse, or `[]` only if it would not.
+
+    Returning `[]` for a missing file, corrupt JSON or an absent layer made the
+    guard read "nothing is wrong" for exactly the records that cannot close -
+    the outcome its own assertion message claims to prevent.
+    """
     path = ROOT / ".harness" / "runs" / fid / "evidence.json"
     if not path.exists():
-        return []
+        return ["record absent"]
     try:
         rec = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-    return sorted(
-        layer
-        for layer, entry in (rec.get("critic") or {}).items()
-        if isinstance(entry, dict) and entry.get("verdict") != "approve"
-    )
+    except (json.JSONDecodeError, OSError) as exc:
+        return [f"record unreadable ({type(exc).__name__})"]
+    critic = rec.get("critic")
+    if not isinstance(critic, dict):
+        return ["no critic block recorded"]
+    problems = []
+    for layer in REQUIRED_CRITIC_LAYERS:
+        entry = critic.get(layer)
+        if not isinstance(entry, dict) or "verdict" not in entry:
+            problems.append(f"{layer} (no verdict recorded)")
+        elif entry["verdict"] != "approve":
+            problems.append(f"{layer} (`{entry['verdict']}`)")
+    return problems
 
 
 def test_a_queue_row_promising_a_close_discloses_a_standing_critic_block() -> None:
@@ -288,6 +307,49 @@ def test_a_queue_row_promising_a_close_discloses_a_standing_critic_block() -> No
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("absent", None),
+        ("corrupt", "{not json"),
+        ("no critic block", '{"steps": []}'),
+        (
+            "critic present, judgment missing",
+            '{"critic": {"deterministic": {"verdict": "approve"}}}',
+        ),
+        ("judgment present, verdict missing", '{"critic": {"judgment": {"reviewer": "x"}}}'),
+    ],
+)
+def test_an_unreadable_or_absent_verdict_never_reads_as_approved(
+    label, payload, tmp_path, monkeypatch
+) -> None:
+    """CLAUDE.md rule 3, applied to this guard.
+
+    `close_feature.py` needs BOTH layers to say `approve`, so a record that is
+    missing, corrupt, or simply has no judgment entry refuses the close exactly
+    as a `block` does. The first version of `_blocked_layers` returned `[]` for
+    every one of these, which the caller reads as "nothing is wrong" - so the
+    guard was silent for precisely the records that cannot close, the outcome
+    its own assertion message claims to prevent.
+    """
+    fid = "SRS-FAKE-003"
+    run = tmp_path / ".harness" / "runs" / fid
+    run.mkdir(parents=True)
+    if payload is not None:
+        (run / "evidence.json").write_text(payload, encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | Nothing outstanding. | `close_feature.py {fid} --verified` |",
+        encoding="utf-8",
+    )
+    import tests.unit.test_closed_feature_references as mod
+
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    with pytest.raises(AssertionError) as exc:
+        mod.test_a_queue_row_promising_a_close_discloses_a_standing_critic_block()
+    assert fid in str(exc.value), label
+
+
 def test_a_stated_round_count_matches_the_record() -> None:
     """Three surfaces claimed three different round counts (13, 13, 14).
 
@@ -302,6 +364,11 @@ def test_a_stated_round_count_matches_the_record() -> None:
     runs = ROOT / ".harness" / "runs"
     if runs.is_dir():
         surfaces += sorted(runs.rglob("VERIFICATION.md"))
+    # `progress.d/` too: all three claims that actually drifted lived in a
+    # session note, and the guard that "closed" the drift did not read them.
+    notes = ROOT / "progress.d"
+    if notes.is_dir():
+        surfaces += sorted(notes.glob("session-*.md"))
 
     def recorded_rounds(fid: str) -> set[int]:
         rec = ROOT / ".harness" / "runs" / fid / "evidence.json"
@@ -317,16 +384,34 @@ def test_a_stated_round_count_matches_the_record() -> None:
             if isinstance(e, dict) and isinstance(e.get("rounds"), int)
         }
 
-    count_re = re.compile(r"(?:rounds:\s*|\bat\s+|\bafter\s+)(\d+)\s*rounds?")
+    # A TOTAL, not an ordinal. "Adversarial rounds: 13" and "block after 13
+    # rounds" are claims about how many rounds ran and can go stale; "round 12
+    # found X" is a per-round narration that stays true forever. Matching both
+    # produced 38 accusations against session notes doing nothing wrong, which
+    # is a guard nobody would keep. Matching only the digit-before-"rounds"
+    # form, as the first version did, missed two of the three live claims.
+    count_re = re.compile(
+        r"\brounds\s*[:=]\s*(\d+)\b|\b(?:at|after)\s+(\d+)\s+rounds?\b",
+        re.I,
+    )
     problems = []
     for doc in surfaces:
         if not doc.exists():
             continue
-        # A VERIFICATION.md sits under .harness/runs/<FID>/, so it is about that
-        # feature throughout; a queue row names its own feature on its own line.
-        owner = doc.parent.name if doc.name == "VERIFICATION.md" else None
+        # A VERIFICATION.md sits under .harness/runs/<FID>/ and a session note
+        # is named session-<FID>.md, so each is about that feature THROUGHOUT -
+        # its lines do not repeat the id. A queue row names its own feature on
+        # its own line. Without the session-note case the widened matcher still
+        # found nothing, because no line carrying "round 13" also named
+        # SRS-MD-005.
+        if doc.name == "VERIFICATION.md":
+            owner = doc.parent.name
+        elif doc.name.startswith("session-"):
+            owner = doc.stem[len("session-") :]
+        else:
+            owner = None
         for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
-            stated = {int(m) for m in count_re.findall(line)}
+            stated = {int(g) for m in count_re.findall(line) for g in m if g}
             if not stated:
                 continue
             ids = [owner] if owner else sorted(set(re.findall(r"\bSRS-[A-Z]+-\d+\b", line)))

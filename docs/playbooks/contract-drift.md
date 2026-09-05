@@ -172,3 +172,23 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   The guard now cross-reads every `close_feature.py <ID>` in the queue against
   `.harness/runs/<ID>/evidence.json`. Prose that instructs is prose that can be wrong in
   a way the reader only discovers by running it. `(SRS-MD-005 r14)`
+
+- **A rustdoc that argues for a design outlives the design by rounds.** The reachability
+  cache changed policy in r14; the constant's rustdoc still called the OLD policy "the
+  whole design" in r16, `state()` still promised "a fresh probe on every read", and
+  `last_outcome()` still told callers `None` meant the gateway had answered again. Three
+  separate reviews, three separate blocks, one root cause: prose that ARGUES is prose a
+  reader trusts, so it is worse than absent when it is stale. When you change a policy,
+  grep the constant's name and every method that reads it, and re-read those doc comments
+  in the same edit. `(SRS-MD-005 r15, r16)`
+- **A session note's "Key decisions" is a claim about the shipped code, not a diary.**
+  The note still recorded "Only an UNREACHABLE observation is reused" two rounds after
+  the code stopped doing that, and the same file said the opposite 200 lines later. Record
+  the decision that SHIPPED, and where it was reversed, say so in the same bullet.
+  Per-round narration belongs in the round log below it. `(SRS-MD-005 r16)`
+- **Distinguish a TOTAL from an ordinal before writing a consistency guard.** "Adversarial
+  rounds: 13" is a claim that goes stale; "round 12 found X" is narration that stays true
+  forever. A guard matching both raised 38 accusations against session notes doing nothing
+  wrong - and one that matched only `<digit> rounds` missed two of the three claims that
+  had actually drifted. Match `rounds: N` and `at|after N rounds`; leave ordinals alone.
+  `(SRS-MD-005 r16)`

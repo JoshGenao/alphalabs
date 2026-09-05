@@ -87,16 +87,22 @@ the lesson written back to `adversarial-precheck.md`.
   `scheduled_restart:false` into `ConnectivityEvent`, which is what makes
   `suppression_for` page instead of suppress. A window that never closed would
   silence a real failure indefinitely and every other test would still pass.
-* **Only an UNREACHABLE observation is reused; the phase never is.** The
-  execution engine consults this port INLINE on the live submission path, so the
-  probe deadline is spent inside NFR-P1's 1,000 ms order budget, not beside it
-  in NFR-R2's 15 s. Probe bounded to 250 ms, with a 1 s reuse window - and the
-  asymmetry is the design. Caching a POSITIVE would mean that for up to a second
-  after the gateway died, `state()` still said `Connected` and the ERR-2 gate
-  handed a live order to a dead gateway rather than refusing: a safety property
-  traded for latency, in the one direction this feature must never move. It is
-  also unnecessary, since a successful connect is microseconds; the expensive
-  case is precisely the unreachable one, and reusing it errs toward BLOCKING.
+* **Both outcomes are reused, under asymmetric bounds; the phase never is.**
+  The execution engine consults this port INLINE on the live submission path, so
+  the probe deadline is spent inside NFR-P1's 1,000 ms order budget, not beside
+  it in NFR-R2's 15 s. Probe bounded to 250 ms. A NEGATIVE may be reused for 1 s
+  (reusing it errs toward BLOCKING, the safe direction); a POSITIVE for only
+  100 ms, because a stale `Connected` is what hands a live order to a dead
+  gateway.
+  This decision was made TWICE. The first version cached negatives only and
+  argued that a successful connect is microseconds so there was nothing to
+  protect - true about latency, and beside the point: the gate is read once per
+  submission, so a healthy order stream opened one TCP connection per order
+  against a resource this same module refuses to probe during the lead because
+  it is scarce (r14). Then the reporting surface kept filtering on the negative
+  TTL for a round after the gate stopped (r15), and the rustdoc describing the
+  first design survived two more rounds after the code changed (r15, r16). One
+  `ttl_for()` now decides the bound for every caller.
   The phase is recomputed on every read because the two instants that matter are
   exactly where a cached verdict is wrong.
 * **A refusal states WHICH refusal.** Inside the window "suspended" tells the
@@ -170,10 +176,13 @@ surfaced. Written back to `test-integrity.md`.
   reason (a safety-path diff without a paired `tests/domain/` test) and both
   times the fix was a real pin, not a token.
 
-  judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK at
-  round 13 - the loop did not reach APPROVE, and this integrates on OPERATOR
-  AUTHORIZATION, not on a green verdict.** The operator stopped it at round 13
-  with "Close out. You are running in a loop." That call is recorded here rather
+  judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
+  standing at round 15 - the loop has not reached APPROVE.** The feature first
+  integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
+  operator stopped the loop there with "Close out. You are running in a loop.",
+  then later asked for the rounds to continue, and 14, 15 and 16 each found real
+  defects. What follows describes the round-13 stopping point as it stood; the
+  round-by-round log below carries what came after. That call is recorded here rather
   than smoothed over, and no APPROVE was faked. `evidence.py verify` reports
   `evidence INCOMPLETE - judgment critic verdict is 'block'`, which is the
   correct machine state and is why this integrates `serialized`.
@@ -204,7 +213,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 13 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 15 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 

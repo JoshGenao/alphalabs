@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
@@ -917,6 +918,58 @@ impl RestartWindowGate for SimGate {
         """
         evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("exactly 1 production type", evidence)
+
+    def test_the_dispatcher_gives_root_to_every_check_that_takes_one(self) -> None:
+        """The `root` parameter must be PASSED, not merely declared.
+
+        Round 14 added `root` to this check and recorded the finding as fixed;
+        `assert_connectivity_static` forwarded it only to `_sources`, so this
+        one check kept its `ROOT` default and scanned the REAL repository while
+        its twelve siblings scanned the caller's tree.
+
+        The root under test is a DISTINCT directory, not `ROOT`. The first
+        version of this test spied with `root=cc.ROOT` as the default and
+        asserted the spy saw `ROOT` - which it did either way, so the test
+        passed with the dispatcher's fix reverted. A guard that cannot fail is
+        not a guard, and this one proved it on its own first mutation run.
+        """
+        import inspect
+
+        import connectivity_check as cc
+
+        takes_root = [
+            name
+            for name, check, _ in cc._STATIC_CHECKS
+            if "root" in inspect.signature(check).parameters
+        ]
+        self.assertIn("restart_window_gate_implementors", takes_root)
+
+        sentinel = self.tmp
+        self.assertNotEqual(sentinel, ROOT, "the test root must differ from the real one")
+        seen: dict[str, object] = {}
+
+        def spy(config, source, root=cc.ROOT):
+            seen["root"] = root
+            return "spied"
+
+        table = tuple(
+            (n, spy if n == "restart_window_gate_implementors" else c, s)
+            for n, c, s in cc._STATIC_CHECKS
+        )
+        # `_sources` reads real files, so it keeps the real tree; only the root
+        # handed to the checks is the sentinel.
+        real_sources = cc._sources
+        with (
+            mock.patch.object(cc, "_STATIC_CHECKS", table),
+            mock.patch.object(cc, "_sources", lambda config, root=ROOT: real_sources(config, ROOT)),
+        ):
+            cc.assert_connectivity_static(self.config, sentinel)
+        self.assertEqual(
+            seen.get("root"),
+            sentinel,
+            "the dispatcher dropped `root`, so this check scans the real repo "
+            "while its siblings scan the caller's tree",
+        )
 
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""

@@ -28,6 +28,7 @@ Invoke:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import re
 import shutil
@@ -1081,10 +1082,28 @@ def run_checks() -> list[str]:
     return evidence
 
 
+def _accepts_root(check) -> bool:
+    return "root" in inspect.signature(check).parameters
+
+
 def assert_connectivity_static(config: dict, root: Path = ROOT) -> list[str]:
-    """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
+    """Static checks usable from ``tools/architecture_check.py`` (no cargo).
+
+    `root` reaches EVERY check that can take it, decided from the signature
+    rather than from a list somebody has to remember to update. It previously
+    reached only `_sources`, so `check_restart_window_gate_implementors` - which
+    walks the tree itself rather than reading a prepared source string - scanned
+    the real repository while its twelve siblings scanned the caller's. That is
+    the same finding round 14 recorded as fixed and left half-done: the
+    parameter was added to the check and never passed to it.
+    """
     sources = _sources(config, root)
-    return [check(config, sources[scope]) for _, check, scope in _STATIC_CHECKS]
+    return [
+        check(config, sources[scope], root=root)
+        if _accepts_root(check)
+        else check(config, sources[scope])
+        for _, check, scope in _STATIC_CHECKS
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
