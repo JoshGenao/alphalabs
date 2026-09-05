@@ -354,5 +354,4 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     that reports reachability to an operator". It has no production caller at all - the
     CLI reads `observe_if_needed()`. The BOUND still had to agree across both, which is
     the rule; the surface was overstated, which is the kind of small false claim these
-    entries exist to stop. `(SRS-MD-005 r21)`
-    `(SRS-MD-005 r15)`
+    entries exist to stop. `(SRS-MD-005 r15, r21)`

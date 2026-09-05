@@ -542,7 +542,12 @@ def _queue_row_problems(fid: str) -> list[str]:
         return []
     critic = rec.get("critic")
     if not isinstance(critic, dict):
-        blocked = ["no critic block recorded"]
+        # Name the LAYERS, not a sentence. `b.split()[0]` is what builds the
+        # disclosure pattern below, and on the sentence "no critic block
+        # recorded" that is the bare word `no` - degenerating the requirement
+        # from "name the layer that is blocked" to "contain the word no". The
+        # most fail-open record produced the weakest check.
+        blocked = [f"{layer} (no record)" for layer in ("deterministic", "judgment")]
     else:
         blocked = []
         for layer in ("deterministic", "judgment"):

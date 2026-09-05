@@ -118,12 +118,21 @@ pub const REACHABLE_CACHE_TTL_NS: i64 = 100_000_000;
 //
 // What it does NOT enforce - stated because an earlier version of this comment
 // claimed the asymmetry itself was compiler-enforced - is the relation at
-// RUNTIME. The negative bound is `self.ttl_ns`, which `with_probe_ttl` may set
-// to any non-negative value, so a caller passing 100 ms or less gets equal
-// bounds in both directions and no asymmetry at all. That is safe (`ttl_for`
-// takes a `min`, so both directions only ever SHORTEN, and shorter is the
-// cautious side of every one of these trades) but it is not the same claim, and
+// RUNTIME. `with_probe_ttl` may lower either bound, so a caller passing 100 ms
+// or less gets equal bounds in both directions and no asymmetry at all. That is
+// safe: `ttl_for` takes a `min` on BOTH branches, so a configured value can
+// only ever SHORTEN a window, and shorter is the cautious side of every one of
+// these trades. It is still not the same claim the constants make, and
 // `a_shortened_ttl_shortens_both_directions` is what pins it.
+//
+// The `min` on the negative branch was added in round 22. Before it, the
+// negative branch returned the configured value verbatim, so
+// `with_probe_ttl(2s)` LENGTHENED the unreachable window past its own default
+// while this comment, two others, a unit test and the L7 test all said
+// otherwise. Nothing unsafe shipped - a stale `Unreachable` errs toward
+// blocking - but five copies of an invariant were false, which is why the code
+// was changed to match the claim rather than the claim softened in five
+// places.
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 5 < REACHABILITY_CACHE_TTL_NS);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 4 <= 1_000_000_000);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS > 0);
@@ -365,10 +374,18 @@ where
     /// `with_probe_ttl(0)` disables reuse entirely, in both directions, because
     /// the cap is a `min` rather than a constant.
     fn ttl_for(outcome: &ReachabilityOutcome, configured_ttl_ns: i64) -> i64 {
+        // BOTH branches take a `min`, so `with_probe_ttl` can only ever SHORTEN.
+        // The negative branch returned `configured_ttl_ns` verbatim, which meant
+        // `with_probe_ttl(2s)` LENGTHENED the unreachable reuse window past its
+        // own 1 s default - while three comments, this module's unit test and
+        // the L7 domain test all asserted "both directions only ever shorten".
+        // Reusing a stale `Unreachable` errs toward BLOCKING, so nothing unsafe
+        // shipped; the INVARIANT was simply false, and it was cheaper to make it
+        // true than to weaken the same claim in five places.
         if outcome.is_reachable() {
             configured_ttl_ns.min(REACHABLE_CACHE_TTL_NS)
         } else {
-            configured_ttl_ns
+            configured_ttl_ns.min(REACHABILITY_CACHE_TTL_NS)
         }
     }
 
@@ -811,11 +828,11 @@ mod tests {
 
     #[test]
     fn a_shortened_ttl_shortens_both_directions() {
-        // The compile asserts relate the two DEFAULTS. At runtime the negative
-        // bound is `self.ttl_ns`, so a caller passing 100 ms or less collapses
-        // the asymmetry entirely. That is safe - `ttl_for` takes a `min`, so
-        // both directions only ever shorten - but it is a different claim from
-        // the one the constants make, and it is pinned rather than assumed.
+        // The compile asserts relate the two DEFAULTS. At runtime a caller
+        // passing 100 ms or less collapses the asymmetry entirely. That is safe
+        // - `ttl_for` takes a `min` on both branches, so a configured value can
+        // only ever shorten a window - but it is a different claim from the one
+        // the constants make, and it is pinned rather than assumed.
         let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
         let tight = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
             now.load(Ordering::SeqCst)
@@ -865,21 +882,35 @@ mod tests {
             "a 2 s request must not raise the 100 ms cap on a REACHABLE outcome"
         );
 
-        // The same generous TTL does apply in full to a negative.
+        // A negative gets its own, longer cap - and NOT the 2 s asked for.
+        // `with_probe_ttl` may only SHORTEN, in both directions. This assertion
+        // read "honours the full configured TTL", which was exactly the
+        // behaviour that made the shorten-only invariant false in three
+        // comments, this test and the L7 test.
         let neg = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
             now.load(Ordering::SeqCst)
         })
         .with_probe_ttl(2 * NANOS_PER_SECOND);
         assert_eq!(neg.state(), ConnectivityState::Unreachable);
         now.store(
-            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS + NANOS_PER_SECOND,
+            RESTART_NS + WINDOW_NS + REACHABILITY_CACHE_TTL_NS / 2,
             Ordering::SeqCst,
         );
         let _ = neg.state();
         assert_eq!(
             neg.probe.calls.get(),
             1,
-            "an UNREACHABLE outcome honours the full configured TTL"
+            "an UNREACHABLE outcome is reused within its own default window"
+        );
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABILITY_CACHE_TTL_NS * 2,
+            Ordering::SeqCst,
+        );
+        let _ = neg.state();
+        assert_eq!(
+            neg.probe.calls.get(),
+            2,
+            "a 2 s request must NOT lengthen the negative window past its 1 s default"
         );
 
         // And shortening still shortens both.

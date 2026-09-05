@@ -1050,10 +1050,17 @@ def test_a_shortened_ttl_shortens_both_directions() -> None:
     may set to any non-negative value, so a caller passing 100 ms or less gets
     equal bounds in both directions and no asymmetry at all.
 
-    That is safe, because `ttl_for` takes a `min` and both directions can only
-    ever SHORTEN - shorter is the cautious side of every one of these trades.
-    But safe-by-construction still has to be pinned, or the next refactor is
-    free to make the cap a constant and silently lengthen a negative.
+    That is safe, because `ttl_for` takes a `min` on BOTH branches and so a
+    configured value can only ever SHORTEN a window - shorter is the cautious
+    side of every one of these trades.
+
+    It was not always true. Until round 22 the negative branch returned the
+    configured value verbatim, so `with_probe_ttl(2s)` lengthened the
+    unreachable window past its own 1 s default while this docstring, two module
+    comments and a unit test all asserted the opposite. Nothing unsafe shipped -
+    a stale `Unreachable` errs toward blocking - but an invariant asserted in
+    five places and held in none is exactly the kind of claim these tests exist
+    to catch, so the CODE was changed to match.
 
     NOT proven here: that any particular configured TTL is a good choice. Only
     that lowering it lowers BOTH bounds.

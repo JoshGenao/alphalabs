@@ -1006,7 +1006,7 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             sources[path] = src
             crate_aliases |= _local_aliases(src, spec["trait"])
     # A second hop renames an ALIAS, so close over what we just found.
-    for _ in range(3):
+    for _ in range(8):
         grown = set(crate_aliases)
         for src in sources.values():
             for alias in list(crate_aliases):
@@ -1014,6 +1014,17 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
         if grown == crate_aliases:
             break
         crate_aliases = grown
+    else:
+        # STILL GROWING after the last pass. Falling through here would scan
+        # with an incomplete alias set and report a clean tree - the same
+        # fail-open shape `_skip_generic_list` was changed to stop having. A
+        # bounded closure that has not converged has not answered the question.
+        fail(
+            f"the `{spec['trait']}` alias closure did not converge after 8 passes "
+            f"({len(crate_aliases)} alias(es) so far). A rename chain this long is "
+            "either a mistake or an attack; either way this scan cannot bound the "
+            "implementor set until it settles"
+        )
     for path, source in sources.items():
         # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
         # terminates on the `>` of a `->` return arrow, so

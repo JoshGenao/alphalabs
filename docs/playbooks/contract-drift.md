@@ -217,3 +217,18 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   that are PRESENT, so following the documented command turned off the guard the same
   change had just added. Carry unspecified fields forward, and test that an explicit value
   still wins. `(SRS-MD-005 r19)`
+
+- **Delete the hand-maintained number, keep the command.** A session-note section stated a
+  playbook-entry count three times and was stale all three times - each version printing,
+  two lines above the wrong figure, the exact command that would have corrected it. A
+  number a human maintains beside a command that computes it will disagree with the
+  command; the only fix that holds is to stop stating it. Name WHAT changed, which does
+  not rot, and let the reader run the count. `(SRS-MD-005 r22)`
+- **An invariant asserted in five places and held in none.** "`ttl_for` takes a `min`, so
+  both directions only ever shorten" appeared in two module comments, a constant's
+  rustdoc, a unit test and an L7 docstring - while the function applied `min` to one
+  branch only, so `with_probe_ttl(2s)` LENGTHENED the negative window past its own
+  default. Nothing unsafe shipped (a stale `Unreachable` errs toward blocking) but the
+  claim was false everywhere it appeared. When a stated invariant turns out not to hold,
+  ask first whether the CODE should be changed to match it - here that was a one-word fix,
+  against softening the same sentence in five places. `(SRS-MD-005 r22)`
