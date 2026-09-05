@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was re-run at the commit this document ships with (`ce00416`). It is a
+block was re-run at the commit this document ships with (`d12c21b`). It is a
 re-verification, not a replay of the session that built the feature.
 
 Round 16 caught the earlier version presenting captures from `ed36c790` as
@@ -13,7 +13,7 @@ mutation was re-applied and reverted around its own command.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 18 rounds**. This feature integrated
+The judgment critic sits at **`block` after 19 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason — see Section 6. If
 that section said `approve`, this document would be lying.
@@ -49,7 +49,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-ce004168c6c06510ec1d8edfc1539bde73e2dbb2
+d12c21b9326b1290d199fc776dd584321c114667
 [exit 0]
 
 $ git log --oneline origin/main -14 | cat
@@ -191,8 +191,8 @@ step 2: PASS | exit=0 | cargo test -p atp-orchestrator --test srs_md_005_restart
 step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_windo
 step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
 
-deterministic critic: approve @ ce004168
-judgment critic    : block | rounds: 18 | reviewer: claude-fallback
+deterministic critic: approve @ d12c21b9
+judgment critic    : block | rounds: 19 | reviewer: claude-fallback
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -203,9 +203,9 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the integrated commit, straight from GitHub ===
 
-$ gh run list --commit ce004168c6c06510ec1d8edfc1539bde73e2dbb2 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
-	security
-	ci
+$ gh run list --commit d12c21b9326b1290d199fc776dd584321c114667 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
+success	security
+success	ci
 skipped	integration
 [exit 0]
 
@@ -246,10 +246,10 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-114 passed, 4 subtests passed in 108.54s (0:01:48)
+117 passed, 6 subtests passed in 89.67s (0:01:29)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
-8 passed in 0.32s
+8 passed in 0.35s
 [exit 0]
 ```

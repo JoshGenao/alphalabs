@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 18 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 19 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 18 - the loop has not reached APPROVE.** The feature first
+  standing at round 19 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 18 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 19 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -366,6 +366,37 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       and the stamped `rounds` was hand-typed at 15 while the ledger held 16,
       which meant the document guard was checking prose against a stale number
       and PASSING - certifying the drift instead of catching it.
+  r18 block/8  - two blocks in this note. The Outcome line said the close needed
+      only an operator attestation, which is false while the judgment critic is
+      `block`; and the round log jumped r15 to r17, silently dropping the round
+      that caught the transcript certifying a superseded tree. Also: the
+      Playbook updates section listed round 14 only while 23 further entries had
+      shipped across five playbooks, one of which it never named. It is counted
+      from the diff now, with the command that counts it. The guard warns were
+      real too: a `->` defeated a bracket matcher for the FOURTH time, this time
+      in `_strip_generic_args`, which reported a RETURN TYPE as an undeclared
+      production implementor - a guard failing on a legal shape, which is how a
+      guard gets disabled; the compile asserts were described as enforcing the
+      cache asymmetry when they relate only the two DEFAULTS; and the round-count
+      check was guarded by `if ledger.exists()`, so a hand-typed count with no
+      reviewer run behind it passed unconditionally.
+  r19 block/6  - the regex approach finally ran out. `_GENERIC_LIST` admitted one
+      level of nesting, so `fn is_subscribed<T: Into<Vec<u8>>>` was invisible and
+      inherited the exemption. Fifth shape, fifth patch. Replaced with a bracket
+      COUNTER: no depth limit, and the arrow is just "a `>` whose predecessor is
+      `-`". Also: the implementor scan was keyed on the trait's spelling, so
+      `use ... as Gate` walked past it while the check printed "this enumeration
+      is what makes it unforgeable"; and the typed-result ban could not see
+      `python -c "print(...)"`, the idiom the guarded transcript itself uses.
+      Two self-references surfaced by adding a check and watching it misbehave:
+      `EVIDENCE.md` is now compared against what the record renders to, which
+      recursed (render calls verify calls the check calls render) and then, once
+      guarded, had no fixed point because the page EMBEDS verify's problems and
+      would have reported its own staleness. The flag wraps the render, not the
+      check. And `evidence.py critic` rebuilds its entry, so the re-stamp the
+      queue row prescribed erased `rounds` - turning off the corroboration guard
+      the same change had just added.
+
 
 Every finding was fixed; none was overridden or argued away. Where a finding's
 recommendation would have been wrong I did not diverge - all nine were correct
@@ -444,7 +475,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 18**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 19**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
