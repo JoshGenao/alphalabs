@@ -806,38 +806,91 @@ def test_the_fabrication_matcher_separates_typed_results_from_captured_ones(
     assert bool(hits) is fabricated, f"{label}: {line!r} -> {hits}"
 
 
-def test_a_verification_transcript_certifies_the_tree_it_ships_with():
-    """Round 16: the transcript presented captures from a superseded tree.
+def test_verify_rejects_a_transcript_captured_before_the_code_moved(rec, monkeypatch):
+    """Round 16: a transcript presented captures from a superseded tree.
 
-    `VERIFICATION.md` said the commands "were re-run against the integrated tree
+    `VERIFICATION.md` said its commands "were re-run against the integrated tree
     (`ed36c790`)" while the diff shipping it had rewritten 215 lines of the
-    module those captures cover - the pytest block reported 101 collected where
-    the same command then collected 110. A reader has no way to see that: the
-    captures are real, they just certify different code.
+    module those captures cover. The captures were real; they certified
+    different code, which a reader cannot see.
 
-    So the commit the transcript names must still describe the code that ships
-    with it. `code_changed_since` ignores evidence-only commits, which is what
-    lets the transcript be captured before the chore commit that carries it.
+    This lives in `verify` - the CLOSE gate - and not in an assertion over the
+    live repo. Evidence is committed AFTER the code it describes, so a test
+    asserting on live evidence state is red at every code commit by
+    construction. The first version of this check was exactly that, and it
+    turned CI red on the commit that introduced it.
     """
-    import re
-    from pathlib import Path
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "VERIFICATION.md").write_text(
+        "$ git rev-parse HEAD\n" + "a" * 40 + "\n[exit 0]\n", encoding="utf-8"
+    )
 
-    root = Path(__file__).resolve().parents[2]
-    problems = []
-    for doc in sorted((root / ".harness" / "runs").rglob("VERIFICATION.md")):
-        text = doc.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"\$ git rev-parse HEAD\n([0-9a-f]{40})\n", text)
-        if not m:
-            problems.append(f"{doc.relative_to(root)}: no captured HEAD to check")
-            continue
-        moved = evidence.code_changed_since(m.group(1))
-        if moved is None:
-            problems.append(
-                f"{doc.relative_to(root)}: captured HEAD {m.group(1)[:8]} is unknown to git"
-            )
-        elif moved:
-            problems.append(
-                f"{doc.relative_to(root)}: captured at {m.group(1)[:8]}, but "
-                f"{len(moved)} code path(s) have changed since ({', '.join(moved[:3])})"
-            )
-    assert not problems, "transcript(s) certifying a superseded tree:\n  " + "\n  ".join(problems)
+    monkeypatch.setattr(evidence, "code_changed_since", lambda head: ["crates/x/src/lib.rs"])
+    problems = evidence.record_self_consistency_problems(fid)
+    assert any("code path(s) have changed since" in p for p in problems), problems
+
+    monkeypatch.setattr(evidence, "code_changed_since", lambda head: [])
+    assert not evidence.record_self_consistency_problems(fid)
+
+
+def test_verify_fails_closed_when_the_transcript_cannot_be_placed_in_history(rec, monkeypatch):
+    """Unknown is not fresh (CLAUDE.md rule 3)."""
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "VERIFICATION.md").write_text(
+        "$ git rev-parse HEAD\n" + "b" * 40 + "\n[exit 0]\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(evidence, "code_changed_since", lambda head: None)
+    assert any("cannot be checked" in p for p in evidence.record_self_consistency_problems(fid))
+
+
+def test_verify_rejects_a_transcript_with_no_captured_head(rec):
+    """A transcript that names no commit cannot be checked, so it is not clean."""
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "VERIFICATION.md").write_text("no provenance here\n", encoding="utf-8")
+    assert any(
+        "records no captured HEAD" in p for p in evidence.record_self_consistency_problems(fid)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stamped", "ledger_verdicts", "flagged"),
+    [
+        (15, ["block"] * 16, True),
+        (16, ["block"] * 16, False),
+        # Attempts that produced NO verdict are not rounds, so 15 blocks plus
+        # two failed attempts is 15 - which is why the count cannot be
+        # "lines in the file".
+        (15, ["block"] * 15 + ["none", "none"], False),
+        (17, ["block"] * 15 + ["none", "none"], True),
+        (3, ["approve", "warn", "block"], False),
+    ],
+)
+def test_verify_checks_the_stamped_round_count_against_the_ledger(
+    stamped, ledger_verdicts, flagged, rec
+):
+    """`--rounds N` takes whatever the caller types, and the caller was me.
+
+    It read 15 while `review.jsonl` held 16, and the guard checking documents
+    against that field passed - a guard anchored to an unverified number
+    certifies the drift instead of catching it. Note the third case: attempts
+    that produced NO verdict are not rounds, which is why the count cannot be
+    "lines in the file".
+    """
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "review.jsonl").write_text(
+        "\n".join(json.dumps({"verdict": v}) for v in ledger_verdicts) + "\n", encoding="utf-8"
+    )
+    r = evidence.load_record(fid)
+    r.setdefault("critic", {})["judgment"] = {"verdict": "block", "rounds": stamped}
+    evidence.save_record(fid, r)
+
+    problems = evidence.record_self_consistency_problems(fid)
+    assert bool([p for p in problems if "rounds" in p]) is flagged, problems

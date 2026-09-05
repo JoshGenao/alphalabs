@@ -424,3 +424,14 @@ Read this whenever you write a test, and before you believe a green one.
   conversion means a command produced it; a real command before `&&` means the print is
   conditional on that command succeeding; anything else is typed. Then pin the whole truth
   table, honest shapes included, so the fix cannot over-fire either. `(SRS-MD-005 r16)`
+
+- **A pytest that asserts on live EVIDENCE state is red at every code commit by
+  construction.** Evidence is recorded and committed AFTER the code it describes - that
+  lag is the workflow, not a mistake - so a unit test asserting "the record agrees with
+  the tree" fails on the fix commit and only goes green on the chore commit that follows.
+  Three such guards turned CI red on the very commit that introduced them. Currency checks
+  belong in `evidence.py verify`, which gates the CLOSE and already asks this question of
+  critic heads; the unit tests should exercise those FUNCTIONS with synthetic fixtures.
+  Where a document check does need a live number, anchor it to the artifact written by the
+  same event (`review.jsonl`), never to a hand-stamped field committed a commit later.
+  `(SRS-MD-005 r17)`

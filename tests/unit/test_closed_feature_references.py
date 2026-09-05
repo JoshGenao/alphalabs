@@ -350,51 +350,6 @@ def test_an_unreadable_or_absent_verdict_never_reads_as_approved(
     assert fid in str(exc.value), label
 
 
-def test_the_recorded_round_count_matches_the_review_ledger() -> None:
-    """The stamped `rounds` is a hand-typed number beside a ledger that counts.
-
-    `evidence.py critic --rounds N` takes whatever the caller types, and the
-    caller was me. It read 15 while `review.jsonl` in the same directory held
-    16 verdict-bearing rounds - so `test_a_stated_round_count_matches_the_record`
-    was checking the documents against a stale field and passing, which is
-    worse than not checking at all: a guard anchored to an unverified number
-    certifies the drift instead of catching it.
-
-    `tools/adversarial_review.py::count_rounds` is the repo's own definition of
-    how many rounds a ledger holds, so it is the authority here.
-    """
-    import sys
-
-    tools = ROOT / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from adversarial_review import count_rounds
-
-    problems = []
-    for rec_path in sorted((ROOT / ".harness" / "runs").glob("*/evidence.json")):
-        ledger = rec_path.with_name("review.jsonl")
-        if not ledger.exists():
-            continue
-        counted = count_rounds(ledger)
-        if counted is None:
-            problems.append(f"{rec_path.parent.name}: review.jsonl is unreadable")
-            continue
-        try:
-            critic = json.loads(rec_path.read_text(encoding="utf-8")).get("critic") or {}
-        except json.JSONDecodeError:
-            problems.append(f"{rec_path.parent.name}: evidence.json is unreadable")
-            continue
-        for layer, entry in critic.items():
-            if not isinstance(entry, dict) or "rounds" not in entry:
-                continue
-            if entry["rounds"] != counted:
-                problems.append(
-                    f"{rec_path.parent.name}: critic[{layer}].rounds={entry['rounds']} "
-                    f"but the ledger holds {counted}"
-                )
-    assert not problems, "; ".join(problems)
-
-
 def test_a_stated_round_count_matches_the_record() -> None:
     """Three surfaces claimed three different round counts (13, 13, 14).
 
@@ -416,18 +371,30 @@ def test_a_stated_round_count_matches_the_record() -> None:
         surfaces += sorted(notes.glob("session-*.md"))
 
     def recorded_rounds(fid: str) -> set[int]:
-        rec = ROOT / ".harness" / "runs" / fid / "evidence.json"
-        if not rec.exists():
+        """How many verdict-bearing rounds the LEDGER holds.
+
+        Deliberately the ledger and not `evidence.json`'s stamped `rounds`. The
+        stamp is hand-typed and is committed one commit AFTER the round that
+        produced it, so anchoring here made this guard red at every code commit
+        and, worse, made it certify a stale number as ground truth. The ledger
+        and the documents are both written by the round itself.
+        (`evidence.py verify` is what checks the stamp against the ledger.)
+        """
+        ledger = ROOT / ".harness" / "runs" / fid / "review.jsonl"
+        if not ledger.exists():
             return set()
-        try:
-            critic = json.loads(rec.read_text(encoding="utf-8")).get("critic") or {}
-        except json.JSONDecodeError:
-            return set()
-        return {
-            e["rounds"]
-            for e in critic.values()
-            if isinstance(e, dict) and isinstance(e.get("rounds"), int)
-        }
+        n = 0
+        for line in ledger.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                return set()
+            if isinstance(entry, dict) and entry.get("verdict") in ("approve", "warn", "block"):
+                n += 1
+        return {n}
 
     # A TOTAL, not an ordinal. "Adversarial rounds: 13" and "block after 13
     # rounds" are claims about how many rounds ran and can go stale; "round 12

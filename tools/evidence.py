@@ -525,6 +525,92 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
     return (not problems), problems
 
 
+def record_self_consistency_problems(fid: str) -> list[str]:
+    """Ways the record can disagree with the artifacts sitting beside it.
+
+    These belong at CLOSE time, not in the test suite. Evidence is committed
+    AFTER the code it describes, so a pytest asserting on live evidence state is
+    red at every code commit by construction -- which is exactly what happened
+    when these three checks were first written as unit tests: CI went red on the
+    commit that introduced them, for a lag the workflow requires.
+
+    `verify` already asks "is this record current?" for critic heads. This is the
+    same question for the round count and the transcript.
+    """
+    problems: list[str] = []
+    run_dir = RUNS_DIR / fid
+
+    # 1. The stamped round count is hand-typed; the ledger counts. It read 15
+    #    while review.jsonl held 16, and a document guard anchored to that stale
+    #    field certified the drift instead of catching it.
+    ledger = run_dir / "review.jsonl"
+    if ledger.exists():
+        counted = _count_review_rounds(ledger)
+        rec = load_record(fid)
+        for layer, entry in (rec.get("critic") or {}).items():
+            if isinstance(entry, dict) and isinstance(entry.get("rounds"), int):
+                if counted is None:
+                    problems.append(
+                        f"critic[{layer}] records rounds but {_rel(ledger)} is unreadable"
+                    )
+                elif entry["rounds"] != counted:
+                    problems.append(
+                        f"critic[{layer}].rounds={entry['rounds']} but {_rel(ledger)} "
+                        f"holds {counted} verdict-bearing round(s)"
+                    )
+
+    # 2. A verification transcript must certify the tree it ships with. One said
+    #    its commands "were re-run against the integrated tree (ed36c790)" while
+    #    the diff carrying it had rewritten 215 lines underneath -- real
+    #    captures, certifying different code, which a reader cannot see.
+    transcript = run_dir / "VERIFICATION.md"
+    if transcript.exists():
+        m = re.search(
+            r"\$ git rev-parse HEAD\n([0-9a-f]{40})\n",
+            transcript.read_text(encoding="utf-8", errors="replace"),
+        )
+        if not m:
+            problems.append(f"{_rel(transcript)} records no captured HEAD, so it cannot be checked")
+        else:
+            moved = code_changed_since(m.group(1))
+            if moved is None:
+                problems.append(
+                    f"{_rel(transcript)} was captured at {m.group(1)[:8]}, which cannot be "
+                    "checked against this commit"
+                )
+            elif moved:
+                problems.append(
+                    f"{_rel(transcript)} was captured at {m.group(1)[:8]}, but "
+                    f"{len(moved)} code path(s) have changed since ({', '.join(moved[:3])}) -- "
+                    "re-run it rather than editing its numbers"
+                )
+    return problems
+
+
+def _count_review_rounds(path: Path) -> int | None:
+    """Verdict-bearing rounds in a review ledger, or None if unreadable.
+
+    Mirrors `tools/adversarial_review.py::count_rounds` without importing it, so
+    `evidence.py` keeps no dependency on the reviewer.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    n = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(rec, dict) and rec.get("verdict") in ("approve", "warn", "block"):
+            n += 1
+    return n
+
+
 def verify(
     fid: str, features: list | None = None, *, allow_attested: bool = False
 ) -> tuple[bool, list[str], dict]:
@@ -734,6 +820,8 @@ def verify(
                 f"Attach one: `tools/evidence.py artifact {fid} --step "
                 f"{ac_n or 'N'} --file <screenshot.png> --caption '...'`"
             )
+
+    problems.extend(record_self_consistency_problems(fid))
 
     summary = {
         "steps_total": len(steps),
