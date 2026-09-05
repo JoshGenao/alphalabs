@@ -1,9 +1,15 @@
 # SRS-MD-005 — independent verification transcript
 
-Every block below is **captured terminal output**, not a summary. The commands
-were re-run against the integrated tree (`ed36c790`) after the feature was
-already on `main`, so this is a re-verification rather than a replay of the
-session that built it.
+Every block below is **captured terminal output**, not a summary, and every
+block was re-run at the commit this document ships with (`f1e4a9f`). It is a
+re-verification, not a replay of the session that built the feature.
+
+Round 16 caught the earlier version presenting captures from `ed36c790` as
+verification of a tree that had since changed under them - the pytest block
+reported 101 collected where the same command now collects 110. Re-running is
+the only honest repair for that, so the whole transcript was re-run rather than
+its numbers edited. Sections 4 and 5 capture a DELIBERATELY BROKEN tree; each
+mutation was re-applied and reverted around its own command.
 
 ## Read this first: it is NOT fully green, and that is the point
 
@@ -13,7 +19,11 @@ The judgment critic sits at **`block` after 15 rounds**. This feature integrated
 that section said `approve`, this document would be lying.
 
 What IS green: all four acceptance steps, 176 cargo suites, clippy `-D warnings`,
-the four GitHub workflows, and the mutation checks in Section 5.
+the GitHub `ci` and `security` workflows, and the mutation checks in
+Section 5. `integration` is SKIPPED on a branch push, which is why this
+feature is `serialized` and not `complete`: that job needs live IB. The
+L5 fault-injection run against a genuinely dead loopback port is Section 6,
+step 4.
 
 ## What each section is for
 
@@ -39,7 +49,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-ed36c7903706978dca77d647261e7d3e14e63050
+f1e4a9fa5c274a226547ea0874257a5211f38010
 [exit 0]
 
 $ git log --oneline origin/main -14 | cat
@@ -127,7 +137,7 @@ error: SyRS SYS-75(c)/(d): expected CONNECTED once the gateway answers, observed
 
 $ cargo build -p atp-market-data 2>&1 | grep -E 'E0616|private field' | head -3
 error[E0616]: field `subscribers` of struct `ConsolidatedSubscriptionRegistry` is private
-     |                ^^^^^^^^^^^ private field
+     |       ^^^^^^^^^^^ private field
 For more information about this error, try `rustc --explain E0616`.
 [exit 0]
 
@@ -181,7 +191,7 @@ step 2: PASS | exit=0 | cargo test -p atp-orchestrator --test srs_md_005_restart
 step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_windo
 step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
 
-deterministic critic: approve @ ed36c790
+deterministic critic: approve @ f1e4a9fa
 judgment critic    : block | rounds: 15 | reviewer: claude-fallback
 [exit 0]
 
@@ -193,14 +203,13 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the integrated commit, straight from GitHub ===
 
-$ gh run list --commit ed36c7903706978dca77d647261e7d3e14e63050 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
-success	verification-watch
+$ gh run list --commit f1e4a9fa5c274a226547ea0874257a5211f38010 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
 success	security
 success	ci
-success	integration
+skipped	integration
 [exit 0]
 
-=== SECTION 8: the static contract gate, all 13 checks ===
+=== SECTION 8: the static contract gate (14 checks; the tail 9 shown) ===
 
 $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 - atp-types declares RestartPhase with 4 phases (Normal, Suspending, Restarting, Elapsed) — the SyRS SYS-75 restart window (SRS-MD-005)
@@ -237,7 +246,7 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-101 passed in 31.95s
+110 passed, 4 subtests passed in 40.31s
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1

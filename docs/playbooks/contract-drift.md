@@ -192,3 +192,14 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   wrong - and one that matched only `<digit> rounds` missed two of the three claims that
   had actually drifted. Match `rounds: N` and `at|after N rounds`; leave ordinals alone.
   `(SRS-MD-005 r16)`
+
+- **A verification transcript must certify the tree it SHIPS with, and re-running is the
+  only honest repair.** `VERIFICATION.md` said its commands "were re-run against the
+  integrated tree (`ed36c790`)" while the diff carrying it had rewritten 215 lines of the
+  module those captures covered; its pytest block reported 101 collected where the same
+  command now collected 110. The captures were real - they just certified different code,
+  which a reader cannot see. Re-run every block (scripted, so nothing is retyped), and
+  re-apply each deliberate mutation around its own command for the sections that capture
+  a broken tree. `tests/unit/test_evidence_artifacts.py::test_a_verification_transcript_certifies_the_tree_it_ships_with`
+  now compares the transcript's own `git rev-parse HEAD` capture against
+  `code_changed_since`. `(SRS-MD-005 r16)`

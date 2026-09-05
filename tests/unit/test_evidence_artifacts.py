@@ -784,3 +784,40 @@ def test_the_fabrication_matcher_separates_typed_results_from_captured_ones(
     """Every bypass the reviewer named, plus the honest shapes it must not break."""
     hits = _fabricated_result_claims(line)
     assert bool(hits) is fabricated, f"{label}: {line!r} -> {hits}"
+
+
+def test_a_verification_transcript_certifies_the_tree_it_ships_with():
+    """Round 16: the transcript presented captures from a superseded tree.
+
+    `VERIFICATION.md` said the commands "were re-run against the integrated tree
+    (`ed36c790`)" while the diff shipping it had rewritten 215 lines of the
+    module those captures cover - the pytest block reported 101 collected where
+    the same command then collected 110. A reader has no way to see that: the
+    captures are real, they just certify different code.
+
+    So the commit the transcript names must still describe the code that ships
+    with it. `code_changed_since` ignores evidence-only commits, which is what
+    lets the transcript be captured before the chore commit that carries it.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    problems = []
+    for doc in sorted((root / ".harness" / "runs").rglob("VERIFICATION.md")):
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"\$ git rev-parse HEAD\n([0-9a-f]{40})\n", text)
+        if not m:
+            problems.append(f"{doc.relative_to(root)}: no captured HEAD to check")
+            continue
+        moved = evidence.code_changed_since(m.group(1))
+        if moved is None:
+            problems.append(
+                f"{doc.relative_to(root)}: captured HEAD {m.group(1)[:8]} is unknown to git"
+            )
+        elif moved:
+            problems.append(
+                f"{doc.relative_to(root)}: captured at {m.group(1)[:8]}, but "
+                f"{len(moved)} code path(s) have changed since ({', '.join(moved[:3])})"
+            )
+    assert not problems, "transcript(s) certifying a superseded tree:\n  " + "\n  ".join(problems)
