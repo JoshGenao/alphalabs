@@ -1144,3 +1144,42 @@ def test_the_implementor_enumeration_refuses_what_it_cannot_parse() -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
     assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
+    """The round that showed a backstop can share the blind spot it backs up.
+
+    Round 20 added a completeness count so an unreadable impl would turn the
+    gate-implementor scan red instead of shrinking the set it calls closed.
+    Round 21 showed it was bounded by `[^;]` - the SAME boundary the strict
+    pattern used - so `impl<T: Into<[u8; 4]>> RestartWindowGate for AlwaysOpen`
+    defeated both and scanned as clean. The same `;` made the exempt-declaration
+    counter drop a declaration entirely rather than refuse it, so a second
+    `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption and reached the
+    consolidated registry without consulting the window.
+
+    Both are SyRS SYS-75(a) bypasses that leave every other guard, this suite
+    and all three CLI proofs green, which is why they are pinned at L7.
+
+    NOT proven here: that no further syntax defeats them. The backstop is what
+    converts "unreadable" into a red gate, and that is the property under test.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "semicolon_inside_a_generic_bound or backstop_does_not_share or two_hop_rename",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "3 passed" in combined, combined[-2000:]

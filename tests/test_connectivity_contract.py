@@ -582,6 +582,27 @@ impl ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("is_subscribed", str(ctx.exception))
 
+    def test_a_semicolon_inside_a_generic_bound_cannot_hide_a_declaration(self) -> None:
+        """The counter FAILED OPEN, which is worse than the regex it replaced.
+
+        `<T: Into<[u8; 4]>>` contains a `;` - legal, inside an array type. The
+        counter bailed on it and returned the start index, so the declaration
+        was silently DROPPED, the count stayed at 1, and the exemption was
+        inherited by a function the scan could not read. Unparseable is not
+        absent (CLAUDE.md rule 3).
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<T: Into<[u8; 4]>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
+        let _ = v;
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
     def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
         """The exemption says the function CANNOT admit. Changing its receiver
         makes that claim false, so the claim has to be re-checked."""
@@ -1111,6 +1132,64 @@ impl atp_market_data::RestartWindowGate for {target} {{
                     "cannot name" in msg or "could parse only" in msg,
                     msg,
                 )
+
+    def test_the_backstop_does_not_share_the_blind_spot_it_backs_up(self) -> None:
+        """A backstop bounded like the pattern it backs up is not a backstop.
+
+        The completeness count was written with `[^;]`, the same boundary the
+        strict pattern used, so any shape a `;` defeated defeated BOTH and the
+        scan reported `expected == matched == 0`: a clean, closed set with an
+        always-admitting implementor sitting in it.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct AlwaysOpen;
+
+impl<T: Into<[u8; 4]>> atp_market_data::RestartWindowGate for AlwaysOpen {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        msg = str(ctx.exception)
+        self.assertTrue(
+            "AlwaysOpen" in msg or "could parse only" in msg,
+            msg,
+        )
+
+    def test_a_two_hop_rename_does_not_hide_an_implementor(self) -> None:
+        """Aliases were collected per-FILE, so a rename across modules escaped.
+
+        `pub use RestartWindowGate as Gate;` in one module, then
+        `use crate::gates::Gate; impl Gate for AlwaysOpen` in another, produced
+        no strict match AND no loose match - a silent clean report, while the
+        playbook recorded the rename class as closed.
+        """
+        (self.tmp / "crates" / "atp-orchestrator" / "src").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "crates" / "atp-orchestrator" / "src" / "gates.rs").write_text(
+            "pub use atp_market_data::RestartWindowGate as Gate;\n", encoding="utf-8"
+        )
+        self._inject(
+            "atp-orchestrator",
+            """
+use crate::gates::Gate;
+
+pub struct AlwaysOpen;
+
+impl Gate for AlwaysOpen {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("AlwaysOpen", str(ctx.exception))
 
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""

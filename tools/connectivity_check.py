@@ -891,12 +891,23 @@ def _skip_generic_list(text: str, i: int) -> int:
     """
     if i >= len(text) or text[i] != "<":
         return i
-    depth, j, prev = 0, i, ""
+    depth, brackets, j, prev = 0, 0, i, ""
     while j < len(text):
         ch = text[j]
-        if ch in "{};":
-            return i  # not a generic list after all; refuse rather than guess
-        if ch == "<":
+        if ch in "{}":
+            return -1  # cannot be inside a generic list: unparseable
+        if ch == ";" and brackets == 0:
+            # A `;` is legal INSIDE an array type - `<T: Into<[u8; 4]>>` - and
+            # illegal outside one. Returning the start index here made
+            # `_fn_declarations` silently DROP the declaration, so a second
+            # `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption. -1
+            # says "unparseable" so the caller can refuse instead of guess.
+            return -1
+        if ch == "[":
+            brackets += 1
+        elif ch == "]":
+            brackets = max(0, brackets - 1)
+        elif ch == "<":
             depth += 1
         elif ch == ">" and prev != "-":
             depth -= 1
@@ -904,7 +915,7 @@ def _skip_generic_list(text: str, i: int) -> int:
                 return j + 1
         prev = ch
         j += 1
-    return i
+    return -1
 
 
 def _fn_declarations(source: str, name: str) -> list[str]:
@@ -912,6 +923,13 @@ def _fn_declarations(source: str, name: str) -> list[str]:
     out: list[str] = []
     for m in re.finditer(rf"\bfn\s+{re.escape(name)}\s*", source):
         i = _skip_generic_list(source, m.end())
+        if i < 0:
+            # UNPARSEABLE IS NOT ABSENT. Dropping it kept the declaration count
+            # at 1, so the exemption was inherited by a function this scan could
+            # not read. Counting it makes the count wrong, which makes the
+            # exemption check fail, which is the correct outcome.
+            out.append("<unparseable generic list>")
+            continue
         while i < len(source) and source[i].isspace():
             i += 1
         if i < len(source) and source[i] == "(":
@@ -974,71 +992,97 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     crate_roots = sorted((root / "crates").glob("*/src")) if (root / "crates").is_dir() else []
     if not crate_roots:
         fail("no crate sources found under crates/*/src — this scan cannot bound anything")
+    # Aliases are collected across the WHOLE tree first, because a rename can be
+    # two hops: `pub use RestartWindowGate as Gate;` in one module, then
+    # `use crate::gates::Gate; impl Gate for AlwaysOpen` in another. Reading
+    # only the file being scanned found neither the strict nor the loose match,
+    # and reported a clean set - while the playbook recorded the rename class as
+    # closed.
+    crate_aliases: set[str] = set()
+    sources: dict = {}
     for crate_dir in crate_roots:
         for path in sorted(crate_dir.rglob("*.rs")):
-            source = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
-            # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
-            # terminates on the `>` of a `->` return arrow, so
-            # `impl<C: Fn() -> i64> RestartWindowGate for AlwaysOpen` slipped
-            # through the guard whose whole purpose is that nothing slips
-            # through it. Excluding `{`/`}`/`;` instead keeps the match inside
-            # one impl header while permitting arrows, lifetimes and where-less
-            # bounds.
-            # The impl TARGET is a type, not an identifier. Requiring `(\w+)`
-            # after `for` meant `impl Gate for &AlwaysOpen`,
-            # `impl<'a> Gate for &'a AlwaysOpen` and `impl Gate for (AlwaysOpen, u8)`
-            # all returned no match, so the "closed set" stayed open to exactly
-            # the always-admitting production gate it exists to forbid. Take the
-            # whole target span, strip its generic arguments (or `P` and `C` in
-            # `ScheduledRestartConnectivity<P, C>` would each read as a type),
-            # and collect every type name left.
-            # The trait may be RENAMED at the use site:
-            # `use atp_market_data::RestartWindowGate as Gate;` then
-            # `impl Gate for AlwaysOpen`. Keying on the literal spelling made
-            # that produce no match at all, while the check went on printing
-            # "this enumeration is what makes it unforgeable". Collect the local
-            # aliases first and search for every name the trait answers to.
-            names = {spec["trait"], *_local_aliases(source, spec["trait"])}
-            alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
-            # How many impls of this trait EXIST in the file, by the loosest
-            # possible reading. The strict pattern below must account for every
-            # one of them; if it matches fewer, some shape slipped past it and
-            # the enumeration is not closed. This is the backstop for every
-            # "the regex did not anticipate that" defect at once - five of them
-            # so far, each found by a reviewer rather than by the check.
-            expected = len(
-                re.findall(rf"\bimpl\b[^;]*?\b(?:{alternation})\b[^;]*?\bfor\b", source, re.S)
-            )
-            matched = 0
-            for match in re.finditer(
-                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
-                r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
-                source,
-                re.S,
-            ):
-                matched += 1
-                target = _strip_generic_args(match.group(1))
-                names = re.findall(r"\b([A-Z]\w*)", target)
-                if not names:
-                    # An impl target with no uppercase identifier - a primitive
-                    # (`impl Gate for i64`), a lowercase type alias, a bare
-                    # `[u8; 4]` - collected NOTHING, so the "closed set" stayed
-                    # open while the check reported a clean tree. Unnameable is
-                    # not absent (CLAUDE.md rule 3): report the raw span.
-                    fail(
-                        f"`{spec['trait']}` is implemented for `{target.strip()}` in "
-                        f"{path.relative_to(root)}, whose type this scan cannot name. "
-                        "An implementor it cannot name is one it cannot bound, so this "
-                        "fails rather than reporting a closed set"
-                    )
-                for name in names:
-                    found[name] = str(path.relative_to(root))
-            if matched < expected:
+            src = _code_only(_without_test_module(path.read_text(encoding="utf-8")))
+            sources[path] = src
+            crate_aliases |= _local_aliases(src, spec["trait"])
+    # A second hop renames an ALIAS, so close over what we just found.
+    for _ in range(3):
+        grown = set(crate_aliases)
+        for src in sources.values():
+            for alias in list(crate_aliases):
+                grown |= _local_aliases(src, alias)
+        if grown == crate_aliases:
+            break
+        crate_aliases = grown
+    for path, source in sources.items():
+        # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
+        # terminates on the `>` of a `->` return arrow, so
+        # `impl<C: Fn() -> i64> RestartWindowGate for AlwaysOpen` slipped
+        # through the guard whose whole purpose is that nothing slips
+        # through it. Excluding `{`/`}`/`;` instead keeps the match inside
+        # one impl header while permitting arrows, lifetimes and where-less
+        # bounds.
+        # The impl TARGET is a type, not an identifier. Requiring `(\w+)`
+        # after `for` meant `impl Gate for &AlwaysOpen`,
+        # `impl<'a> Gate for &'a AlwaysOpen` and `impl Gate for (AlwaysOpen, u8)`
+        # all returned no match, so the "closed set" stayed open to exactly
+        # the always-admitting production gate it exists to forbid. Take the
+        # whole target span, strip its generic arguments (or `P` and `C` in
+        # `ScheduledRestartConnectivity<P, C>` would each read as a type),
+        # and collect every type name left.
+        # The trait may be RENAMED at the use site:
+        # `use atp_market_data::RestartWindowGate as Gate;` then
+        # `impl Gate for AlwaysOpen`. Keying on the literal spelling made
+        # that produce no match at all, while the check went on printing
+        # "this enumeration is what makes it unforgeable". Collect the local
+        # aliases first and search for every name the trait answers to.
+        names = {spec["trait"], *crate_aliases, *_local_aliases(source, spec["trait"])}
+        alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+        # How many impls of this trait EXIST in the file, by the loosest
+        # possible reading. The strict pattern below must account for every
+        # one of them; if it matches fewer, some shape slipped past it and
+        # the enumeration is not closed. This is the backstop for every
+        # "the regex did not anticipate that" defect at once - five of them
+        # so far, each found by a reviewer rather than by the check.
+        # WIDER than the strict pattern, deliberately. The first version
+        # bounded this with `[^;]` - the same boundary the strict pattern
+        # used - so any shape a `;` defeated defeated BOTH, giving
+        # expected == matched == 0 and a clean report. A backstop that
+        # shares the blind spot it backs up is not a backstop. Braces are
+        # the only delimiter an impl header genuinely cannot contain.
+        expected = len(
+            re.findall(rf"\bimpl\b[^{{}}]*?\b(?:{alternation})\b[^{{}}]*?\bfor\b", source, re.S)
+        )
+        matched = 0
+        for match in re.finditer(
+            rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
+            r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
+            source,
+            re.S,
+        ):
+            matched += 1
+            target = _strip_generic_args(match.group(1))
+            names = re.findall(r"\b([A-Z]\w*)", target)
+            if not names:
+                # An impl target with no uppercase identifier - a primitive
+                # (`impl Gate for i64`), a lowercase type alias, a bare
+                # `[u8; 4]` - collected NOTHING, so the "closed set" stayed
+                # open while the check reported a clean tree. Unnameable is
+                # not absent (CLAUDE.md rule 3): report the raw span.
                 fail(
-                    f"{path.relative_to(root)} contains {expected} `impl ... {spec['trait']} "
-                    f"... for` header(s) but this scan could parse only {matched}. A shape it "
-                    "cannot parse is one it cannot bound, so the enumeration is not closed"
+                    f"`{spec['trait']}` is implemented for `{target.strip()}` in "
+                    f"{path.relative_to(root)}, whose type this scan cannot name. "
+                    "An implementor it cannot name is one it cannot bound, so this "
+                    "fails rather than reporting a closed set"
                 )
+            for name in names:
+                found[name] = str(path.relative_to(root))
+        if matched < expected:
+            fail(
+                f"{path.relative_to(root)} contains {expected} `impl ... {spec['trait']} "
+                f"... for` header(s) but this scan could parse only {matched}. A shape it "
+                "cannot parse is one it cannot bound, so the enumeration is not closed"
+            )
     if not found:
         fail(
             f"no production type implements `{spec['trait']}` — either the producer was "

@@ -553,16 +553,47 @@ def _queue_row_problems(fid: str) -> list[str]:
                 blocked.append(f"{layer} (`{entry['verdict']}`)")
     if not blocked:
         return []
+    # A queue ROW, not a line. A markdown table row can be reflowed across
+    # several lines, and the previous version inspected only lines that
+    # themselves contained `close_feature.py <fid>` - so a reflowed row escaped
+    # entirely. Rows are split on the leading `|` of a table line.
+    text = queue.read_text(encoding="utf-8", errors="replace")
+    rows, current, start = [], [], 1
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("|") and current:
+            rows.append((start, "\n".join(current)))
+            current, start = [line], n
+        elif line.lstrip().startswith("|"):
+            current, start = [line], n
+        elif current:
+            current.append(line)
+    if current:
+        rows.append((start, "\n".join(current)))
+
     out = []
-    for n, line in enumerate(queue.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-        if not re.search(rf"close_feature\.py\s+{re.escape(fid)}\b", line):
+    for n, row in rows:
+        if not re.search(rf"close_feature\.py\s+{re.escape(fid)}\b", row):
             continue
-        # The verdict as a CODE SPAN, not the substring "block": "unblocks",
-        # "blocked on the VM" and "blocking" all contain it.
-        if not re.search(r"`(block|warn|none)`", line):
+        # The disclosure must NAME THE LAYER, beside the verdict as a code span.
+        # Accepting any `` `block` `` anywhere on the row passed a row that
+        # disclosed the deterministic layer while hiding a judgment `block`, and
+        # passed one that merely quoted the word for another feature. And the
+        # substring "block" alone would not do: "unblocks", "blocked on the VM"
+        # and "blocking" all contain it.
+        undisclosed = [
+            b
+            for b in blocked
+            if not re.search(
+                rf"\b{re.escape(b.split()[0])}\b[^|]{{0,120}}?`(block|warn|none)`"
+                rf"|`(block|warn|none)`[^|]{{0,120}}?\b{re.escape(b.split()[0])}\b",
+                row,
+                re.S,
+            )
+        ]
+        if undisclosed:
             out.append(
                 f"{_rel(queue)}:{n} promises a close for {fid} without disclosing "
-                f"{', '.join(blocked)}"
+                f"{', '.join(undisclosed)}"
             )
     return out
 
@@ -1264,14 +1295,21 @@ def cmd_critic(args) -> int:
     if args.rounds is not None:
         entry["rounds"] = args.rounds
     else:
-        # CARRY the previous count rather than dropping it. This builds a FRESH
-        # entry, so omitting --rounds used to erase the stamp - and the
-        # corroboration check against review.jsonl only compares counts that are
-        # present, so a routine re-stamp silently disabled it. The count belongs
-        # to the ledger, not to whoever typed the last command.
-        previous = (rec.get("critic") or {}).get(args.layer)
-        if isinstance(previous, dict) and isinstance(previous.get("rounds"), int):
-            entry["rounds"] = previous["rounds"]
+        # READ the count from the ledger. It belongs there, not to whoever typed
+        # the last command.
+        #
+        # Carrying the PREVIOUS stamp forward - the first fix here - could not
+        # work: the round that produces an `approve` appends its own line to
+        # `review.jsonl`, so the documented close recipe stamped N against a
+        # ledger of N+1 and `verify` refused. The recipe was unrunnable and the
+        # tool was the reason.
+        counted = _count_review_rounds(RUNS_DIR / args.id / "review.jsonl")
+        if counted is not None:
+            entry["rounds"] = counted
+        else:
+            previous = (rec.get("critic") or {}).get(args.layer)
+            if isinstance(previous, dict) and isinstance(previous.get("rounds"), int):
+                entry["rounds"] = previous["rounds"]
     rec.setdefault("critic", {})[args.layer] = entry
     save_record(args.id, rec)
     # Re-render, exactly as `run`, `record` and `artifact` do. Without this,

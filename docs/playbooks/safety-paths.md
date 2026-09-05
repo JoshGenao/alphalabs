@@ -343,11 +343,16 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     `(SRS-MD-005 r14)`
 
 60. **When you change a cache's policy, grep every surface that FILTERS on the old TTL.**
-    Adding a 100 ms positive TTL to the probe cache left `last_outcome()` - the method
-    that reports reachability to an operator - still filtering on the 1 s negative TTL, so
+    Adding a 100 ms positive TTL to the probe cache left `last_outcome()` - the retained-
+    fact accessor - still filtering on the 1 s negative TTL, so
     a `Reachable` could escape for ten times the bound the module had just installed as
     its safety property. Extract the decision into one `ttl_for(outcome, configured)` and
     route both call sites through it: two copies of a bound drift within a single round.
     And re-read the rustdoc of every method you touched - `state()` still promised "a
     fresh probe on every read" on the trait method the order gate calls.
+    Corrected later: an earlier version of this entry called `last_outcome()` "the method
+    that reports reachability to an operator". It has no production caller at all - the
+    CLI reads `observe_if_needed()`. The BOUND still had to agree across both, which is
+    the rule; the surface was overstated, which is the kind of small false claim these
+    entries exist to stop. `(SRS-MD-005 r21)`
     `(SRS-MD-005 r15)`

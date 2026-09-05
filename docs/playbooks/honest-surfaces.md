@@ -246,3 +246,18 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
   to a vocabulary that drives a safety verdict, grep the type name, and delete
   the wildcard so the compiler names each site the next time.
   `(NOTIF-001, found on the operator's first live run)`
+
+- **Check that a documented surface has a caller before describing what it does for
+  operators.** `last_outcome()`'s rustdoc said the probe reason "surfaces here and through
+  the operator CLI's `reachability:` field"; the CLI reads `observe_if_needed()`, and this
+  method had no production caller at all. A playbook entry had repeated the claim, which is
+  how a small false statement becomes project memory. `grep` for callers before writing
+  what a method is FOR, and if there are none, say so - "kept honest by tests rather than
+  by use" is an accurate and perfectly respectable thing for a method to be.
+  `(SRS-MD-005 r21)`
+- **A disclosure must name WHAT is wrong, not merely contain the word.** The queue-row
+  check accepted any `` `block` `` code span anywhere on the row, so a row disclosing the
+  DETERMINISTIC layer while hiding a judgment `block` passed, as did one quoting the word
+  about a different feature. Require the layer name and the verdict together. And read
+  ROWS, not lines: a reflowed markdown row put the disclosure and the command on different
+  lines and escaped the check entirely. `(SRS-MD-005 r21)`

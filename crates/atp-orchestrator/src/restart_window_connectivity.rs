@@ -290,14 +290,22 @@ where
     /// [`observe_if_needed`](Self::observe_if_needed) for the current answer.
     ///
     /// It exists because the collapsed boolean loses the difference between
-    /// "the gateway said no" and "we could not ask" — a `ProbeFailed` from
+    /// "the gateway said no" and "we could not ask": a `ProbeFailed` from
     /// exhausted descriptors or a denied permission becomes `Unreachable` and
-    /// pages the operator about IB when the fault is local. `ConnectivityEvent`
-    /// cannot carry the reason (its field set is pinned by the ERR-2 contract,
-    /// which forbids transport detail), so the detail surfaces here and through
-    /// the operator CLI's `reachability:` field instead. Recorded in
-    /// `deferred[]`: routing it into the alert needs the envelope change that
-    /// contract owns.
+    /// would page the operator about IB when the fault is local.
+    /// `ConnectivityEvent` cannot carry the reason (its field set is pinned by
+    /// the ERR-2 contract, which forbids transport detail), so the distinction
+    /// has to be preserved somewhere, and this is where.
+    ///
+    /// **It has no production caller today.** The operator CLI's
+    /// `reachability:` field is fed by
+    /// [`observe_if_needed`](Self::observe_if_needed), not by this. An earlier
+    /// version of this comment said the detail "surfaces here and through the
+    /// operator CLI" - it surfaces through the CLI, and this method is the
+    /// retained-fact accessor a future reader will need, kept honest by tests
+    /// rather than by use. Routing the reason into the alert needs the ERR-2
+    /// envelope change recorded in `deferred[]`, and that is the work that
+    /// would give this method its first real caller.
     pub fn last_outcome(&self) -> Option<ReachabilityOutcome> {
         let now_ns = (self.clock)();
         self.last_outcome

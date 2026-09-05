@@ -261,3 +261,21 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   "this enumeration is what makes it unforgeable". Collect the file's `use ... as` aliases
   (braced groups too) and search for every name the trait answers to.
   `(SRS-MD-005 r19)`
+
+- **A backstop bounded like the pattern it backs up is not a backstop.** The completeness
+  check written to end five rounds of "your regex missed this shape" counted with `[^;]`,
+  the same boundary the strict pattern used - so any shape a `;` defeated defeated BOTH,
+  and `expected == matched == 0` read as a clean, closed set with an always-admitting
+  implementor sitting in it. A backstop must be bounded by something the thing it guards
+  genuinely cannot contain (here: braces), and it must be TESTED against a shape the
+  strict pass fails. `(SRS-MD-005 r21)`
+- **A hand-written parser must return "unparseable", never "nothing".** Replacing the
+  regex with a bracket counter fixed the depth problem and introduced a worse one: on a
+  `;` inside `<T: Into<[u8; 4]>>` it returned the start index, so the caller silently
+  DROPPED that declaration and the exemption was inherited by a function the scan could
+  not read. Return a sentinel and make the caller refuse. Failing open is the one outcome
+  a guard may never have. `(SRS-MD-005 r21)`
+- **A rename can be two hops.** Collecting `use ... as` aliases from the file being scanned
+  missed `pub use Trait as Gate;` in one module followed by `use crate::gates::Gate;` in
+  another - no strict match, no loose match, clean report. Collect aliases across the whole
+  tree and close over them, because an alias can itself be renamed. `(SRS-MD-005 r21)`

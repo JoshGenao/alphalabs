@@ -699,9 +699,14 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
     # uses `python -c "... print(...)"`, so a matcher keyed on shell builtins was
     # narrower than the class its docstring claimed - it could not see the very
     # idiom the document it guards is written in.
+    # Every way to put text on a terminal that this repo's transcripts use.
+    # Keying on three printers was still keying on SHAPE: `sys.stdout.write`, a
+    # `cat <<EOF` heredoc and a `tee <<<` here-string each walked past a guard
+    # whose docstring claims to read "what is PRINTED".
     printer = re.compile(
         r"\b(?:echo|printf)\s+(?:(['\"])(.*?)\1|([^|;&]+))"
-        r"|\bprint\s*\(\s*(['\"])(.*?)\4\s*\)"
+        r"|\b(?:print|write|puts)\s*\(\s*(['\"])(.*?)\4\s*\)"
+        r"|<<<\s*(['\"])(.*?)\6"
     )
     derived = ("$?", "{}", "$(", "`")
     out = []
@@ -722,7 +727,9 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
             in_command = False
             continue
         for m in printer.finditer(cmd):
-            printed = next((g for g in (m.group(2), m.group(3), m.group(5)) if g), "").strip()
+            printed = next(
+                (g for g in (m.group(2), m.group(3), m.group(5), m.group(7)) if g), ""
+            ).strip()
             if not claim.search(printed):
                 continue
             if any(tok in printed for tok in derived):
@@ -805,6 +812,16 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
             # line, which the first version of this matcher never read.
             "multi-line command body",
             "$ .venv/bin/python -c \"\nprint('176 suites ok, 0 failed')\n\"",
+            True,
+        ),
+        (
+            "sys.stdout.write",
+            "$ .venv/bin/python -c \"import sys; sys.stdout.write('176 suites ok')\"",
+            True,
+        ),
+        (
+            "here-string",
+            "$ tee out.txt <<< '176 suites ok, 0 failed'",
             True,
         ),
         (
@@ -971,7 +988,16 @@ def test_only_a_stated_round_TOTAL_is_checked_against_the_ledger(line, flagged, 
     ("label", "critic", "row", "flagged"),
     [
         ("block hidden", {"judgment": {"verdict": "block"}}, "Nothing outstanding.", True),
-        ("block disclosed", {"judgment": {"verdict": "block"}}, "judgment is `block`.", False),
+        (
+            # Both layers present, one blocked and named. The earlier version of
+            # this case recorded only a judgment entry, which now correctly
+            # flags the MISSING deterministic verdict as well - that record
+            # cannot close either.
+            "block disclosed",
+            {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "block"}},
+            "judgment is `block`.",
+            False,
+        ),
         ("no judgment entry", {"deterministic": {"verdict": "approve"}}, "Nothing.", True),
         ("no critic block", None, "Nothing.", True),
         (
@@ -1085,6 +1111,42 @@ def test_re_stamping_a_verdict_without_rounds_keeps_the_count(rec, monkeypatch):
     assert after["rounds"] == 18, "the round count must survive a re-stamp"
 
 
+def test_omitting_rounds_reads_the_ledger_rather_than_the_previous_stamp(rec, monkeypatch):
+    """Carrying the previous stamp forward could not work, and the queue proved it.
+
+    The round that produces an `approve` appends its own line to review.jsonl,
+    so the documented close recipe - re-stamp without `--rounds` - wrote N
+    against a ledger of N+1 and `verify` refused. The recipe was unrunnable and
+    the tool was the reason. The count belongs to the ledger.
+    """
+    fid = rec(method="solo")
+    monkeypatch.setattr(evidence, "_head", lambda: "beefcafe" * 5)
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+
+    class Stamp:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "block", "codex", 20
+
+    assert evidence.cmd_critic(Stamp()) == 0
+
+    # The approving round appends its own verdict line.
+    (run / "review.jsonl").write_text(
+        "\n".join(json.dumps({"verdict": "block"}) for _ in range(20))
+        + "\n"
+        + json.dumps({"verdict": "approve"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class Approve:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "approve", "codex", None
+
+    assert evidence.cmd_critic(Approve()) == 0
+    after = evidence.load_record(fid)["critic"]["judgment"]
+    assert after["rounds"] == 21, "the stamp must follow the ledger, not the previous stamp"
+    assert not [p for p in evidence.record_self_consistency_problems(fid) if "rounds" in p]
+
+
 def test_an_explicit_rounds_value_still_wins(rec, monkeypatch):
     """Non-vacuity: carrying forward must not make --rounds inert."""
     fid = rec(method="solo")
@@ -1134,3 +1196,66 @@ def test_the_page_check_does_not_recurse(rec):
     evidence._write_markdown(fid)
     ok, problems, _ = evidence.verify(fid)
     assert isinstance(problems, list)
+
+
+@pytest.mark.parametrize(
+    ("label", "critic", "row", "flagged"),
+    [
+        (
+            "discloses the wrong layer",
+            {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "block"}},
+            "The deterministic layer once returned `block`; all clear now.",
+            True,
+        ),
+        (
+            "names the blocked layer",
+            {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "block"}},
+            "The judgment critic verdict is `block`.",
+            False,
+        ),
+        (
+            "quotes the word for another feature",
+            {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "block"}},
+            "SRS-OTHER-001 is `block`; nothing outstanding here.",
+            True,
+        ),
+    ],
+)
+def test_the_disclosure_must_name_the_layer_that_is_blocked(
+    label, critic, row, flagged, rec, tmp_path, monkeypatch
+):
+    """Accepting any verdict span anywhere on the row was not a disclosure.
+
+    It passed a row that disclosed the DETERMINISTIC layer while hiding a
+    judgment `block`, and one that merely quoted the word about a different
+    feature. The operator still runs a command that exits 3.
+    """
+    fid = rec(method="solo")
+    r = evidence.load_record(fid)
+    r["critic"] = critic
+    evidence.save_record(fid, r)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | {row} | `close_feature.py {fid} --verified` |\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(evidence, "ROOT", tmp_path)
+    assert bool(evidence._queue_row_problems(fid)) is flagged, label
+
+
+def test_a_reflowed_queue_row_is_still_inspected(rec, tmp_path, monkeypatch):
+    """A markdown row can wrap. The check read LINES containing the command, so
+    a row whose disclosure and command sat on different lines escaped it."""
+    fid = rec(method="solo")
+    r = evidence.load_record(fid)
+    r["critic"] = {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "block"}}
+    evidence.save_record(fid, r)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | Nothing outstanding at all.\n"
+        f"  Really nothing. | `close_feature.py {fid} --verified` |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evidence, "ROOT", tmp_path)
+    assert evidence._queue_row_problems(fid), "a reflowed row must still be checked"
