@@ -1040,3 +1040,23 @@ def test_with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() -> Non
     """
     name = "with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it"
     _assert_one_passed(_producer_test(name), name)
+
+
+def test_a_shortened_ttl_shortens_both_directions() -> None:
+    """The compile asserts relate the DEFAULTS, not the runtime bounds.
+
+    An earlier comment claimed the cache asymmetry was compiler-enforced. It is
+    not: the negative bound is `self.ttl_ns`, which the public `with_probe_ttl`
+    may set to any non-negative value, so a caller passing 100 ms or less gets
+    equal bounds in both directions and no asymmetry at all.
+
+    That is safe, because `ttl_for` takes a `min` and both directions can only
+    ever SHORTEN - shorter is the cautious side of every one of these trades.
+    But safe-by-construction still has to be pinned, or the next refactor is
+    free to make the cap a constant and silently lengthen a negative.
+
+    NOT proven here: that any particular configured TTL is a good choice. Only
+    that lowering it lowers BOTH bounds.
+    """
+    name = "a_shortened_ttl_shortens_both_directions"
+    _assert_one_passed(_producer_test(name), name)

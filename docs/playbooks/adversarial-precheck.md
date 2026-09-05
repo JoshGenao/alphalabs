@@ -236,3 +236,16 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   a check that only asked "is the gating command a no-op?" accepted both. Require the
   claim and its gate to be about the same thing - at least one substantial word of what
   is printed appearing in the command that gates it. `(SRS-MD-005 r17)`
+
+- **When the same defect class appears a fourth time, stop patching call sites and go
+  count them.** A `->` defeated four separate patterns in this one feature: impl generics
+  (r14), the impl target (r15), a `fn` declaration's generics (r17), and the manual depth
+  counter in `_strip_generic_args` (r18), which decremented on the `>` of the arrow and so
+  reported a RETURN TYPE as an undeclared production implementor. Each fix was correct and
+  each round found the next one, because the fix was always local. `grep -n '\[^>\]\|>' `
+  over every pattern in the file, once, would have ended it four rounds earlier.
+  `(SRS-MD-005 r18)`
+- **Test the false-positive direction of a guard, not only the bypass.** A guard that
+  `fail()`s on a legal shape gets disabled by the next person who meets it, so it is as
+  dead as one that never fires. Every bypass test here now has a sibling asserting the
+  legal shape stays quiet. `(SRS-MD-005 r18)`

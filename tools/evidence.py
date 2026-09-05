@@ -620,20 +620,31 @@ def record_self_consistency_problems(fid: str) -> list[str]:
     #    while review.jsonl held 16, and a document guard anchored to that stale
     #    field certified the drift instead of catching it.
     ledger = run_dir / "review.jsonl"
-    if ledger.exists():
-        counted = _count_review_rounds(ledger)
-        rec = load_record(fid)
-        for layer, entry in (rec.get("critic") or {}).items():
-            if isinstance(entry, dict) and isinstance(entry.get("rounds"), int):
-                if counted is None:
-                    problems.append(
-                        f"critic[{layer}] records rounds but {_rel(ledger)} is unreadable"
-                    )
-                elif entry["rounds"] != counted:
-                    problems.append(
-                        f"critic[{layer}].rounds={entry['rounds']} but {_rel(ledger)} "
-                        f"holds {counted} verdict-bearing round(s)"
-                    )
+    counted = _count_review_rounds(ledger) if ledger.exists() else None
+    rec = load_record(fid)
+    stamped = {
+        layer: entry["rounds"]
+        for layer, entry in (rec.get("critic") or {}).items()
+        if isinstance(entry, dict) and isinstance(entry.get("rounds"), int)
+    }
+    if counted is None:
+        # ABSENT and UNREADABLE are not "consistent" (CLAUDE.md rule 3). Guarding
+        # the whole check behind `ledger.exists()` meant a hand-typed
+        # `--rounds N`, stamped without the reviewer ever having run, passed
+        # unconditionally - which is precisely the case this exists to catch.
+        if stamped:
+            problems.append(
+                f"critic {sorted(stamped)} record a round count, but {_rel(ledger)} is "
+                f"{'missing' if not ledger.exists() else 'unreadable'}, so the count "
+                "cannot be corroborated"
+            )
+    else:
+        for layer, n in stamped.items():
+            if n != counted:
+                problems.append(
+                    f"critic[{layer}].rounds={n} but {_rel(ledger)} "
+                    f"holds {counted} verdict-bearing round(s)"
+                )
 
     # 3. A queue row that hands over `close_feature.py <id> --verified` must
     #    disclose a standing non-approve verdict, or it sends the operator to a
@@ -648,10 +659,8 @@ def record_self_consistency_problems(fid: str) -> list[str]:
     #    change in different commits. ANY guard comparing the two sides is red
     #    across that boundary no matter how the commits are ordered. Only here,
     #    with the whole working tree in hand, are they comparable.
-    if ledger.exists():
-        counted = _count_review_rounds(ledger)
-        if counted is not None:
-            problems.extend(_round_count_drift(fid, counted))
+    if counted is not None:
+        problems.extend(_round_count_drift(fid, counted))
 
     # 2. A verification transcript must certify the tree it ships with. One said
     #    its commands "were re-run against the integrated tree (ed36c790)" while

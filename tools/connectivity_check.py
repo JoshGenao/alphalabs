@@ -875,14 +875,20 @@ def _strip_generic_args(text: str) -> str:
 
     `ScheduledRestartConnectivity<P, C>` must yield one name, not three.
     """
-    out, depth = [], 0
+    out, depth, prev = [], 0, ""
     for ch in text:
         if ch == "<":
             depth += 1
-        elif ch == ">":
+        elif ch == ">" and prev != "-":
+            # NOT the `>` of a `->`. Closing on it made depth fall to 0 inside
+            # `Wrapper<fn() -> EpochNanos>`, so ` EpochNanos` was emitted at
+            # depth 0 and reported as an undeclared production implementor: the
+            # guard failing on a legal shape. Fourth arrow-versus-bracket defect
+            # in this feature.
             depth = max(0, depth - 1)
         elif depth == 0:
             out.append(ch)
+        prev = ch
     return "".join(out)
 
 

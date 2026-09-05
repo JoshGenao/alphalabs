@@ -996,6 +996,35 @@ impl RestartWindowGate for SimGate {
             "while its siblings scan the caller's tree",
         )
 
+    def test_a_return_arrow_in_the_impl_target_does_not_cry_wolf(self) -> None:
+        """The FALSE-POSITIVE direction, and the fourth arrow defect here.
+
+        `_strip_generic_args` closed its bracket depth on the `>` of a `->`, so
+        in `impl Gate for Wrapper<fn() -> EpochNanos>` the depth fell to zero at
+        the arrow, ` EpochNanos` was emitted at depth 0, and the uppercase sweep
+        reported it as an undeclared production implementor. The guard would
+        `fail()` on a legal shape - which is how a guard gets disabled.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct Wrapper<T>(T);
+
+impl atp_market_data::RestartWindowGate for Wrapper<fn() -> EpochNanos> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        msg = str(ctx.exception)
+        self.assertIn("Wrapper", msg)
+        self.assertNotIn(
+            "EpochNanos", msg, "a return type was reported as a production implementor"
+        )
+
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""
         empty = Path(tempfile.mkdtemp())

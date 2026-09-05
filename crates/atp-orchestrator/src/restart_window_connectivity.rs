@@ -111,10 +111,19 @@ pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
 /// knowingly against unbounded churn on the path that runs constantly.
 pub const REACHABLE_CACHE_TTL_NS: i64 = 100_000_000;
 
-// The asymmetry is the design, so it is enforced by the COMPILER rather than by
-// the two constants happening to differ. A stale `Connected` is the dangerous
-// direction: it must expire far sooner than a stale `Unreachable`, and the
-// window it opens must stay well inside NFR-P1's 1,000 ms order budget.
+// What the compiler enforces here is the relation between the two DEFAULTS: a
+// stale `Connected` is the dangerous direction, so its default expires far
+// sooner than a stale `Unreachable`, and the window it opens stays well inside
+// NFR-P1's 1,000 ms order budget.
+//
+// What it does NOT enforce - stated because an earlier version of this comment
+// claimed the asymmetry itself was compiler-enforced - is the relation at
+// RUNTIME. The negative bound is `self.ttl_ns`, which `with_probe_ttl` may set
+// to any non-negative value, so a caller passing 100 ms or less gets equal
+// bounds in both directions and no asymmetry at all. That is safe (`ttl_for`
+// takes a `min`, so both directions only ever SHORTEN, and shorter is the
+// cautious side of every one of these trades) but it is not the same claim, and
+// `a_shortened_ttl_shortens_both_directions` is what pins it.
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 5 < REACHABILITY_CACHE_TTL_NS);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 4 <= 1_000_000_000);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS > 0);
@@ -789,6 +798,32 @@ mod tests {
         assert!(
             producer.last_outcome().is_none(),
             "an observation older than the reuse window is not an observation"
+        );
+    }
+
+    #[test]
+    fn a_shortened_ttl_shortens_both_directions() {
+        // The compile asserts relate the two DEFAULTS. At runtime the negative
+        // bound is `self.ttl_ns`, so a caller passing 100 ms or less collapses
+        // the asymmetry entirely. That is safe - `ttl_for` takes a `min`, so
+        // both directions only ever shorten - but it is a different claim from
+        // the one the constants make, and it is pinned rather than assumed.
+        let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
+        let tight = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+            now.load(Ordering::SeqCst)
+        })
+        .with_probe_ttl(REACHABLE_CACHE_TTL_NS / 2);
+
+        assert_eq!(tight.state(), ConnectivityState::Unreachable);
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS / 2,
+            Ordering::SeqCst,
+        );
+        let _ = tight.state();
+        assert_eq!(
+            tight.probe.calls.get(),
+            2,
+            "a NEGATIVE must not outlive a configured TTL shorter than the positive cap"
         );
     }
 

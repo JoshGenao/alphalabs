@@ -973,3 +973,46 @@ def test_a_queue_row_promising_a_close_must_disclose_a_standing_verdict(
     )
     monkeypatch.setattr(evidence, "ROOT", tmp_path)
     assert bool(evidence._queue_row_problems(fid)) is flagged, label
+
+
+@pytest.mark.parametrize(
+    ("label", "write_ledger", "content"),
+    [
+        ("absent", False, None),
+        ("unparseable", True, "{not json\n"),
+    ],
+)
+def test_a_round_count_with_no_readable_ledger_behind_it_is_not_consistent(
+    label, write_ledger, content, rec
+):
+    """CLAUDE.md rule 3, applied to the corroborating artifact.
+
+    The check was guarded by `if ledger.exists()`, so a hand-typed
+    `evidence.py critic --rounds N` stamped without the reviewer ever having run
+    produced ZERO problems - the exact case the check exists to catch. Absent
+    and unreadable each need their own fail-closed state.
+    """
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    if write_ledger:
+        (run / "review.jsonl").write_text(content, encoding="utf-8")
+    r = evidence.load_record(fid)
+    r.setdefault("critic", {})["judgment"] = {"verdict": "block", "rounds": 12}
+    evidence.save_record(fid, r)
+
+    problems = evidence.record_self_consistency_problems(fid)
+    assert any("cannot be corroborated" in p for p in problems), (label, problems)
+
+
+def test_a_record_with_no_round_count_needs_no_ledger(rec):
+    """Non-vacuity: the demand is on the CLAIM, not on every record.
+
+    Without this, the fix above could have been "always require a ledger", which
+    would fail every feature that never recorded a round count.
+    """
+    fid = rec(method="solo")
+    r = evidence.load_record(fid)
+    r.setdefault("critic", {})["judgment"] = {"verdict": "block"}
+    evidence.save_record(fid, r)
+    assert not [p for p in evidence.record_self_consistency_problems(fid) if "corroborated" in p]
