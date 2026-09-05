@@ -1104,3 +1104,43 @@ def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
     assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_implementor_enumeration_refuses_what_it_cannot_parse() -> None:
+    """The backstop that ends "your regex did not anticipate this shape".
+
+    Five separate review rounds found a shape the gate-implementor scan could
+    not read: an arrow in the generics, a reference or tuple target, a
+    parenthesised bound, two levels of nesting, an aliased trait name. Each fix
+    was correct and each round found the next one, because a scan that fails to
+    MATCH reports nothing and nothing reads as clean.
+
+    The scan now counts what a loose pattern can see and refuses when the strict
+    pass accounts for fewer. Any future unreadable shape turns the guard red
+    instead of silently shrinking the set it calls closed - which is the only
+    property that makes the "closed set" claim honest, and the one this L7 test
+    protects because SyRS SYS-75(a) rests on it.
+
+    NOT proven here: that the loose pattern sees every impl either. It is a
+    lower bound, and a lower bound that fails closed is worth more than a
+    precise one that fails open.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "cannot_name or scan_that_finds_nothing",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]

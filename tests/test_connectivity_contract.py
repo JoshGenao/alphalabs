@@ -1075,6 +1075,43 @@ impl atp_market_data::RestartWindowGate for Wrapper<fn() -> EpochNanos> {
                     check_restart_window_gate_implementors(self.config, "", root=self.tmp)
                 self.assertIn("AlwaysOpen", str(ctx.exception))
 
+    def test_an_impl_target_the_scan_cannot_name_fails_rather_than_collecting_nothing(self):
+        """Unnameable is not absent (CLAUDE.md rule 3).
+
+        Names were extracted with `\\b([A-Z]\\w*)`, so an impl target carrying no
+        uppercase identifier collected NOTHING and the "closed set" stayed open
+        while the check reported a clean tree - the worst possible failure mode
+        for an enumeration whose whole claim is that it is exhaustive.
+        """
+        for label, target in {
+            "primitive": "i64",
+            "lowercase alias": "gate_alias",
+            "array": "[u8; 4]",
+        }.items():
+            with self.subTest(target=label):
+                self._inject(
+                    "atp-orchestrator",
+                    f"""
+impl atp_market_data::RestartWindowGate for {target} {{
+    fn admission(&self) -> MarketDataAdmission {{
+        MarketDataAdmission::Admitted
+    }}
+}}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                msg = str(ctx.exception)
+                # Either refusal is correct: the scan parsed the header and
+                # could not NAME the target, or it could not parse the header at
+                # all and the completeness backstop caught the shortfall. Both
+                # end in a refusal rather than a clean report, which is the
+                # property under test.
+                self.assertTrue(
+                    "cannot name" in msg or "could parse only" in msg,
+                    msg,
+                )
+
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""
         empty = Path(tempfile.mkdtemp())

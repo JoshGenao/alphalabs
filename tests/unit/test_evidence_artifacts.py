@@ -705,11 +705,22 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
     )
     derived = ("$?", "{}", "$(", "`")
     out = []
+    in_command = False
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
-        if not line.startswith("$"):
+        if line.startswith("$"):
+            in_command = True
+            cmd = line[1:].strip()
+        elif in_command and line and not line.startswith("[exit "):
+            # A multi-line command BODY. Skipping every line that did not start
+            # with `$` made a typed result inside one invisible - and the
+            # multi-line `python -c "..."` block in Section 6 is the only
+            # `python -c` the guarded transcript actually contains, so the guard
+            # was blind to the exact place the idiom appears.
+            cmd = line
+        else:
+            in_command = False
             continue
-        cmd = line[1:].strip()
         for m in printer.finditer(cmd):
             printed = next((g for g in (m.group(2), m.group(3), m.group(5)) if g), "").strip()
             if not claim.search(printed):
@@ -788,6 +799,18 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
             "python -c print",
             "$ .venv/bin/python -c \"print('176 suites ok, 0 failed')\"",
             True,
+        ),
+        (
+            # The shape Section 6 actually uses: the claim is on a CONTINUATION
+            # line, which the first version of this matcher never read.
+            "multi-line command body",
+            "$ .venv/bin/python -c \"\nprint('176 suites ok, 0 failed')\n\"",
+            True,
+        ),
+        (
+            "multi-line body reading a value",
+            "$ .venv/bin/python -c \"\nimport json\nprint(json.load(open('e.json'))['n'])\n\"",
+            False,
         ),
         (
             # The honest shape of the same idiom: values read from the record.

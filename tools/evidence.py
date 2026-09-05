@@ -950,6 +950,42 @@ def verify(
                 f"{ac_n or 'N'} --file <screenshot.png> --caption '...'`"
             )
 
+    # A STEP certifies the code it ran on, exactly as an image and a verdict do.
+    # This was checked for images only (`step_artifacts` above), so a feature
+    # with no images - every `integration`, `solo` or `live-ib` method - had its
+    # steps' currency never checked at all. SRS-MD-005's own four steps were
+    # stale by 13 code paths when a reviewer pointed this out: step 3 recorded
+    # `48 passed` for a command that by then collected 53.
+    #
+    # Same fail-closed shape as everywhere else: equality with HEAD is not the
+    # test (evidence precedes the commit carrying it), and `code_changed_since`
+    # returning None means the question could not be answered, which is not a
+    # pass.
+    stale_steps, uncheckable_steps = [], []
+    for n in range(1, len(steps) + 1):
+        entry = by_n.get(n)
+        if not entry or entry.get("status") != "pass":
+            continue
+        moved = code_changed_since(entry.get("head"))
+        if moved is None:
+            uncheckable_steps.append(n)
+        elif moved:
+            stale_steps.append((n, moved))
+    if stale_steps:
+        worst = max(len(m) for _, m in stale_steps)
+        problems.append(
+            f"step(s) {[n for n, _ in stale_steps]} ran against code that has since moved "
+            f"({worst} path(s) changed, e.g. "
+            f"{', '.join(sorted(stale_steps[0][1])[:3])}) - re-run them with "
+            f"`tools/evidence.py run {fid} --step N -- <command>`"
+        )
+    if uncheckable_steps:
+        problems.append(
+            f"step(s) {uncheckable_steps} record a commit that cannot be checked against "
+            "this one (missing, unknown, unreadable, or on another line of history); "
+            "an unverifiable step is not a fresh one"
+        )
+
     problems.extend(record_self_consistency_problems(fid))
 
     summary = {

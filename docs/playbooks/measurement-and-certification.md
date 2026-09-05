@@ -84,3 +84,18 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
 27. **Honest CLI docs:** the `python/` tree is not pip-installed — document
     `PYTHONPATH=python python -m X` and add a subprocess test that runs independent of
     pytest's pythonpath.
+
+- **A step certifies the code it ran on, and nothing was checking that.** `evidence.py`
+  bound its currency check (`code_changed_since`) to IMAGE artifacts only, so every
+  feature with no images - every `integration`, `solo` and `live-ib` method, which is most
+  of them - had its four steps' freshness never checked at all. SRS-MD-005's own steps
+  were stale by 13 code paths when a reviewer noticed: step 3 recorded `48 passed` for a
+  command that by then collected 53, and `close_feature.py` would have accepted it. The
+  check now runs on the steps themselves, with the same fail-closed shape: `None` from
+  `code_changed_since` is unverifiable, not fresh. `(SRS-MD-005 r20)`
+- **Give a scan a completeness backstop, not a sixth pattern.** Five separate reviewer
+  findings were "your regex did not anticipate this shape". The fix that ends the class is
+  not a better regex: count the impls a LOOSE pattern can see, count what the strict one
+  parsed, and `fail()` when the strict pass accounts for fewer. Any future shape the
+  parser cannot read then turns the guard red instead of silently shrinking the set it
+  claims is closed. `(SRS-MD-005 r20)`
