@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 19 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 20 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 19 - the loop has not reached APPROVE.** The feature first
+  standing at round 20 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 19 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 20 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,9 +398,31 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away. Where a finding's
-recommendation would have been wrong I did not diverge - all nine were correct
-as stated.
+Every finding was fixed; none was overridden or argued away, across all 20
+rounds. Where a finding's recommendation would have been wrong I did not
+diverge: I have not yet had to. That is itself worth recording - a reviewer
+that is right every time is one whose next block should be believed, not
+negotiated with.
+
+This total is deliberately not restated as a number of findings. An earlier
+version of this line said "all nine were correct", which was true at round 13
+and quietly false for the six rounds after it. The round log below is the
+count.
+
+  r20 block/5  - the gate was not checking its own steps. `evidence.py` bound
+      its currency check to IMAGE artifacts only, so every feature with no
+      images (integration, solo, live-ib: most of them) had step freshness
+      never checked at all. This feature's own four steps were stale by 13 code
+      paths - step 3 recorded `48 passed` for a command that by then collected
+      53 - and `close_feature.py` would have accepted them. All four re-run at
+      the shipping commit. Also: five rounds of "your regex did not anticipate
+      this shape" ended with a BACKSTOP rather than a sixth pattern - the scan
+      counts what a loose pattern sees and refuses when the strict pass accounts
+      for fewer, so an unreadable shape turns the guard red instead of silently
+      shrinking the set it calls closed. And two stale totals in this very note:
+      "all nine were correct" was a round-13 figure standing through six more
+      rounds, and the playbook section said "rounds 14-17, 23 entries" while
+      printing the command that would have shown r18 and r19.
 
 ## Playbook updates
 
@@ -424,10 +446,17 @@ as stated.
   docs/verification-queue.md - SRS-MD-005 added as Class A, then corrected in
     round 14: the row had promised a close command that cannot succeed while a
     critic verdict stands at `block`.
-  Rounds 14-17 added 23 further entries across FIVE playbooks. Counted from the
-  diff, not from memory (`git diff origin/main...HEAD -- docs/playbooks/ |
-  grep -oE '\(SRS-MD-005 r[0-9]+\)' | sort | uniq -c`): r14 x6, r15 x6,
-  r16 x5, r17 x6.
+  Rounds 14-19 added 29 further entries across FIVE playbooks. Counted from the
+  diff rather than from memory - and the count is deliberately recomputed each
+  time this section is touched, because the previous version said "rounds 14-17"
+  and "23 entries" while printing the very command that would have shown r18 and
+  r19:
+
+      git diff origin/main...HEAD -- docs/playbooks/ \
+        | grep -oE '\(SRS-MD-005 r[0-9]+\)' | sort -V | uniq -c
+
+  r14 x6, r15 x6, r16 x5, r17 x6, r18 x2, r19 x4 (plus one r6 entry from the
+  original session).
 
   adversarial-precheck.md (r14, r15, r16, r17)
     A character class terminates on the `>` of a `->` - written four separate
@@ -475,7 +504,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 19**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 20**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
