@@ -177,7 +177,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 15 - the loop has not reached APPROVE.** The feature first
+  standing at round 17 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -213,7 +213,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 15 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 17 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -319,6 +319,30 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       `_store_step`; the queue guard's "block" substring was satisfied by
       "unblocks"; and three surfaces stated three different round counts.
       All ten fixed, each with a mutation-verified guard.
+  r17 block/7  - three of the seven were things earlier rounds had recorded as
+      FIXED. The worst: I shipped a guard RED. The transcript-currency check
+      failed at the very commit that introduced it, because the chore commit
+      carrying the transcript also carried a playbook entry and a test file,
+      which moved code out from under that transcript's own capture point.
+      Fixing the commit split was not enough. CI went red twice more on the
+      same class before I saw the real shape of it: `docs/verification-queue.md`
+      is a CODE-path file and `.harness/runs/<id>/review.jsonl` is an
+      EVIDENCE-path file, and the workflow commits those separately BY DESIGN,
+      so no ordering and no choice of which side is authoritative can make a
+      cross-boundary check green. Twice I re-anchored the check; twice it went
+      red again. The fix was the PLACE: all three currency checks now live in
+      `evidence.py::record_self_consistency_problems`, which `verify` runs and
+      `close_feature.py` calls, where the whole working tree is in hand. The
+      unit tests keep synthetic fixtures and NO live assertion.
+      The rest were real too: `with_probe_ttl` promised "reuse for `ttl_ns`"
+      while `ttl_for` silently capped a positive at 100 ms; the exempt-function
+      scan used `<[^{}();]*?>` and so could not span `<F: Fn() -> bool>` (the
+      THIRD pattern in this feature defeated by a `->`, now one shared
+      `_GENERIC_LIST`); the typed-result ban read only QUOTED echo arguments
+      and accepted any non-no-op gate, so `ls && echo "176 suites ok"` passed;
+      and the stamped `rounds` was hand-typed at 15 while the ledger held 16,
+      which meant the document guard was checking prose against a stale number
+      and PASSING - certifying the drift instead of catching it.
 
 Every finding was fixed; none was overridden or argued away. Where a finding's
 recommendation would have been wrong I did not diverge - all nine were correct
@@ -369,7 +393,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 15**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 17**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND

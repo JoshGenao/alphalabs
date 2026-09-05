@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was re-run at the commit this document ships with (`f1e4a9f`). It is a
+block was re-run at the commit this document ships with (`0cf8619`). It is a
 re-verification, not a replay of the session that built the feature.
 
 Round 16 caught the earlier version presenting captures from `ed36c790` as
@@ -13,7 +13,7 @@ mutation was re-applied and reverted around its own command.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 15 rounds**. This feature integrated
+The judgment critic sits at **`block` after 17 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason — see Section 6. If
 that section said `approve`, this document would be lying.
@@ -49,7 +49,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-f1e4a9fa5c274a226547ea0874257a5211f38010
+0cf861959ca3195742683c455d30d82f3a6841c6
 [exit 0]
 
 $ git log --oneline origin/main -14 | cat
@@ -191,8 +191,8 @@ step 2: PASS | exit=0 | cargo test -p atp-orchestrator --test srs_md_005_restart
 step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_windo
 step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
 
-deterministic critic: approve @ f1e4a9fa
-judgment critic    : block | rounds: 15 | reviewer: claude-fallback
+deterministic critic: approve @ 0cf86195
+judgment critic    : block | rounds: 17 | reviewer: claude-fallback
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -203,7 +203,7 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the integrated commit, straight from GitHub ===
 
-$ gh run list --commit f1e4a9fa5c274a226547ea0874257a5211f38010 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
+$ gh run list --commit 0cf861959ca3195742683c455d30d82f3a6841c6 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
 success	security
 success	ci
 skipped	integration
@@ -225,8 +225,8 @@ $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 
 === SECTION 9: suite totals, re-run now against the integrated tree ===
 
-$ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok."){ok++}; p+=$4; f+=$6} END {printf "%d suites, %d ok, %d failed suites, %d tests passed, %d tests failed\\n", s, ok, s-ok, p, f}'
-176 suites, 176 ok, 0 failed suites, 2398 tests passed, 0 tests failed
+$ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok."){ok++}; p+=$4; f+=$6} END {print s" suites, "ok" ok, "s-ok" failed suites, "p" tests passed, "f" tests failed"}'
+176 suites, 176 ok, 0 failed suites, 2399 tests passed, 0 tests failed
 [exit 0]
 
 > **This block replaces a fabricated one.** Round 15 caught the original:
@@ -246,7 +246,7 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-110 passed, 4 subtests passed in 40.31s
+112 passed, 4 subtests passed in 86.62s (0:01:26)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
