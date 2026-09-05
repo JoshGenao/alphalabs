@@ -525,6 +525,82 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
     return (not problems), problems
 
 
+def _queue_row_problems(fid: str) -> list[str]:
+    """Queue rows promising a close that this record would refuse.
+
+    `--attested-by` relaxes which STEPS count, never the critic gate, so a row
+    saying "Nothing" is missing beside a `block` sends the operator to an error.
+    Absent, unreadable and unknown are each fatal here, not empty: `verify`
+    needs BOTH layers to say `approve`.
+    """
+    queue = ROOT / "docs" / "verification-queue.md"
+    if not queue.exists():
+        return []
+    try:
+        rec = load_record(fid)
+    except EvidenceError:
+        return []
+    critic = rec.get("critic")
+    if not isinstance(critic, dict):
+        blocked = ["no critic block recorded"]
+    else:
+        blocked = []
+        for layer in ("deterministic", "judgment"):
+            entry = critic.get(layer)
+            if not isinstance(entry, dict) or "verdict" not in entry:
+                blocked.append(f"{layer} (no verdict recorded)")
+            elif entry["verdict"] != "approve":
+                blocked.append(f"{layer} (`{entry['verdict']}`)")
+    if not blocked:
+        return []
+    out = []
+    for n, line in enumerate(queue.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if not re.search(rf"close_feature\.py\s+{re.escape(fid)}\b", line):
+            continue
+        # The verdict as a CODE SPAN, not the substring "block": "unblocks",
+        # "blocked on the VM" and "blocking" all contain it.
+        if not re.search(r"`(block|warn|none)`", line):
+            out.append(
+                f"{_rel(queue)}:{n} promises a close for {fid} without disclosing "
+                f"{', '.join(blocked)}"
+            )
+    return out
+
+
+_ROUND_TOTAL_RE = re.compile(r"\brounds\s*[:=]\s*(\d+)\b|\b(?:at|after)\s+(\d+)\s+rounds?\b", re.I)
+
+
+def _round_count_drift(fid: str, counted: int) -> list[str]:
+    """Documents claiming a round TOTAL that the ledger does not support.
+
+    A total ("Adversarial rounds: 13", "block after 13 rounds") goes stale; an
+    ordinal ("round 12 found X") stays true forever, so only totals are checked.
+    Matching both raised 38 accusations against session notes doing nothing
+    wrong; matching only `<digit> rounds` missed two of the three live claims.
+    """
+    out: list[str] = []
+    docs = [ROOT / "docs" / "verification-queue.md"]
+    for extra in (RUNS_DIR / fid / "VERIFICATION.md", ROOT / "progress.d" / f"session-{fid}.md"):
+        if extra.exists():
+            docs.append(extra)
+    for doc in docs:
+        if not doc.exists():
+            continue
+        owns = doc.name != "verification-queue.md"
+        for n, line in enumerate(doc.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            stated = {int(g) for m in _ROUND_TOTAL_RE.findall(line) for g in m if g}
+            if not stated:
+                continue
+            if not owns and fid not in line:
+                continue
+            if counted not in stated:
+                out.append(
+                    f"{_rel(doc)}:{n} states {sorted(stated)} round(s) for {fid}, "
+                    f"but the ledger holds {counted}"
+                )
+    return out
+
+
 def record_self_consistency_problems(fid: str) -> list[str]:
     """Ways the record can disagree with the artifacts sitting beside it.
 
@@ -558,6 +634,24 @@ def record_self_consistency_problems(fid: str) -> list[str]:
                         f"critic[{layer}].rounds={entry['rounds']} but {_rel(ledger)} "
                         f"holds {counted} verdict-bearing round(s)"
                     )
+
+    # 3. A queue row that hands over `close_feature.py <id> --verified` must
+    #    disclose a standing non-approve verdict, or it sends the operator to a
+    #    command that exits 3. Same code-path/evidence-path split as above, so
+    #    the same home.
+    problems.extend(_queue_row_problems(fid))
+
+    # 2. Documents that state a round count must match the ledger. This is a
+    #    CLOSE-time check for the same reason as the others, and it took three
+    #    attempts to see why: `docs/verification-queue.md` is a code-path file
+    #    while `review.jsonl` is an evidence-path file, so they necessarily
+    #    change in different commits. ANY guard comparing the two sides is red
+    #    across that boundary no matter how the commits are ordered. Only here,
+    #    with the whole working tree in hand, are they comparable.
+    if ledger.exists():
+        counted = _count_review_rounds(ledger)
+        if counted is not None:
+            problems.extend(_round_count_drift(fid, counted))
 
     # 2. A verification transcript must certify the tree it ships with. One said
     #    its commands "were re-run against the integrated tree (ed36c790)" while

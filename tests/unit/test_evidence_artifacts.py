@@ -894,3 +894,82 @@ def test_verify_checks_the_stamped_round_count_against_the_ledger(
 
     problems = evidence.record_self_consistency_problems(fid)
     assert bool([p for p in problems if "rounds" in p]) is flagged, problems
+
+
+@pytest.mark.parametrize(
+    ("line", "flagged"),
+    [
+        ("| **F-1** | judgment is `block` after 13 rounds |", True),
+        ("| **F-1** | judgment is `block` after 16 rounds |", False),
+        ("Adversarial rounds: 13 (plus failed attempts)", True),
+        ("Adversarial rounds: 16 (plus failed attempts)", False),
+        # An ORDINAL is narration, not a total. It stays true forever, and
+        # matching it raised 38 accusations against session notes doing nothing
+        # wrong on this guard's first run.
+        ("  r12 warn/3 - found the precedence defect", False),
+        ("Rounds 1-4 found defects in the FEATURE.", False),
+    ],
+)
+def test_only_a_stated_round_TOTAL_is_checked_against_the_ledger(line, flagged, rec, tmp_path):
+    """Totals go stale; ordinals do not."""
+    fid = rec(method="solo")
+    run = evidence.RUNS_DIR / fid
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "review.jsonl").write_text(
+        "\n".join(json.dumps({"verdict": "block"}) for _ in range(16)) + "\n", encoding="utf-8"
+    )
+    note = evidence.ROOT / "progress.d" / f"session-{fid}.md"
+    assert not note.exists(), "this fixture must not touch a real session note"
+    (run / "VERIFICATION.md").write_text(line + "\n", encoding="utf-8")
+
+    problems = [p for p in evidence._round_count_drift(fid, 16)]
+    assert bool(problems) is flagged, (line, problems)
+
+
+@pytest.mark.parametrize(
+    ("label", "critic", "row", "flagged"),
+    [
+        ("block hidden", {"judgment": {"verdict": "block"}}, "Nothing outstanding.", True),
+        ("block disclosed", {"judgment": {"verdict": "block"}}, "judgment is `block`.", False),
+        ("no judgment entry", {"deterministic": {"verdict": "approve"}}, "Nothing.", True),
+        ("no critic block", None, "Nothing.", True),
+        (
+            # "unblocks" contains "block". A substring test accepted this row.
+            "prose containing the word",
+            {"judgment": {"verdict": "block"}},
+            "This unblocks SRS-SAFE-003.",
+            True,
+        ),
+        (
+            "both approve",
+            {"judgment": {"verdict": "approve"}, "deterministic": {"verdict": "approve"}},
+            "Nothing outstanding.",
+            False,
+        ),
+    ],
+)
+def test_a_queue_row_promising_a_close_must_disclose_a_standing_verdict(
+    label, critic, row, flagged, rec, tmp_path, monkeypatch
+):
+    """`--attested-by` relaxes which STEPS count, never the critic gate.
+
+    A row saying "Nothing" is missing beside a `block` sends the operator to
+    `close_feature.py`, which exits 3. Absent, unreadable and unknown are each
+    fatal here, not empty (CLAUDE.md rule 3): `verify` needs BOTH layers to
+    approve, so a record with no judgment entry cannot close either.
+    """
+    fid = rec(method="solo")
+    r = evidence.load_record(fid)
+    if critic is None:
+        r.pop("critic", None)
+    else:
+        r["critic"] = critic
+    evidence.save_record(fid, r)
+
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | {row} | `close_feature.py {fid} --verified` |\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(evidence, "ROOT", tmp_path)
+    assert bool(evidence._queue_row_problems(fid)) is flagged, label

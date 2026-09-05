@@ -425,6 +425,15 @@ Read this whenever you write a test, and before you believe a green one.
   conditional on that command succeeding; anything else is typed. Then pin the whole truth
   table, honest shapes included, so the fix cannot over-fire either. `(SRS-MD-005 r16)`
 
+- **A check comparing a CODE-path file to an EVIDENCE-path file is red across the commit
+  boundary, whichever side you anchor to.** `docs/verification-queue.md` ships in the fix
+  commit; `.harness/runs/<id>/review.jsonl` ships in the chore commit after it. They must
+  agree, and they cannot both be current in the same commit - so no ordering and no choice
+  of authority saves the check. I re-anchored it twice and CI went red twice more. The fix
+  is the PLACE: `evidence.py::record_self_consistency_problems`, run by `verify`, which
+  sees the whole working tree at close time and is what `close_feature.py` calls. Keep
+  synthetic unit tests on the function; keep NO live assertion in pytest.
+  `(SRS-MD-005 r17)`
 - **A pytest that asserts on live EVIDENCE state is red at every code commit by
   construction.** Evidence is recorded and committed AFTER the code it describes - that
   lag is the workflow, not a mistake - so a unit test asserting "the record agrees with
