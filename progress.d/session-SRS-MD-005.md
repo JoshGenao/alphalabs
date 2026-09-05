@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 21 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 22 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 21 - the loop has not reached APPROVE.** The feature first
+  standing at round 22 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 21 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 22 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,7 +398,7 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away, across all 21
+Every finding was fixed; none was overridden or argued away, across all 22
 rounds. Where a finding's recommendation would have been wrong I did not
 diverge: I have not yet had to. That is itself worth recording - a reviewer
 that is right every time is one whose next block should be believed, not
@@ -446,6 +446,24 @@ count.
       all - a claim a playbook entry had already repeated, which is how a small
       false statement becomes project memory.
 
+  r22 block/7  - an invariant asserted in FIVE places and held in none.
+      "`ttl_for` takes a `min`, so both directions only ever shorten" was in two
+      module comments, the constant's rustdoc, a unit test and the L7 docstring,
+      while the function applied `min` to the reachable branch only - so
+      `with_probe_ttl(2s)` LENGTHENED the unreachable window past its own 1 s
+      default, and the sibling test two blocks below asserted exactly that, in a
+      test named `..._never_raise_it`. Nothing unsafe shipped (a stale
+      `Unreachable` errs toward blocking) but the claim was false everywhere it
+      appeared, so the CODE was changed to match: one word, against five
+      rewordings. Also: the alias closure ran a fixed number of passes and then
+      fell through with an incomplete set - the same fail-open shape removed
+      from the parser one round earlier; the queue disclosure built its required
+      word from `blocked[0].split()[0]`, which for a record with NO critic block
+      was the sentence "no critic block recorded" and so degenerated the check
+      to "contain the word `no`" - the most fail-open record producing the
+      weakest check; and the playbook count in this note went stale a THIRD
+      time, so it is gone, replaced by the command that computes it.
+
 ## Playbook updates
 
   docs/playbooks/adversarial-precheck.md - "When a guard keeps failing, stop
@@ -468,17 +486,18 @@ count.
   docs/verification-queue.md - SRS-MD-005 added as Class A, then corrected in
     round 14: the row had promised a close command that cannot succeed while a
     critic verdict stands at `block`.
-  Rounds 14-19 added 29 further entries across FIVE playbooks. Counted from the
-  diff rather than from memory - and the count is deliberately recomputed each
-  time this section is touched, because the previous version said "rounds 14-17"
-  and "23 entries" while printing the very command that would have shown r18 and
-  r19:
+  **There is deliberately no count here.** This section stated one three times
+  and it was stale three times - "rounds 14-17, 23 entries" caught at r18,
+  "rounds 14-19, 29 entries" caught at r22 - each version printing the very
+  command that would have corrected it. A number a human maintains beside a
+  command that computes it is a number that will disagree with the command.
+  Run it:
 
       git diff origin/main...HEAD -- docs/playbooks/ \
         | grep -oE '\(SRS-MD-005 r[0-9]+\)' | sort -V | uniq -c
 
-  r14 x6, r15 x6, r16 x5, r17 x6, r18 x2, r19 x4 (plus one r6 entry from the
-  original session).
+  What follows is which playbook gained what, which is the part a reader
+  actually needs and which does not go stale by counting.
 
   adversarial-precheck.md (r14, r15, r16, r17)
     A character class terminates on the `>` of a `->` - written four separate
@@ -512,6 +531,15 @@ count.
   pipeline-and-integrate.md (r17)
     A chore commit carrying evidence must carry NOTHING else; stamp a round
     count FROM the ledger, never by hand.
+  measurement-and-certification.md (r20)
+    A step certifies the code it ran on, and nothing was checking that - the
+    currency check was bound to image artifacts, so every feature without
+    screenshots had step freshness never checked at all. And: give a scan a
+    completeness backstop rather than a sixth pattern.
+  honest-surfaces.md (r21)
+    Check that a documented surface has a CALLER before describing what it does
+    for operators; a disclosure must name what is wrong, not merely contain the
+    word.
 
 ## Notes for the operator
 
@@ -526,7 +554,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 21**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 22**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
