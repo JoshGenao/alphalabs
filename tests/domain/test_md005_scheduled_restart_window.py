@@ -1022,3 +1022,21 @@ def test_no_public_doc_still_describes_the_replaced_cache_policy() -> None:
     assert "REACHABLE_CACHE_TTL_NS" in normalised
     assert "REACHABILITY_CACHE_TTL_NS" in normalised
     assert "Both outcomes are cached" in normalised or "Both outcomes are retained" in normalised
+
+
+def test_with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() -> None:
+    """A public builder must not be able to widen a safety bound.
+
+    `with_probe_ttl` promised "reuse for `ttl_ns`" for a round after `ttl_for`
+    began capping a REACHABLE observation at 100 ms, so a caller passing 2 s was
+    silently getting 100 ms for a positive. The prose is fixed; this pins the
+    behaviour, in all three directions: asking for more gets the cap, asking for
+    more still gets the FULL value for a negative, and asking for zero disables
+    reuse entirely.
+
+    NOT proven here: that 100 ms is the right ceiling. That is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time.
+    """
+    name = "with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it"
+    _assert_one_passed(_producer_test(name), name)

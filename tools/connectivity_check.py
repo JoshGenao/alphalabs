@@ -559,8 +559,13 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
     """
     receivers = spec["exempt_receivers"]
     for name in exempt:
+        # The generic list may contain PARENTHESES: `<F: Fn() -> bool>` is a
+        # legal bound, and excluding `(` meant a second declaration carrying one
+        # was invisible - the scan still found exactly one, so the exemption was
+        # inherited by a function that could reach the consolidated registry
+        # without ever consulting the window.
         declarations = re.findall(
-            rf"\bfn\s+{re.escape(name)}\s*(?:<[^{{}}();]*?>)?\s*\(([^)]*)", source
+            rf"\bfn\s+{re.escape(name)}\s*{_GENERIC_LIST}\s*\(([^)]*)", source
         )
         if len(declarations) != 1:
             fail(
@@ -855,6 +860,14 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
         f"{' + '.join(spec['implements'])} — one producer behind both suspensions "
         "(SRS-MD-005)"
     )
+
+
+# A generic list, allowing parenthesised bounds (`Fn() -> bool`) and one level of
+# nesting (`Foo<Bar>`). `->` is an explicit alternative because its `>` is
+# otherwise excluded by the same class that stops the match running away - the
+# THIRD time in this feature an arrow has defeated a bracket-matching pattern.
+# Stops at `{`, `}` or `;`, none of which can appear inside a generic list.
+_GENERIC_LIST = r"(?:<(?:->|[^<>{};]|<(?:->|[^<>{};])*>)*>)?"
 
 
 def _strip_generic_args(text: str) -> str:

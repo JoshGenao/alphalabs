@@ -193,11 +193,19 @@ where
         }
     }
 
-    /// Reuse a reachability observation for `ttl_ns` instead of the default.
+    /// Reuse a reachability observation for up to `ttl_ns` instead of the
+    /// default.
     ///
-    /// Zero disables reuse — every read probes. Useful for a test that wants to
-    /// count probes, and honest for a caller that would rather pay the deadline
-    /// than tolerate the staleness.
+    /// **UP TO.** A REACHABLE observation is additionally capped at
+    /// [`REACHABLE_CACHE_TTL_NS`] (100 ms), so a caller passing 2 s gets 2 s for
+    /// an unreachable gateway and 100 ms for a reachable one. The cap is not
+    /// negotiable through this builder: a stale `Connected` is what hands a live
+    /// order to a dead gateway, and no caller may raise that ceiling. Pass a
+    /// SHORTER value and both directions shorten, because the cap is a `min`.
+    ///
+    /// Zero disables reuse in both directions - every read probes. Useful for a
+    /// test that wants to count probes, and honest for a caller that would
+    /// rather pay the deadline than tolerate any staleness.
     pub fn with_probe_ttl(mut self, ttl_ns: i64) -> Self {
         self.ttl_ns = ttl_ns.max(0);
         self
@@ -782,6 +790,63 @@ mod tests {
             producer.last_outcome().is_none(),
             "an observation older than the reuse window is not an observation"
         );
+    }
+
+    #[test]
+    fn with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() {
+        // The builder's rustdoc promised "reuse for `ttl_ns`" for a round after
+        // `ttl_for` began capping a positive at 100 ms. Pin the real contract:
+        // a caller asking for MORE gets the cap; a caller asking for LESS gets
+        // what they asked for, in both directions.
+        let now = AtomicI64::new(RESTART_NS + WINDOW_NS);
+        let generous =
+            ScheduledRestartConnectivity::new(window(), CountingProbe::new(true), || {
+                now.load(Ordering::SeqCst)
+            })
+            .with_probe_ttl(2 * NANOS_PER_SECOND);
+
+        assert_eq!(generous.state(), ConnectivityState::Connected);
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS,
+            Ordering::SeqCst,
+        );
+        assert_eq!(
+            generous.probe.calls.get(),
+            1,
+            "precondition: one probe so far"
+        );
+        let _ = generous.state();
+        assert_eq!(
+            generous.probe.calls.get(),
+            2,
+            "a 2 s request must not raise the 100 ms cap on a REACHABLE outcome"
+        );
+
+        // The same generous TTL does apply in full to a negative.
+        let neg = ScheduledRestartConnectivity::new(window(), CountingProbe::new(false), || {
+            now.load(Ordering::SeqCst)
+        })
+        .with_probe_ttl(2 * NANOS_PER_SECOND);
+        assert_eq!(neg.state(), ConnectivityState::Unreachable);
+        now.store(
+            RESTART_NS + WINDOW_NS + REACHABLE_CACHE_TTL_NS + NANOS_PER_SECOND,
+            Ordering::SeqCst,
+        );
+        let _ = neg.state();
+        assert_eq!(
+            neg.probe.calls.get(),
+            1,
+            "an UNREACHABLE outcome honours the full configured TTL"
+        );
+
+        // And shortening still shortens both.
+        let strict = ScheduledRestartConnectivity::new(window(), CountingProbe::new(true), || {
+            now.load(Ordering::SeqCst)
+        })
+        .with_probe_ttl(0);
+        let _ = strict.state();
+        let _ = strict.state();
+        assert_eq!(strict.probe.calls.get(), 2, "ttl 0 must disable reuse");
     }
 
     #[test]

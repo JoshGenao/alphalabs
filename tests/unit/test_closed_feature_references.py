@@ -350,6 +350,51 @@ def test_an_unreadable_or_absent_verdict_never_reads_as_approved(
     assert fid in str(exc.value), label
 
 
+def test_the_recorded_round_count_matches_the_review_ledger() -> None:
+    """The stamped `rounds` is a hand-typed number beside a ledger that counts.
+
+    `evidence.py critic --rounds N` takes whatever the caller types, and the
+    caller was me. It read 15 while `review.jsonl` in the same directory held
+    16 verdict-bearing rounds - so `test_a_stated_round_count_matches_the_record`
+    was checking the documents against a stale field and passing, which is
+    worse than not checking at all: a guard anchored to an unverified number
+    certifies the drift instead of catching it.
+
+    `tools/adversarial_review.py::count_rounds` is the repo's own definition of
+    how many rounds a ledger holds, so it is the authority here.
+    """
+    import sys
+
+    tools = ROOT / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from adversarial_review import count_rounds
+
+    problems = []
+    for rec_path in sorted((ROOT / ".harness" / "runs").glob("*/evidence.json")):
+        ledger = rec_path.with_name("review.jsonl")
+        if not ledger.exists():
+            continue
+        counted = count_rounds(ledger)
+        if counted is None:
+            problems.append(f"{rec_path.parent.name}: review.jsonl is unreadable")
+            continue
+        try:
+            critic = json.loads(rec_path.read_text(encoding="utf-8")).get("critic") or {}
+        except json.JSONDecodeError:
+            problems.append(f"{rec_path.parent.name}: evidence.json is unreadable")
+            continue
+        for layer, entry in critic.items():
+            if not isinstance(entry, dict) or "rounds" not in entry:
+                continue
+            if entry["rounds"] != counted:
+                problems.append(
+                    f"{rec_path.parent.name}: critic[{layer}].rounds={entry['rounds']} "
+                    f"but the ledger holds {counted}"
+                )
+    assert not problems, "; ".join(problems)
+
+
 def test_a_stated_round_count_matches_the_record() -> None:
     """Three surfaces claimed three different round counts (13, 13, 14).
 

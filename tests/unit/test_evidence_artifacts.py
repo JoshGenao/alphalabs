@@ -674,13 +674,18 @@ _NOOP_COMMANDS = frozenset({"true", ":", "echo", "printf", "test", "["})
 
 
 def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
-    """Lines that PRINT a result rather than capture one.
+    r"""Lines that PRINT a result rather than capture one.
 
-    A print is legitimate when the value comes from a command that ran - `$?`,
-    an `xargs` placeholder, a substitution, a pipe - or when a real command
-    gates it with `&&`, since then the text is only reached if that command
-    succeeded. It is a fabrication when the text is typed and nothing that ran
-    could have contradicted it.
+    A print is legitimate when the value comes from a command that ran - `$?`, an
+    xargs placeholder, a substitution, a `%d` conversion - or when a command that
+    could actually have produced that claim gates it with `&&`.
+
+    Both halves were learned the hard way. Keying on `^\$ echo "` missed
+    `printf`, a trailing `echo`, and `true && echo "all green"`. Accepting ANY
+    non-no-op gate then let `ls && echo "176 suites ok"` through: the gate is
+    real, and it proves nothing about tests. So the gate must also be ABOUT the
+    claim - at least one substantial word of what is printed has to appear in
+    the command being gated.
     """
     import re
 
@@ -688,7 +693,10 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
         r"\b(ok|pass(ed)?|fail(ed|ures)?|green|clean|success|\d+\s*(suites?|tests?))\b",
         re.I,
     )
-    printer = re.compile(r"\b(?:echo|printf)\s+(['\"])(.*?)\1")
+    # Quoted OR bare: `echo "176 suites ok"` and `echo 176 suites ok` are the
+    # same statement, and only one of them was being read.
+    printer = re.compile(r"\b(?:echo|printf)\s+(?:(['\"])(.*?)\1|([^|;&]+))")
+    derived = ("$?", "{}", "$(", "`")
     out = []
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -696,23 +704,28 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
             continue
         cmd = line[1:].strip()
         for m in printer.finditer(cmd):
-            printed = m.group(2)
+            printed = (m.group(2) if m.group(2) is not None else m.group(3) or "").strip()
             if not claim.search(printed):
                 continue
-            # Derived from something that ran: a captured exit code, an xargs
-            # placeholder, a substitution, or a printf conversion whose values
-            # are supplied by the program that computed them.
-            if any(tok in printed for tok in ("$?", "{}", "$(", "`")):
+            if any(tok in printed for tok in derived):
                 continue
             if re.search(r"%[-+ #0-9.]*[difsuxXeEgGc]", printed):
                 continue
-            # Gated by a real command: everything left of this `&&`.
             before = cmd[: m.start()]
-            gate = before.rsplit("&&", 1)[0].strip() if "&&" in before else ""
-            head = gate.split()[0] if gate else ""
-            if head and head not in _NOOP_COMMANDS:
+            if "&&" not in before:
+                out.append((n, line))
                 continue
-            out.append((n, line))
+            gate = before.rsplit("&&", 1)[0].strip()
+            head = gate.split()[0] if gate else ""
+            if head in _NOOP_COMMANDS or not head:
+                out.append((n, line))
+                continue
+            # The gate must be about the claim. Prefix-match so "builds" in the
+            # text finds "build" in `cargo build`.
+            words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", printed)]
+            gate_l = gate.lower()
+            if not any(w[:5] in gate_l for w in words):
+                out.append((n, line))
     return out
 
 
@@ -763,6 +776,13 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
         ("no-op gate", '$ true && echo "176 suites ok"', True),
         ("echo gating echo", '$ echo hi && echo "all tests passed"', True),
         ("real command gate", "$ cargo build -q && echo 'restored: builds clean again'", False),
+        ("unquoted echo", "$ echo cargo test --workspace : 176 suites ok, 0 failed", True),
+        ("gate real but irrelevant", '$ ls && echo "176 suites ok, 0 failed"', True),
+        (
+            "gate about the claim",
+            "$ git merge-base --is-ancestor a b && echo 'merge-base check passed'",
+            False,
+        ),
         ("captured exit code", '$ cargo clippy > /dev/null; echo "clippy : exit $?"', False),
         (
             "xargs placeholder",

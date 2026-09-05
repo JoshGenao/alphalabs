@@ -224,3 +224,15 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   "N rounds" claim in the queue against every feature id in the queue produced seven
   false accusations on its first run. A row is one line; keep the claim and its subject
   together. `(SRS-MD-005 r15)`
+
+- **A `->` will defeat your bracket matcher. Again.** Three separate patterns in one
+  feature: `(?:<[^>]*>)?` for an impl's generics (r14), `for\s+(\w+)` for its target
+  (r15), and `<[^{}();]*?>` for a `fn` declaration's generics (r17, where excluding `(`
+  broke on `<F: Fn() -> bool>`). Write ONE named pattern for "a generic list" that admits
+  `->` explicitly, use it everywhere, and test it against a bound containing both a
+  parenthesis and an arrow. `(SRS-MD-005 r17)`
+- **A gate that is real is not automatically a gate that is RELEVANT.**
+  `cargo build && echo 'builds clean'` is honest; `ls && echo '176 suites ok'` is not, and
+  a check that only asked "is the gating command a no-op?" accepted both. Require the
+  claim and its gate to be about the same thing - at least one substantial word of what
+  is printed appearing in the command that gates it. `(SRS-MD-005 r17)`

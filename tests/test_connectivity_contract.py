@@ -537,6 +537,31 @@ impl Sneaky for ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("is_subscribed", str(ctx.exception))
 
+    def test_a_parenthesised_generic_bound_cannot_hide_a_second_declaration(self) -> None:
+        """The hole the round-16 fix left one line away from the one it closed.
+
+        `<[^{}();]*?>` excludes `(`, so a bound like `<F: Fn() -> bool>` ends the
+        match early and the declaration is invisible. The scan then still counts
+        exactly ONE `is_subscribed`, the exemption is inherited, and the new
+        function reaches the consolidated registry without consulting the
+        window - with every guard, the L7 suite and all three CLI proofs green.
+
+        `Fn() -> _` is not an exotic shape here: the producer's own injected
+        clock is one.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<F: Fn() -> bool>(&mut self, k: SecurityKey, s: StrategyId, f: F) {
+        if f() {
+            self.subscribers.insert(k, vec![s]);
+        }
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
     def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
         """The exemption says the function CANNOT admit. Changing its receiver
         makes that claim false, so the claim has to be re-checked."""
