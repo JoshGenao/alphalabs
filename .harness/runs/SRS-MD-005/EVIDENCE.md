@@ -11,6 +11,8 @@
 ## Outstanding
 
 - judgment critic verdict is 'block', not 'approve'
+- .harness/runs/SRS-MD-005/VERIFICATION.md:195 states [17] round(s) for SRS-MD-005, but the ledger holds 18
+- .harness/runs/SRS-MD-005/VERIFICATION.md was captured at 0cf86195, but 8 code path(s) have changed since (crates/atp-orchestrator/src/restart_window_connectivity.rs, docs/playbooks/adversarial-precheck.md, docs/verification-queue.md) -- re-run it rather than editing its numbers
 
 ## Acceptance criterion
 

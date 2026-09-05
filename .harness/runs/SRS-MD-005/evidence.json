@@ -2,16 +2,16 @@
   "created": "2026-09-04T12:22:24+00:00",
   "critic": {
     "deterministic": {
-      "head": "0cf861959ca3195742683c455d30d82f3a6841c6",
+      "head": "ce004168c6c06510ec1d8edfc1539bde73e2dbb2",
       "reviewer": "critic_check.py",
-      "ts": "2026-09-05T08:08:22+00:00",
+      "ts": "2026-09-05T08:58:51+00:00",
       "verdict": "approve"
     },
     "judgment": {
-      "head": "85b26634ad8f00cf3afa92b4b0db52fd0d2637a7",
+      "head": "042872dd9bc978b30abe2638ea75491199959313",
       "reviewer": "claude-fallback",
-      "rounds": 17,
-      "ts": "2026-09-05T03:21:01+00:00",
+      "rounds": 18,
+      "ts": "2026-09-05T08:48:29+00:00",
       "verdict": "block"
     }
   },
@@ -101,5 +101,5 @@
       "ts": "2026-09-04T12:23:06+00:00"
     }
   ],
-  "updated": "2026-09-05T08:08:22+00:00"
+  "updated": "2026-09-05T08:58:51+00:00"
 }

@@ -1,8 +1,13 @@
 === SESSION SRS-MD-005 ===
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
-Outcome: serialized (A: done - every step ran solo and is recorded; the close needs
-         an operator attestation because verification_method is `integration`)
+Outcome: serialized (A: done - every step ran solo and is recorded; the close is
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 18 rounds.
+         An operator attestation is also required because verification_method is
+         `integration`, but it is not sufficient and never was:
+         `close_feature.py --verified --attested-by operator` exits 3 while a
+         critic layer is not `approve`. `allow_attested` relaxes only the
+         per-step `executed` check, never the critic loop.)
 
 ## Why this feature was only ever half-built
 
@@ -177,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 17 - the loop has not reached APPROVE.** The feature first
+  standing at round 18 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -213,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 17 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 18 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -319,6 +324,24 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       `_store_step`; the queue guard's "block" substring was satisfied by
       "unblocks"; and three surfaces stated three different round counts.
       All ten fixed, each with a mutation-verified guard.
+  r16 block/9  - four blocks, and three of them were documentation describing
+      code that had already changed: the negative-TTL rustdoc still called the
+      r14-replaced policy "the whole design", `last_outcome()` still told callers
+      `None` meant the gateway had answered again, and the session note's Key
+      decisions still recorded "Only an UNREACHABLE observation is reused" while
+      the same file said the opposite 200 lines later. The fourth was the
+      transcript certifying a superseded tree: it presented captures from
+      `ed36c790` while the diff carrying it had rewritten 215 lines underneath,
+      its pytest block reporting 101 collected where the same command then
+      collected 110. Re-running is the only honest repair for that, so the whole
+      transcript was re-run by script rather than having its numbers edited.
+      The five warns were all real: `_strip_generic_args` was needed at all
+      because `for \w+` could not see a reference or tuple target; the same
+      `[^>]*` class survived in two siblings; the recorder guard keyed on a
+      DIRECT `save_record` call and so saw only the odd path; the queue guard's
+      "block" substring was satisfied by "unblocks"; and three surfaces stated
+      three different round counts. A new L7 guard pins the superseded doc
+      claims by name, and found a FOURTH stale claim on its first run.
   r17 block/7  - three of the seven were things earlier rounds had recorded as
       FIXED. The worst: I shipped a guard RED. The transcript-currency check
       failed at the very commit that introduced it, because the chore commit
@@ -370,15 +393,43 @@ as stated.
   docs/verification-queue.md - SRS-MD-005 added as Class A, then corrected in
     round 14: the row had promised a close command that cannot succeed while a
     critic verdict stands at `block`.
-  (round 14) adversarial-precheck.md - a character class terminates on the `>`
-    of a `->`; a hard-coded subject list bounds a scan by its writing date, not
-    by the tree; make a guard's exemption self-expiring, not asserted.
-  (round 14) contract-drift.md - enumerate the recorders rather than fixing the
-    one that was caught; a row that promises a command must be checked against
-    the state that command reads.
-  (round 14) safety-paths.md - caching only the negative outcome trades a
-    latency defect for a churn defect; the TTL bound becomes the safety
-    property, so pin it at compile time.
+  Rounds 14-17 added 23 further entries across FIVE playbooks. Counted from the
+  diff, not from memory (`git diff origin/main...HEAD -- docs/playbooks/ |
+  grep -oE '\(SRS-MD-005 r[0-9]+\)' | sort | uniq -c`): r14 x6, r15 x6,
+  r16 x5, r17 x6.
+
+  adversarial-precheck.md (r14, r15, r16, r17)
+    A character class terminates on the `>` of a `->` - written four separate
+    times before it stuck, once per pattern: impl generics, impl target, `fn`
+    generics, and the depth counter in `_strip_generic_args`. Also: a
+    hard-coded subject list bounds a scan by its writing date; an exemption
+    should be self-expiring, not asserted; an impl TARGET is a type, not an
+    identifier; grep the file for the same shape BEFORE writing the playbook
+    entry about it; a "class" guard keyed on a DIRECT call sees only the odd
+    path; scope a cross-file check to the LINE; a real gate is not
+    automatically a RELEVANT gate.
+  contract-drift.md (r14, r15, r16)
+    Enumerate the recorders rather than fixing the one that was caught; a row
+    that promises a command must be checked against the state that command
+    reads; a rustdoc that ARGUES for a design outlives the design by rounds; a
+    session note's Key decisions is a claim about shipped code, not a diary;
+    distinguish a TOTAL from an ordinal before writing a consistency guard; a
+    verification transcript must certify the tree it ships with.
+  test-integrity.md (r15, r16, r17)
+    Never write a result you did not capture under a document promising
+    captured output; a spy whose default equals the expected value cannot fail;
+    ban a shape by what it MEANS, not how it was written; a check comparing a
+    CODE-path file to an EVIDENCE-path file is red across the commit boundary
+    whichever side you anchor to; a pytest asserting on live evidence state is
+    red at every code commit by construction.
+  safety-paths.md (r14, r15)
+    Caching only the negative outcome trades a latency defect for a churn
+    defect, and the TTL bound then becomes the safety property, so pin it at
+    compile time; when you change a cache's policy, grep every surface that
+    FILTERS on the old TTL.
+  pipeline-and-integrate.md (r17)
+    A chore commit carrying evidence must carry NOTHING else; stamp a round
+    count FROM the ledger, never by hand.
 
 ## Notes for the operator
 
@@ -393,7 +444,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes. TWO things stand between here and green,
 and only one of them is work:
 
-1. **The judgment verdict is `block` at round 17**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 18**, so `evidence.py verify`
    refuses. Whoever closes this decides between two honest routes:
    * re-run `python3 tools/adversarial_review.py origin/main` and address what
      it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
