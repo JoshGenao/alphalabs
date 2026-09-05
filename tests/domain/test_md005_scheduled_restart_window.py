@@ -1192,3 +1192,41 @@ def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
     assert "3 passed" in combined, combined[-2000:]
+
+
+def test_the_admission_guard_does_not_cry_wolf_on_legal_code() -> None:
+    """A guard that fails on legal code is deleted, so it is as dead as one that
+    never fires.
+
+    Round 20 added a completeness backstop so an unreadable `impl` would turn
+    the gate-implementor scan red rather than shrink the set it calls closed.
+    Round 24 found it counted ANY `impl ... RestartWindowGate ... for` span, so
+    an ordinary bound - `impl<W: RestartWindowGate> SomeOtherTrait for
+    Manager<W>` - looked like an implementor header the strict pass could never
+    match, and the whole connectivity contract gate failed on code that does
+    nothing wrong.
+
+    This is the false-positive half of the same property the sibling L7 test
+    covers from the bypass side. Both matter: SyRS SYS-75(a) rests on this
+    enumeration, and it protects nothing if the next person to hit a spurious
+    failure deletes it.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "ordinary_generic_bound or type_parameter_is_not_mistaken",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]

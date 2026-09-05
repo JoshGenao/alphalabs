@@ -291,3 +291,11 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   recorded", so the required word became the bare `no` - the most fail-open record
   produced the weakest check. Build patterns from identifiers, never from prose.
   `(SRS-MD-005 r22)`
+
+- **When you correct a claim, grep for its PEER SURFACES in the same commit.** The
+  verification queue's "close over a standing block" route was removed as having no
+  mechanism; the identical false route stayed in the session note's Resume block and was
+  found one round later. Same class, same feature, two files. `grep` the corrected phrase
+  across `docs/`, `progress.d/` and the rustdoc before you call it fixed - this feature
+  paid for that lesson three separate times (r18 the Outcome line, r23 two of five
+  invariant copies, r24 the Resume block). `(SRS-MD-005 r24)`

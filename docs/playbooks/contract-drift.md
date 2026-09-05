@@ -215,8 +215,15 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   `evidence.py critic` builds a fresh entry, so the re-stamp prescribed by the
   verification queue erased `rounds` - and the corroboration check only compares counts
   that are PRESENT, so following the documented command turned off the guard the same
-  change had just added. Carry unspecified fields forward, and test that an explicit value
-  still wins. `(SRS-MD-005 r19)`
+  change had just added.
+
+  The first fix here was "carry unspecified fields forward", and it was WRONG - recorded
+  because a playbook that teaches a superseded fix is worse than one that says nothing.
+  Carrying forward cannot work when the field is derived: the round that produces an
+  `approve` appends its own line to the ledger, so the documented re-stamp wrote N against
+  a ledger of N+1 and `verify` refused. The rule is: re-read a derived field from ITS
+  SOURCE, and fall back to the previous value only when the source is unreadable.
+  `(SRS-MD-005 r19, corrected r21, recorded r24)`
 
 - **Delete the hand-maintained number, keep the command.** A session-note section stated a
   playbook-entry count three times and was stale all three times - each version printing,

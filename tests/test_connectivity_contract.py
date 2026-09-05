@@ -1191,6 +1191,29 @@ impl Gate for AlwaysOpen {
             check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("AlwaysOpen", str(ctx.exception))
 
+    def test_the_backstop_does_not_fire_on_an_ordinary_generic_bound(self) -> None:
+        """The false-positive direction of the completeness backstop.
+
+        Counting any `impl ... Trait ... for` span made `impl<W:
+        RestartWindowGate> SomeOtherTrait for Manager<W>` - a perfectly ordinary
+        bound, not an implementation - look like an implementor header the
+        strict pass could never match, so the whole connectivity gate failed on
+        legal code. A backstop that cries wolf is deleted by the next person who
+        meets it, which makes it as dead as one that never fires.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct Manager<W>(W);
+
+impl<W: atp_market_data::RestartWindowGate> SomeOtherTrait for Manager<W> {
+    fn unrelated(&self) {}
+}
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""
         empty = Path(tempfile.mkdtemp())
