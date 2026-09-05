@@ -1060,3 +1060,47 @@ def test_a_shortened_ttl_shortens_both_directions() -> None:
     """
     name = "a_shortened_ttl_shortens_both_directions"
     _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
+    """Two ways past the guard that closes SyRS SYS-75(a), both verified live.
+
+    The gate-implementor enumeration and the exempt-function scan are the only
+    things standing between the tree and a production type that always returns
+    `Admitted`. Round 19 walked past both:
+
+      * `use atp_market_data::RestartWindowGate as Gate;` then `impl Gate for X`
+        matched nothing, while the check still printed "this enumeration is what
+        makes it unforgeable".
+      * `fn is_subscribed<T: Into<Vec<u8>>>` exceeded the one nesting level the
+        generic-list pattern allowed, so the exemption was inherited by a second
+        declaration that writes the consolidated registry.
+
+    Both are exercised against the real checker in
+    `tests/test_connectivity_contract.py`; this L7 test asserts the SHIPPED
+    tools still reject them, so a refactor of either scan cannot quietly reopen
+    the bypass.
+
+    NOT proven here: that no OTHER spelling evades them. That is what the round
+    log is for.
+    """
+    import subprocess
+
+    checker = REPO_ROOT / "tests" / "test_connectivity_contract.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(checker),
+            "-q",
+            "-k",
+            "renamed_trait_import or nested_generic_bound",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]

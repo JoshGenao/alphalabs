@@ -203,3 +203,17 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   a broken tree. `tests/unit/test_evidence_artifacts.py::test_a_verification_transcript_certifies_the_tree_it_ships_with`
   now compares the transcript's own `git rev-parse HEAD` capture against
   `code_changed_since`. `(SRS-MD-005 r16)`
+
+- **A rendered page that EMBEDS a checker's output cannot also be checked by it.** Adding
+  "is EVIDENCE.md current?" to `verify` made `render_markdown` -> `verify` -> render
+  recurse without bound, and once that was guarded, the page began reporting its own
+  staleness - which changed what a fresh render said, so no fixed point existed and the
+  page could never be current. The flag has to wrap the RENDER, not the check: while a
+  render is in progress the self-check stands down, so the page never makes a claim about
+  itself. `(SRS-MD-005 r19)`
+- **A command that rebuilds a record entry silently drops the fields you did not pass.**
+  `evidence.py critic` builds a fresh entry, so the re-stamp prescribed by the
+  verification queue erased `rounds` - and the corroboration check only compares counts
+  that are PRESENT, so following the documented command turned off the guard the same
+  change had just added. Carry unspecified fields forward, and test that an explicit value
+  still wins. `(SRS-MD-005 r19)`

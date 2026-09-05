@@ -249,3 +249,15 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   `fail()`s on a legal shape gets disabled by the next person who meets it, so it is as
   dead as one that never fires. Every bypass test here now has a sibling asserting the
   legal shape stays quiet. `(SRS-MD-005 r18)`
+
+- **Stop writing regexes for nested syntax; count.** Bounding a Rust generic list by
+  pattern failed four times in a row on shapes each version had not anticipated: a `->`
+  closed it early, then a parenthesised bound, then `<T: Into<Vec<u8>>>` exceeded the one
+  nesting level the regex allowed. A bracket counter has no depth limit and needs no
+  alternation for the arrow, which is simply "a `>` whose predecessor is `-`". Twenty
+  lines, and the class is closed. `(SRS-MD-005 r19)`
+- **A guard keyed on a NAME is defeated by a rename.** `use atp_market_data::RestartWindowGate as Gate;`
+  then `impl Gate for AlwaysOpen` produced no match, while the check went on printing
+  "this enumeration is what makes it unforgeable". Collect the file's `use ... as` aliases
+  (braced groups too) and search for every name the trait answers to.
+  `(SRS-MD-005 r19)`

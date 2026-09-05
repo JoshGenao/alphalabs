@@ -570,6 +570,9 @@ def _queue_row_problems(fid: str) -> list[str]:
 _ROUND_TOTAL_RE = re.compile(r"\brounds\s*[:=]\s*(\d+)\b|\b(?:at|after)\s+(\d+)\s+rounds?\b", re.I)
 
 
+_RENDERING: dict[str, bool] = {}
+
+
 def _round_count_drift(fid: str, counted: int) -> list[str]:
     """Documents claiming a round TOTAL that the ledger does not support.
 
@@ -645,6 +648,29 @@ def record_self_consistency_problems(fid: str) -> list[str]:
                     f"critic[{layer}].rounds={n} but {_rel(ledger)} "
                     f"holds {counted} verdict-bearing round(s)"
                 )
+
+    # 4. The rendered page must equal what the record renders to RIGHT NOW.
+    #    `cmd_critic` re-renders, but anything written afterwards - a
+    #    re-captured transcript, a later verify - leaves the page behind again,
+    #    and the page is the artifact a reviewer opens. It published two
+    #    outstanding problems that no longer existed and named a transcript
+    #    revision the transcript beside it had moved past. Comparing it to
+    #    `render_markdown` is exact and needs no memory of when to re-run.
+    page = run_dir / "EVIDENCE.md"
+    # Skipped WHILE RENDERING, for two reasons. `render_markdown` calls `verify`
+    # which calls this, so rendering again here recurses without bound - the
+    # first run of this check hit exactly that. And the page EMBEDS verify's
+    # problems, so a page that reported on its own staleness would have no fixed
+    # point: writing it would change what a fresh render says, forever.
+    if page.exists() and not _RENDERING.get(fid):
+        try:
+            if page.read_text(encoding="utf-8") != render_markdown(fid):
+                problems.append(
+                    f"{_rel(page)} is stale - it no longer matches what the record renders "
+                    f"to. Re-run `tools/evidence.py render {fid}`."
+                )
+        except (EvidenceError, OSError) as exc:
+            problems.append(f"{_rel(page)} cannot be compared to the record ({type(exc).__name__})")
 
     # 3. A queue row that hands over `close_feature.py <id> --verified` must
     #    disclose a standing non-approve verdict, or it sends the operator to a
@@ -938,6 +964,21 @@ def verify(
 
 
 def render_markdown(fid: str, features: list | None = None) -> str:
+    """Render the reviewable page. See `_render_markdown` for the body.
+
+    The wrapper marks "a render is in progress" so the page-staleness check in
+    `record_self_consistency_problems` stands down: this function calls `verify`
+    to embed its problems, and a page reporting on its own staleness could never
+    settle.
+    """
+    _RENDERING[fid] = True
+    try:
+        return _render_markdown(fid, features)
+    finally:
+        _RENDERING.pop(fid, None)
+
+
+def _render_markdown(fid: str, features: list | None = None) -> str:
     """The reviewable form of the record, for GitHub.
 
     evidence.json is the machine's copy; nobody reviews a 3 KB blob of escaped
@@ -1186,6 +1227,15 @@ def cmd_critic(args) -> int:
         entry["reviewer"] = args.reviewer
     if args.rounds is not None:
         entry["rounds"] = args.rounds
+    else:
+        # CARRY the previous count rather than dropping it. This builds a FRESH
+        # entry, so omitting --rounds used to erase the stamp - and the
+        # corroboration check against review.jsonl only compares counts that are
+        # present, so a routine re-stamp silently disabled it. The count belongs
+        # to the ledger, not to whoever typed the last command.
+        previous = (rec.get("critic") or {}).get(args.layer)
+        if isinstance(previous, dict) and isinstance(previous.get("rounds"), int):
+            entry["rounds"] = previous["rounds"]
     rec.setdefault("critic", {})[args.layer] = entry
     save_record(args.id, rec)
     # Re-render, exactly as `run`, `record` and `artifact` do. Without this,

@@ -562,6 +562,26 @@ impl ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("is_subscribed", str(ctx.exception))
 
+    def test_a_nested_generic_bound_cannot_hide_a_second_declaration(self) -> None:
+        """One level of nesting was enough until `<T: Into<Vec<u8>>>` arrived.
+
+        Every regex attempt at bounding a generic list failed on a shape it did
+        not anticipate: a `->` closed it early, then a parenthesis, then two
+        levels of nesting. The scan counts brackets now, so it has no depth
+        limit at all.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<T: Into<Vec<u8>>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
+        let _ = v;
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
     def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
         """The exemption says the function CANNOT admit. Changing its receiver
         makes that claim false, so the claim has to be re-checked."""
@@ -1024,6 +1044,36 @@ impl atp_market_data::RestartWindowGate for Wrapper<fn() -> EpochNanos> {
         self.assertNotIn(
             "EpochNanos", msg, "a return type was reported as a production implementor"
         )
+
+    def test_a_renamed_trait_import_does_not_hide_an_implementor(self) -> None:
+        """`use ... as Gate;` is a two-word rename that walked past the scan.
+
+        The check kept printing "this enumeration is what makes it unforgeable"
+        while producing no match at all for the aliased impl.
+        """
+        for label, header in {
+            "simple use-as": (
+                "use atp_market_data::RestartWindowGate as Gate;\nimpl Gate for AlwaysOpen {"
+            ),
+            "braced use-as": (
+                "use atp_market_data::{RestartWindowGate as G2, MarketDataAdmission};\n"
+                "impl G2 for AlwaysOpen {"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
 
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""

@@ -695,7 +695,14 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
     )
     # Quoted OR bare: `echo "176 suites ok"` and `echo 176 suites ok` are the
     # same statement, and only one of them was being read.
-    printer = re.compile(r"\b(?:echo|printf)\s+(?:(['\"])(.*?)\1|([^|;&]+))")
+    # `echo`, `printf` AND `print(...)`. The guarded transcript's own Section 6
+    # uses `python -c "... print(...)"`, so a matcher keyed on shell builtins was
+    # narrower than the class its docstring claimed - it could not see the very
+    # idiom the document it guards is written in.
+    printer = re.compile(
+        r"\b(?:echo|printf)\s+(?:(['\"])(.*?)\1|([^|;&]+))"
+        r"|\bprint\s*\(\s*(['\"])(.*?)\4\s*\)"
+    )
     derived = ("$?", "{}", "$(", "`")
     out = []
     for n, raw in enumerate(text.splitlines(), 1):
@@ -704,7 +711,7 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
             continue
         cmd = line[1:].strip()
         for m in printer.finditer(cmd):
-            printed = (m.group(2) if m.group(2) is not None else m.group(3) or "").strip()
+            printed = next((g for g in (m.group(2), m.group(3), m.group(5)) if g), "").strip()
             if not claim.search(printed):
                 continue
             if any(tok in printed for tok in derived):
@@ -777,6 +784,17 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
         ("echo gating echo", '$ echo hi && echo "all tests passed"', True),
         ("real command gate", "$ cargo build -q && echo 'restored: builds clean again'", False),
         ("unquoted echo", "$ echo cargo test --workspace : 176 suites ok, 0 failed", True),
+        (
+            "python -c print",
+            "$ .venv/bin/python -c \"print('176 suites ok, 0 failed')\"",
+            True,
+        ),
+        (
+            # The honest shape of the same idiom: values read from the record.
+            "python -c printing a read value",
+            "$ .venv/bin/python -c \"import json; print(json.load(open('e.json'))['ok'])\"",
+            False,
+        ),
         ("gate real but irrelevant", '$ ls && echo "176 suites ok, 0 failed"', True),
         (
             "gate about the claim",
@@ -1016,3 +1034,80 @@ def test_a_record_with_no_round_count_needs_no_ledger(rec):
     r.setdefault("critic", {})["judgment"] = {"verdict": "block"}
     evidence.save_record(fid, r)
     assert not [p for p in evidence.record_self_consistency_problems(fid) if "corroborated" in p]
+
+
+def test_re_stamping_a_verdict_without_rounds_keeps_the_count(rec, monkeypatch):
+    """`cmd_critic` builds a FRESH entry, so omitting --rounds erased the stamp.
+
+    That silently disabled the corroboration check against review.jsonl, which
+    only compares counts that are PRESENT - so the routine re-stamp prescribed
+    by the verification queue turned off the guard the same change had added.
+    The count belongs to the ledger, not to whoever typed the last command.
+    """
+    fid = rec(method="solo")
+    monkeypatch.setattr(evidence, "_head", lambda: "c0ffee12" * 5)
+
+    class WithRounds:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "block", "codex", 18
+
+    class WithoutRounds:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "approve", "codex", None
+
+    assert evidence.cmd_critic(WithRounds()) == 0
+    assert evidence.load_record(fid)["critic"]["judgment"]["rounds"] == 18
+
+    assert evidence.cmd_critic(WithoutRounds()) == 0
+    after = evidence.load_record(fid)["critic"]["judgment"]
+    assert after["verdict"] == "approve", "the new verdict must still land"
+    assert after["rounds"] == 18, "the round count must survive a re-stamp"
+
+
+def test_an_explicit_rounds_value_still_wins(rec, monkeypatch):
+    """Non-vacuity: carrying forward must not make --rounds inert."""
+    fid = rec(method="solo")
+    monkeypatch.setattr(evidence, "_head", lambda: "c0ffee12" * 5)
+
+    class A:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "block", "codex", 18
+
+    class B:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "block", "codex", 19
+
+    evidence.cmd_critic(A())
+    evidence.cmd_critic(B())
+    assert evidence.load_record(fid)["critic"]["judgment"]["rounds"] == 19
+
+
+def test_a_stale_rendered_page_is_a_close_time_problem(rec):
+    """The page is the artifact a reviewer opens, so it must match the record.
+
+    `cmd_critic` re-renders, but anything written AFTER it - a re-captured
+    transcript, a later verify - leaves the page behind again. The page
+    published two outstanding problems that no longer existed and named a
+    transcript revision the transcript beside it had moved past. Comparing it to
+    `render_markdown` needs no memory of when to re-run.
+    """
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    evidence._write_markdown(fid)
+    assert not [p for p in evidence.record_self_consistency_problems(fid) if "stale" in p]
+
+    page = evidence.RUNS_DIR / fid / "EVIDENCE.md"
+    page.write_text(page.read_text(encoding="utf-8") + "\ndrifted\n", encoding="utf-8")
+    assert any("is stale" in p for p in evidence.record_self_consistency_problems(fid))
+
+    evidence._write_markdown(fid)
+    assert not [p for p in evidence.record_self_consistency_problems(fid) if "stale" in p]
+
+
+def test_the_page_check_does_not_recurse(rec):
+    """`render_markdown` calls `verify`, which calls this. The first run of the
+    check hit unbounded recursion; the guard is what stops it, and a plain
+    `verify` call is the shortest proof it holds."""
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    evidence._write_markdown(fid)
+    ok, problems, _ = evidence.verify(fid)
+    assert isinstance(problems, list)

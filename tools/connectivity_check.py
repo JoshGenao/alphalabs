@@ -564,9 +564,7 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
         # was invisible - the scan still found exactly one, so the exemption was
         # inherited by a function that could reach the consolidated registry
         # without ever consulting the window.
-        declarations = re.findall(
-            rf"\bfn\s+{re.escape(name)}\s*{_GENERIC_LIST}\s*\(([^)]*)", source
-        )
+        declarations = _fn_declarations(source, name)
         if len(declarations) != 1:
             fail(
                 f"exempt function `{name}` is declared {len(declarations)} times in the "
@@ -867,7 +865,60 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
 # otherwise excluded by the same class that stops the match running away - the
 # THIRD time in this feature an arrow has defeated a bracket-matching pattern.
 # Stops at `{`, `}` or `;`, none of which can appear inside a generic list.
-_GENERIC_LIST = r"(?:<(?:->|[^<>{};]|<(?:->|[^<>{};])*>)*>)?"
+def _local_aliases(source: str, trait: str) -> set[str]:
+    """Names this file has bound to `trait` through `use ... as ...`.
+
+    Handles both `use path::Trait as Alias;` and a braced group
+    `use path::{Trait as Alias, Other};`. A guard keyed on one spelling is a
+    guard a two-word rename walks past.
+    """
+    out: set[str] = set()
+    t = re.escape(trait)
+    out.update(re.findall(rf"\buse\s+[\w:]*\b{t}\s+as\s+(\w+)\s*;", source))
+    for group in re.findall(r"\buse\s+[\w:]*\{([^}]*)\}\s*;", source):
+        out.update(re.findall(rf"\b{t}\s+as\s+(\w+)", group))
+    return out
+
+
+def _skip_generic_list(text: str, i: int) -> int:
+    """Index just past a `<...>` starting at `i`, or `i` if there is none.
+
+    Counted, not pattern-matched. Every regex attempt at this failed on a shape
+    it did not anticipate - one nesting level was enough until
+    `<T: Into<Vec<u8>>>` arrived, and before that a `->` closed the list early.
+    A counter has no depth limit and needs no alternation for the arrow, which
+    is simply "a `>` whose predecessor is `-`".
+    """
+    if i >= len(text) or text[i] != "<":
+        return i
+    depth, j, prev = 0, i, ""
+    while j < len(text):
+        ch = text[j]
+        if ch in "{};":
+            return i  # not a generic list after all; refuse rather than guess
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and prev != "-":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        prev = ch
+        j += 1
+    return i
+
+
+def _fn_declarations(source: str, name: str) -> list[str]:
+    """Every `fn <name>(...)` parameter list in `source`, generics of any depth."""
+    out: list[str] = []
+    for m in re.finditer(rf"\bfn\s+{re.escape(name)}\s*", source):
+        i = _skip_generic_list(source, m.end())
+        while i < len(source) and source[i].isspace():
+            i += 1
+        if i < len(source) and source[i] == "(":
+            close = source.find(")", i)
+            if close != -1:
+                out.append(source[i + 1 : close])
+    return out
 
 
 def _strip_generic_args(text: str) -> str:
@@ -941,8 +992,16 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             # whole target span, strip its generic arguments (or `P` and `C` in
             # `ScheduledRestartConnectivity<P, C>` would each read as a type),
             # and collect every type name left.
+            # The trait may be RENAMED at the use site:
+            # `use atp_market_data::RestartWindowGate as Gate;` then
+            # `impl Gate for AlwaysOpen`. Keying on the literal spelling made
+            # that produce no match at all, while the check went on printing
+            # "this enumeration is what makes it unforgeable". Collect the local
+            # aliases first and search for every name the trait answers to.
+            names = {spec["trait"], *_local_aliases(source, spec["trait"])}
+            alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
             for match in re.finditer(
-                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*{re.escape(spec['trait'])}"
+                rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
                 r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
                 source,
                 re.S,
