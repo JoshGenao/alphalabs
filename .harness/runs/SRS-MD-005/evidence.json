@@ -2,17 +2,17 @@
   "created": "2026-09-04T12:22:24+00:00",
   "critic": {
     "deterministic": {
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "3c8255e7af70a09328a6315995fe1c50602518a9",
       "reviewer": "critic_check.py",
-      "rounds": 23,
-      "ts": "2026-09-05T22:01:51+00:00",
+      "rounds": 24,
+      "ts": "2026-09-05T23:51:30+00:00",
       "verdict": "approve"
     },
     "judgment": {
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "80126ef43987ac473151493e192d898ef582555b",
       "reviewer": "claude-fallback",
-      "rounds": 23,
-      "ts": "2026-09-05T22:01:51+00:00",
+      "rounds": 24,
+      "ts": "2026-09-05T23:51:15+00:00",
       "verdict": "block"
     }
   },
@@ -35,13 +35,13 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "3c8255e7af70a09328a6315995fe1c50602518a9",
       "n": 1,
       "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-005/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  Dev server already running at http://127.0.0.1:3000.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "ca28f955eb946a03",
-      "ts": "2026-09-05T22:02:41+00:00"
+      "ts": "2026-09-05T23:51:52+00:00"
     },
     {
       "argv": [
@@ -55,13 +55,13 @@
       "command": "cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli",
       "executed": true,
       "exit_code": 0,
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "3c8255e7af70a09328a6315995fe1c50602518a9",
       "n": 2,
-      "observed": "running 15 tests\ntest help_is_available_alone_and_carries_no_success_sentinel ... ok\ntest a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok\ntest the_resume_proof_cannot_be_printed_from_outside_the_window ... ok\ntest escalation_cannot_be_derived_inside_the_window ... ok\ntest resume_cannot_be_derived_against_a_dead_gateway ... ok\ntest a_gateway_still_dead_after_the_window_escalates_and_pages ... ok\ntest suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok\ntest a_one_second_lead_still_lands_inside_the_lead ... ok\ntest suspension_cannot_be_derived_outside_the_window ... ok\ntest the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok\ntest a_malformed_catalogue_key_is_refused_not_defaulted ... ok\ntest the_catalogue_keys_actually_move_the_window ... ok\ntest identical_inputs_produce_identical_output_across_processes ... ok\ntest the_window_boundaries_are_operator_configurable ... ok\ntest every_rejected_invocation_fails_closed ... ok\n\ntest result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-691ab0fb79bb8fdf)",
+      "observed": "running 15 tests\ntest help_is_available_alone_and_carries_no_success_sentinel ... ok\ntest a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok\ntest the_resume_proof_cannot_be_printed_from_outside_the_window ... ok\ntest resume_cannot_be_derived_against_a_dead_gateway ... ok\ntest a_one_second_lead_still_lands_inside_the_lead ... ok\ntest escalation_cannot_be_derived_inside_the_window ... ok\ntest suspension_cannot_be_derived_outside_the_window ... ok\ntest suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok\ntest a_gateway_still_dead_after_the_window_escalates_and_pages ... ok\ntest the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok\ntest the_catalogue_keys_actually_move_the_window ... ok\ntest a_malformed_catalogue_key_is_refused_not_defaulted ... ok\ntest identical_inputs_produce_identical_output_across_processes ... ok\ntest the_window_boundaries_are_operator_configurable ... ok\ntest every_rejected_invocation_fails_closed ... ok\n\ntest result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-691ab0fb79bb8fdf)",
       "status": "pass",
       "step_text": "Step 2: Exercise SRS-MD-005 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "ca28f955eb946a03",
-      "ts": "2026-09-05T22:02:42+00:00"
+      "ts": "2026-09-05T23:52:10+00:00"
     },
     {
       "argv": [
@@ -74,13 +74,13 @@
       "command": ".venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "3c8255e7af70a09328a6315995fe1c50602518a9",
       "n": 3,
-      "observed": ".......................................................                  [100%]\n55 passed in 139.62s (0:02:19)",
+      "observed": "........................................................                 [100%]\n56 passed in 184.92s (0:03:04)",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: During the configured restart window, order submission and market data requests are suspended beginning 60 seconds before the expected restart; normal connectivity notifications are suppressed for the configured window defaulting to 5 minutes; automatic reconnection is attempted after the window; if IB Gateway remains unavailable after the window, standard connectivity loss handling occurs.",
       "steps_digest": "ca28f955eb946a03",
-      "ts": "2026-09-05T22:05:02+00:00"
+      "ts": "2026-09-05T23:55:15+00:00"
     },
     {
       "argv": [
@@ -93,14 +93,14 @@
       "command": ".venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "19619c4f94009a3664ea4e7ec69270504a959d25",
+      "head": "3c8255e7af70a09328a6315995fe1c50602518a9",
       "n": 4,
-      "observed": "........                                                                 [100%]\n8 passed in 0.33s",
+      "observed": "........                                                                 [100%]\n8 passed in 0.32s",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from integration test, fault injection and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "ca28f955eb946a03",
-      "ts": "2026-09-05T22:05:03+00:00"
+      "ts": "2026-09-05T23:55:16+00:00"
     }
   ],
-  "updated": "2026-09-05T22:05:03+00:00"
+  "updated": "2026-09-05T23:55:16+00:00"
 }

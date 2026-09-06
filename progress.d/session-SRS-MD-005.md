@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 23 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 24 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 23 - the loop has not reached APPROVE.** The feature first
+  standing at round 24 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 23 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 24 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,7 +398,7 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away, across all 23
+Every finding was fixed; none was overridden or argued away, across all 24
 rounds. Where a finding's recommendation would have been wrong I did not
 diverge: I have not yet had to. That is itself worth recording - a reviewer
 that is right every time is one whose next block should be believed, not
@@ -480,6 +480,24 @@ count.
       page said "critics: none recorded" beside two recorded verdicts;
       SRS-NOTIF-001's steps had run against a tree 97 files ago). Those are
       their features' problems, now visible instead of hidden.
+
+  r24 block/5  - the completeness backstop CRIED WOLF. It counted any
+      `impl ... RestartWindowGate ... for` span, so an ordinary bound
+      (`impl<W: RestartWindowGate> SomeOtherTrait for Manager<W>`) looked like a
+      header the strict pass could never match and the whole connectivity gate
+      failed on legal code. A guard that fails on correct code is deleted by the
+      next person who meets it, which makes it exactly as dead as one that never
+      fires - so the false-positive direction is now pinned at L7 beside the
+      bypass direction. The other three were the same class as each other and as
+      r18 and r23: a claim corrected in one place and left standing at its peer.
+      The queue row's "close over a standing block" route was removed in r19;
+      the identical false route was still in this note's Resume block. The queue
+      recipe said `--rounds` falls back to the previous stamp when the tool
+      actually reads the ledger first. And `contract-drift.md` still prescribed
+      "carry unspecified fields forward" - the fix r19 tried and r21 had to
+      replace - so the file CLAUDE.md designates as project memory was teaching
+      a superseded answer. Third time this feature paid for correcting a claim
+      without grepping its peers; that is now its own playbook entry.
 
 ## Playbook updates
 
@@ -568,21 +586,35 @@ count.
 ## Resume / next - to flip passes:true
 
 All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
-with real commands and real exit codes. TWO things stand between here and green,
-and only one of them is work:
+with real commands and real exit codes, re-run at the shipping commit each time
+the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 23**, so `evidence.py verify`
-   refuses. Whoever closes this decides between two honest routes:
-   * re-run `python3 tools/adversarial_review.py origin/main` and address what
-     it finds - expect more in `tools/connectivity_check.py`, which is a SECOND
-     layer over a property the compiler already enforces; or
-   * close on the same operator authorization that stopped the loop, recording
-     that the judgment layer did not reach APPROVE on guard-tooling scope. The
-     precedent is `docs/playbooks/scope-and-serialization.md` rules 9-12.
-2. **A named attestation**, because `verification_method` is `integration`. From
-   the PRIMARY checkout:
+1. **The judgment verdict is `block` at round 24**, so `evidence.py verify`
+   refuses and `close_feature.py` exits 3.
 
+   There is exactly ONE route: run review rounds until the judgment layer
+   returns APPROVE. An earlier version of this block offered a second - "close
+   on the same operator authorization that stopped the loop" - and that route
+   has no mechanism. `close_feature.py` exposes no override for a standing
+   non-approve verdict, so the only way to walk it is to hand-stamp a false
+   `approve`, which CLAUDE.md rule 4 forbids. Round 24 found the same false
+   route still standing here after the queue row had been corrected: the peer
+   surface, missed.
+
+2. **A named attestation**, because `verification_method` is `integration`.
+   Necessary, and NOT sufficient: `--attested-by` relaxes which STEPS count,
+   never the critic gate.
+
+   Once the judgment layer approves, from the PRIMARY checkout:
+
+       python3 tools/adversarial_review.py <pre-feature-base>   # until APPROVE
+       python3 tools/evidence.py critic SRS-MD-005 --layer judgment \
+           --verdict approve --reviewer <who>
        python3 tools/close_feature.py SRS-MD-005 --verified --attested-by operator
+
+   Omitting `--rounds` is correct: `cmd_critic` reads the count from
+   `review.jsonl`, which the approving round has just appended to. It falls back
+   to the previous stamp only when that ledger is missing or unreadable.
 
 Nothing is outstanding for the acceptance criterion itself. The four items in
 `connectivity_contract.restart_window.deferred[]` are follow-on scope owned by
