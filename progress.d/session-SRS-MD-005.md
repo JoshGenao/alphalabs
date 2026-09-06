@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 24 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 25 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -182,7 +182,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 24 - the loop has not reached APPROVE.** The feature first
+  standing at round 25 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -218,7 +218,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 24 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 25 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -398,7 +398,7 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       the same change had just added.
 
 
-Every finding was fixed; none was overridden or argued away, across all 24
+Every finding was fixed; none was overridden or argued away, across all 25
 rounds. Where a finding's recommendation would have been wrong I did not
 diverge: I have not yet had to. That is itself worth recording - a reviewer
 that is right every time is one whose next block should be believed, not
@@ -499,6 +499,20 @@ count.
       a superseded answer. Third time this feature paid for correcting a claim
       without grepping its peers; that is now its own playbook entry.
 
+  r25 block/7  - arithmetic stated as a safety argument, wrong twice. Both cache
+      constants' rustdocs called a 10x separation "two orders of magnitude", and
+      100 ms against the 300 s window "four orders below" when it is a factor of
+      3,000. The compile assert cited as enforcing the first pinned only FIVE
+      times, so it could not fail for the ratio the prose argued; it pins ten
+      now and an L7 test checks the source for both wrong phrases. Also: the
+      typed-result guard's own comment named `cat <<EOF` as one of three
+      bypasses it had closed, and the code closed two - a comment claiming a
+      guard is complete is worse than no comment, because a reader checking it
+      stops at the list. And `_round_count_drift` still read LINES while
+      `_queue_row_problems`, one function above it in the same file, had been
+      taught to assemble wrapped ROWS: same defect, same file, one function
+      apart. Both share the row assembly now.
+
 ## Playbook updates
 
   docs/playbooks/adversarial-precheck.md - "When a guard keeps failing, stop
@@ -589,7 +603,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 24**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 25**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

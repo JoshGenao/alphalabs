@@ -78,21 +78,21 @@ cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli
 running 15 tests
 test help_is_available_alone_and_carries_no_success_sentinel ... ok
 test a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok
-test the_resume_proof_cannot_be_printed_from_outside_the_window ... ok
 test resume_cannot_be_derived_against_a_dead_gateway ... ok
+test the_resume_proof_cannot_be_printed_from_outside_the_window ... ok
 test a_one_second_lead_still_lands_inside_the_lead ... ok
-test escalation_cannot_be_derived_inside_the_window ... ok
-test suspension_cannot_be_derived_outside_the_window ... ok
 test suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok
+test escalation_cannot_be_derived_inside_the_window ... ok
 test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
+test suspension_cannot_be_derived_outside_the_window ... ok
 test the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok
-test the_catalogue_keys_actually_move_the_window ... ok
-test a_malformed_catalogue_key_is_refused_not_defaulted ... ok
 test identical_inputs_produce_identical_output_across_processes ... ok
+test a_malformed_catalogue_key_is_refused_not_defaulted ... ok
+test the_catalogue_keys_actually_move_the_window ... ok
 test the_window_boundaries_are_operator_configurable ... ok
 test every_rejected_invocation_fails_closed ... ok
 
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
      Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-691ab0fb79bb8fdf)
@@ -113,8 +113,8 @@ Step 3: Verify acceptance criteria: During the configured restart window, order 
 <details><summary>observed output (tail)</summary>
 
 ```
-........................................................                 [100%]
-56 passed in 184.92s (0:03:04)
+.........................................................                [100%]
+57 passed in 178.65s (0:02:58)
 ```
 
 </details>
@@ -133,7 +133,7 @@ Step 4: Record objective evidence from integration test, fault injection and lea
 
 ```
 ........                                                                 [100%]
-8 passed in 0.32s
+8 passed in 0.36s
 ```
 
 </details>
