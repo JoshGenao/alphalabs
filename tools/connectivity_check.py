@@ -1069,11 +1069,21 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
         # expected == matched == 0 and a clean report. A backstop that
         # shares the blind spot it backs up is not a backstop. Braces are
         # the only delimiter an impl header genuinely cannot contain.
-        expected = len(re.findall(rf"\bimpl\b[^{{}}]*?\b(?:{alternation})\s+for\b", source, re.S))
+        expected = len(
+            re.findall(
+                rf"\bimpl\b[^{{}}]*?\b(?:{alternation})\s*(?:<[^{{}};]*>)?\s+for\b",
+                source,
+                re.S,
+            )
+        )
         matched = 0
         for match in re.finditer(
             rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
-            r"\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
+            # The TRAIT may itself carry generics or an associated-type binding:
+            # `impl Gate<Clock = SystemClock> for X`. Requiring a bare name
+            # before `for` made the strict pattern AND the backstop miss it, so
+            # expected == matched == 0 and the scan reported a clean, closed set.
+            r"\s*(?:<[^{};]*>)?\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
             source,
             re.S,
         ):

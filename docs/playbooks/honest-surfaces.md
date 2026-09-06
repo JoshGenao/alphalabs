@@ -261,3 +261,11 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
   about a different feature. Require the layer name and the verdict together. And read
   ROWS, not lines: a reflowed markdown row put the disclosure and the command on different
   lines and escaped the check entirely. `(SRS-MD-005 r21)`
+
+- **Do the arithmetic before writing "orders of magnitude".** Two constants 10x apart were
+  described as "two orders of magnitude" in two rustdocs, and 100 ms against a 300 s window
+  as "four orders below" when it is a factor of 3,000. Both read as precise safety
+  arguments and neither was checked. Worse, the compile-time assert cited as enforcing the
+  first pinned only a 5x separation, so it could not fail for the ratio the prose argued.
+  If a ratio is load-bearing enough to state, state the numbers beside it and assert the
+  ratio you actually claim. `(SRS-MD-005 r25)`

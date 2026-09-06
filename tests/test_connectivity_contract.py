@@ -1214,6 +1214,38 @@ impl<W: atp_market_data::RestartWindowGate> SomeOtherTrait for Manager<W> {
         evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("exactly 1 production type", evidence)
 
+    def test_generics_on_the_TRAIT_do_not_hide_an_implementor(self) -> None:
+        """`impl Gate<Clock = SystemClock> for X` - generics on the trait itself.
+
+        Both the strict pattern and the backstop required a bare trait name
+        before `for`, so this yielded expected == matched == 0 and read as a
+        clean, closed set rather than as unparseable. The backstop exists to
+        turn "cannot read" into red; it cannot do that for a shape it also
+        cannot read.
+        """
+        for label, header in {
+            "type argument": (
+                "impl atp_market_data::RestartWindowGate<SystemClock> for AlwaysOpen {"
+            ),
+            "associated binding": (
+                "impl atp_market_data::RestartWindowGate<Clock = SystemClock> for AlwaysOpen {"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
     def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
         """An empty tree is the failure mode a scan-based guard dies of."""
         empty = Path(tempfile.mkdtemp())

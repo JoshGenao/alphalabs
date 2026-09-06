@@ -558,23 +558,7 @@ def _queue_row_problems(fid: str) -> list[str]:
                 blocked.append(f"{layer} (`{entry['verdict']}`)")
     if not blocked:
         return []
-    # A queue ROW, not a line. A markdown table row can be reflowed across
-    # several lines, and the previous version inspected only lines that
-    # themselves contained `close_feature.py <fid>` - so a reflowed row escaped
-    # entirely. Rows are split on the leading `|` of a table line.
-    text = queue.read_text(encoding="utf-8", errors="replace")
-    rows, current, start = [], [], 1
-    for n, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("|") and current:
-            rows.append((start, "\n".join(current)))
-            current, start = [line], n
-        elif line.lstrip().startswith("|"):
-            current, start = [line], n
-        elif current:
-            current.append(line)
-    if current:
-        rows.append((start, "\n".join(current)))
-
+    rows = _markdown_rows(queue.read_text(encoding="utf-8", errors="replace"))
     out = []
     for n, row in rows:
         if not re.search(rf"close_feature\.py\s+{re.escape(fid)}\b", row):
@@ -609,6 +593,31 @@ _ROUND_TOTAL_RE = re.compile(r"\brounds\s*[:=]\s*(\d+)\b|\b(?:at|after)\s+(\d+)\
 _RENDERING: dict[str, bool] = {}
 
 
+def _markdown_rows(text: str) -> list[tuple[int, str]]:
+    """(line number, row text) for a markdown table, rows joined across wraps.
+
+    A row can be reflowed across several lines, so a check that reads LINES sees
+    a disclosure and a command as unrelated. `_queue_row_problems` was fixed to
+    assemble rows; `_round_count_drift`, one function away, kept reading lines
+    and so skipped a stale total on a continuation line. Same defect, same file,
+    one function apart - which is why the assembly lives here now and both call
+    it.
+    """
+    rows: list[tuple[int, str]] = []
+    current: list[str] = []
+    start = 1
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("|"):
+            if current:
+                rows.append((start, "\n".join(current)))
+            current, start = [line], n
+        elif current:
+            current.append(line)
+    if current:
+        rows.append((start, "\n".join(current)))
+    return rows
+
+
 def _round_count_drift(fid: str, counted: int) -> list[str]:
     """Documents claiming a round TOTAL that the ledger does not support.
 
@@ -626,7 +635,13 @@ def _round_count_drift(fid: str, counted: int) -> list[str]:
         if not doc.exists():
             continue
         owns = doc.name != "verification-queue.md"
-        for n, line in enumerate(doc.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        # A queue row can WRAP, so read rows there; the other documents are
+        # about one feature throughout and are read line by line.
+        units = (
+            [(n, ln) for n, ln in enumerate(text.splitlines(), 1)] if owns else _markdown_rows(text)
+        )
+        for n, line in units:
             stated = {int(g) for m in _ROUND_TOTAL_RE.findall(line) for g in m if g}
             if not stated:
                 continue

@@ -708,14 +708,32 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
         r"|\b(?:print|write|puts)\s*\(\s*(['\"])(.*?)\4\s*\)"
         r"|<<<\s*(['\"])(.*?)\6"
     )
+    # A HEREDOC body spans LINES, so no single-line pattern can see it. The
+    # comment above named `cat <<EOF` as one of three bypasses this closed and
+    # then closed only the other two, so a heredoc-typed result still passed
+    # under a document promising captured output. Naming a bypass is not
+    # closing it.
+    heredoc_open = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
     derived = ("$?", "{}", "$(", "`")
     out = []
     in_command = False
+    heredoc_end = None
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
+        if heredoc_end is not None:
+            # Inside a heredoc body: every line is text the author TYPED.
+            if line == heredoc_end:
+                heredoc_end = None
+                continue
+            if claim.search(line) and not any(t in line for t in derived):
+                out.append((n, line))
+            continue
         if line.startswith("$"):
             in_command = True
             cmd = line[1:].strip()
+            opened = heredoc_open.search(cmd)
+            if opened:
+                heredoc_end = opened.group(1)
         elif in_command and line and not line.startswith("[exit "):
             # A multi-line command BODY. Skipping every line that did not start
             # with `$` made a typed result inside one invisible - and the
@@ -728,7 +746,18 @@ def _fabricated_result_claims(text: str) -> list[tuple[int, str]]:
             continue
         for m in printer.finditer(cmd):
             printed = next(
-                (g for g in (m.group(2), m.group(3), m.group(5), m.group(7)) if g), ""
+                (
+                    g
+                    for g in (
+                        m.group(2),
+                        m.group(3),
+                        m.group(5),
+                        m.group(7),
+                        m.groupdict().get("heredoc"),
+                    )
+                    if g
+                ),
+                "",
             ).strip()
             if not claim.search(printed):
                 continue
@@ -824,6 +853,11 @@ def test_no_verification_transcript_asserts_a_result_it_did_not_run():
             "$ tee out.txt <<< '176 suites ok, 0 failed'",
             True,
         ),
+        # Named in the guard's own comment as closed, and left open for two
+        # rounds. Naming a bypass is not closing it.
+        ("heredoc", "$ cat <<EOF\n176 suites ok, 0 failed\nEOF", True),
+        ("quoted heredoc", "$ cat <<'EOF'\n176 tests passed\nEOF", True),
+        ("heredoc with no claim", "$ cat <<EOF\nSECTION 9 follows\nEOF", False),
         (
             "multi-line body reading a value",
             "$ .venv/bin/python -c \"\nimport json\nprint(json.load(open('e.json'))['n'])\n\"",
@@ -1259,3 +1293,25 @@ def test_a_reflowed_queue_row_is_still_inspected(rec, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(evidence, "ROOT", tmp_path)
     assert evidence._queue_row_problems(fid), "a reflowed row must still be checked"
+
+
+def test_a_stale_round_total_on_a_wrapped_queue_row_is_still_caught(rec, tmp_path, monkeypatch):
+    """The line-vs-row defect, one function away from where it was fixed.
+
+    `_queue_row_problems` was taught to assemble markdown rows so a reflowed row
+    could not escape it. `_round_count_drift` kept reading LINES, so a stale
+    total on a continuation line was skipped - the same defect, the same file,
+    one function apart. Both share `_markdown_rows` now.
+    """
+    fid = "SRS-FAKE-004"
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "verification-queue.md").write_text(
+        f"| **{fid}** | 1 | Judgment is `block`.\n"
+        "  The verdict has stood after 13 rounds. | `close_feature.py x` |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evidence, "ROOT", tmp_path)
+    problems = evidence._round_count_drift(fid, 25)
+    assert problems, "a stale total on a wrapped row must still be checked"
+    assert "13" in problems[0]

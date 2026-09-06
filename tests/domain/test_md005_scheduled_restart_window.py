@@ -1230,3 +1230,32 @@ def test_the_admission_guard_does_not_cry_wolf_on_legal_code() -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
     assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_documented_ttl_ratio_is_asserted_at_compile_time() -> None:
+    """A ratio cited as the safety argument must be the ratio the assert pins.
+
+    The constants' rustdoc argued a ten-times separation between the reachable
+    and unreachable reuse windows. The compile-time assert beside it pinned only
+    FIVE, so it could not fail for the ratio being argued - and the prose said
+    "two orders of magnitude" for what is 10x, and "four orders below the 300 s
+    window" for what is a factor of 3,000.
+
+    Numbers stated as a safety argument get checked here against the source, so
+    the next change to either constant has to move the assert with it.
+
+    NOT proven here: that ten times is the right separation. That is a design
+    choice argued in the module rustdoc; this pins that the code enforces the
+    number the prose claims.
+    """
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    assert "REACHABLE_CACHE_TTL_NS * 10 <= REACHABILITY_CACHE_TTL_NS" in source, (
+        "the compile assert must pin the ten-times ratio the rustdoc argues"
+    )
+    normalised = " ".join(source.split())
+    assert "two orders of magnitude" not in normalised.lower(), (
+        "10x is one order of magnitude, not two"
+    )
+    assert "four orders below" not in normalised.lower(), (
+        "100 ms against 300 s is a factor of 3,000, not four orders"
+    )

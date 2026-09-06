@@ -72,8 +72,8 @@ pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 /// **Both outcomes are cached; the ASYMMETRY is the design.** A stale
 /// `Unreachable` errs toward BLOCKING, which is the safe direction, so it may
 /// be reused for this full second. A stale `Connected` errs toward handing an
-/// order to a dead gateway, so it is capped at `REACHABLE_CACHE_TTL_NS`, two
-/// orders of magnitude shorter. An earlier version of this constant cached the
+/// order to a dead gateway, so it is capped at `REACHABLE_CACHE_TTL_NS`, TEN
+/// TIMES shorter (100 ms against 1 s). An earlier version of this constant cached the
 /// negative ONLY and argued that a successful connect returns in microseconds
 /// so there was nothing to protect. True about latency, and beside the point:
 /// the gate is read once per submission, so a healthy order stream opened one
@@ -92,7 +92,8 @@ pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
 
 /// How long a REACHABLE observation may be reused.
 ///
-/// Two orders of magnitude shorter than the negative TTL, and the asymmetry is
+/// Ten times shorter than the negative TTL (100 ms against 1 s), and the
+/// asymmetry is
 /// still the point — but the first version of this design cached nothing on the
 /// healthy path, and that was wrong in the other direction. `state()` is called
 /// once per live submission, so a steady order rate against a healthy gateway
@@ -104,7 +105,8 @@ pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
 ///
 /// 100 ms bounds that to ten probes a second per producer while keeping the
 /// stale-`Connected` window an order of magnitude below the NFR-P1 order budget
-/// and four orders below the 300 s restart window. The residual, stated: for up
+/// (100 ms against 1,000 ms) and roughly three and a half orders below the
+/// 300 s restart window (a factor of 3,000). The residual, stated: for up
 /// to 100 ms after the gateway dies, one order can still be routed rather than
 /// refused with `CONNECTIVITY_BLOCKED` — it then fails at the broker instead of
 /// at the gate. That is a real weakening of the gate's promptness, traded
@@ -133,7 +135,9 @@ pub const REACHABLE_CACHE_TTL_NS: i64 = 100_000_000;
 // blocking - but five copies of an invariant were false, which is why the code
 // was changed to match the claim rather than the claim softened in five
 // places.
-const _: () = assert!(REACHABLE_CACHE_TTL_NS * 5 < REACHABILITY_CACHE_TTL_NS);
+// TEN, not five. The prose two lines up argues a ten-times separation; an
+// assert that only pins five cannot fail for the ratio it is cited as enforcing.
+const _: () = assert!(REACHABLE_CACHE_TTL_NS * 10 <= REACHABILITY_CACHE_TTL_NS);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 4 <= 1_000_000_000);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS > 0);
 
