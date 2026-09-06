@@ -406,10 +406,8 @@ Read this whenever you write a test, and before you believe a green one.
   `echo`'s. The number was CORRECT - which is exactly why no reader could tell, and why
   correctness is no defence. On the page a typed result and a captured one are identical.
   If a command is slow, run it and wait; if it cannot run, say so and leave the block out.
-  The shape is now banned repo-wide by
-  `tests/unit/test_evidence_artifacts.py::test_no_verification_transcript_asserts_a_result_it_did_not_run`,
-  which permits `; echo "... exit $?"` (a real captured code) and rejects an `echo` that
-  states a result of its own. `(SRS-MD-005 r15)`
+  There is no guard for this: one was written and then removed as out of scope for the
+  feature that produced it. The rule stands on its own. `(SRS-MD-005 r15)`
 
 - **A spy whose default equals the expected value cannot fail.** The test proving the
   dispatcher passes `root` used `def spy(config, source, root=cc.ROOT)` and asserted the
@@ -417,30 +415,3 @@ Read this whenever you write a test, and before you believe a green one.
   answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
   arrived. Found on the guard's own first mutation run, which is the only reason it was
   found at all. `(SRS-MD-005 r16)`
-- **Ban a shape by what it MEANS, not by how it was written.** The typed-result ban
-  matched `^\$ echo "..."`, so `printf`, a trailing `echo`, or `true && echo "all green"`
-  walked past - and the guarded document already carried two `&& echo` lines. Read what is
-  PRINTED and ask where the value came from: `$?`, `{}`, a substitution or a `%d`
-  conversion means a command produced it; a real command before `&&` means the print is
-  conditional on that command succeeding; anything else is typed. Then pin the whole truth
-  table, honest shapes included, so the fix cannot over-fire either. `(SRS-MD-005 r16)`
-
-- **A check comparing a CODE-path file to an EVIDENCE-path file is red across the commit
-  boundary, whichever side you anchor to.** `docs/verification-queue.md` ships in the fix
-  commit; `.harness/runs/<id>/review.jsonl` ships in the chore commit after it. They must
-  agree, and they cannot both be current in the same commit - so no ordering and no choice
-  of authority saves the check. I re-anchored it twice and CI went red twice more. The fix
-  is the PLACE: `evidence.py::record_self_consistency_problems`, run by `verify`, which
-  sees the whole working tree at close time and is what `close_feature.py` calls. Keep
-  synthetic unit tests on the function; keep NO live assertion in pytest.
-  `(SRS-MD-005 r17)`
-- **A pytest that asserts on live EVIDENCE state is red at every code commit by
-  construction.** Evidence is recorded and committed AFTER the code it describes - that
-  lag is the workflow, not a mistake - so a unit test asserting "the record agrees with
-  the tree" fails on the fix commit and only goes green on the chore commit that follows.
-  Three such guards turned CI red on the very commit that introduced them. Currency checks
-  belong in `evidence.py verify`, which gates the CLOSE and already asks this question of
-  critic heads; the unit tests should exercise those FUNCTIONS with synthetic fixtures.
-  Where a document check does need a live number, anchor it to the artifact written by the
-  same event (`review.jsonl`), never to a hand-stamped field committed a commit later.
-  `(SRS-MD-005 r17)`

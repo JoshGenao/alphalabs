@@ -85,14 +85,6 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
     `PYTHONPATH=python python -m X` and add a subprocess test that runs independent of
     pytest's pythonpath.
 
-- **A step certifies the code it ran on, and nothing was checking that.** `evidence.py`
-  bound its currency check (`code_changed_since`) to IMAGE artifacts only, so every
-  feature with no images - every `integration`, `solo` and `live-ib` method, which is most
-  of them - had its four steps' freshness never checked at all. SRS-MD-005's own steps
-  were stale by 13 code paths when a reviewer noticed: step 3 recorded `48 passed` for a
-  command that by then collected 53, and `close_feature.py` would have accepted it. The
-  check now runs on the steps themselves, with the same fail-closed shape: `None` from
-  `code_changed_since` is unverifiable, not fresh. `(SRS-MD-005 r20)`
 - **Give a scan a completeness backstop, not a sixth pattern.** Five separate reviewer
   findings were "your regex did not anticipate this shape". The fix that ends the class is
   not a better regex: count the impls a LOOSE pattern can see, count what the strict one
@@ -100,14 +92,6 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
   parser cannot read then turns the guard red instead of silently shrinking the set it
   claims is closed. `(SRS-MD-005 r20)`
 
-- **A new currency check does not "break" sibling records; it reveals them.** Adding the
-  EVIDENCE.md staleness check turned four other features' pages from clean to
-  problem-carrying. Re-rendering them changed nothing about their state - it printed what
-  their own records had held all along: SRS-MD-003's page said "critics: none recorded"
-  beside a record holding two verdicts, and SRS-NOTIF-001's steps had run against a tree
-  97 files ago. Re-render every sibling when you add a check to `verify`, and read the
-  diff: what appears is a list of things that were already true and unsaid.
-  `(SRS-MD-005 r23)`
 - **A test cited as proof of an invariant must exercise the branch that could break it.**
   A module comment named `a_shortened_ttl_shortens_both_directions` as the thing pinning
   the runtime shorten-only invariant. That test configured 50 ms - below BOTH defaults -

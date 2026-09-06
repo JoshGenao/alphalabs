@@ -285,13 +285,6 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   and then fell through and scanned with whatever it had - the exact fail-open shape that
   had just been removed from the parser beside it. If the set is still growing when the
   budget runs out, `fail()`. `(SRS-MD-005 r22)`
-- **Check what your error MESSAGE degenerates to when you build a pattern from it.** The
-  queue disclosure required the blocked layer's name, taken as `blocked[0].split()[0]`. For
-  a record with no critic block at all the entry was the sentence "no critic block
-  recorded", so the required word became the bare `no` - the most fail-open record
-  produced the weakest check. Build patterns from identifiers, never from prose.
-  `(SRS-MD-005 r22)`
-
 - **When you correct a claim, grep for its PEER SURFACES in the same commit.** The
   verification queue's "close over a standing block" route was removed as having no
   mechanism; the identical false route stayed in the session note's Resume block and was
@@ -300,14 +293,3 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   paid for that lesson three separate times (r18 the Outcome line, r23 two of five
   invariant copies, r24 the Resume block). `(SRS-MD-005 r24)`
 
-- **Naming a bypass in a comment is not closing it.** The typed-result guard's own comment
-  listed three shapes it had closed - `sys.stdout.write`, a here-string, and a `cat <<EOF`
-  heredoc - and the code closed two. The heredoc stayed open for two more rounds behind a
-  comment claiming otherwise, which is worse than no comment: a reader checking the guard
-  would have stopped at the list. If you name a shape, add its test in the same edit.
-  `(SRS-MD-005 r25)`
-- **Fix a defect in every function of the file, not just the one under review.**
-  `_queue_row_problems` was taught to assemble wrapped markdown ROWS; `_round_count_drift`,
-  one function below it in the same file, kept reading LINES and skipped a stale total on
-  a continuation line. The row assembly is shared now. When you fix a parsing defect, grep
-  the FILE for the same read pattern before you leave it. `(SRS-MD-005 r25)`

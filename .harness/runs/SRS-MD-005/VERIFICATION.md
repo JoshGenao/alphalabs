@@ -233,9 +233,9 @@ $ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok.
 > `$ echo "cargo test --workspace : 176 suites ok, 0 failed"` - a hand-typed
 > summary under a document promising captured output, whose `[exit 0]` was
 > `echo`'s. The count was right, which is precisely why nobody could tell.
-> The command above derives every number from the run. A guard now bans the
-> shape repo-wide:
-> `tests/unit/test_evidence_artifacts.py::test_no_verification_transcript_asserts_a_result_it_did_not_run`.
+> The command above derives every number from the run. A guard banning the shape
+> repo-wide was written and later removed as out of scope for this feature; the
+> lesson is recorded in `docs/playbooks/test-integrity.md`.
 
 $ cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1; echo "cargo clippy --workspace --all-targets -- -D warnings : exit $?"
 cargo clippy --workspace --all-targets -- -D warnings : exit 0

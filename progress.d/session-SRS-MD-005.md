@@ -9,6 +9,32 @@ Outcome: serialized (A: done - every step ran solo and is recorded; the close is
          critic layer is not `approve`. `allow_attested` relaxes only the
          per-step `executed` check, never the critic loop.)
 
+## What was removed, and why
+
+Rounds 14 to 25 produced roughly 1,100 lines of EVIDENCE-HARNESS work -
+currency checks in `tools/evidence.py`, a typed-result ban, queue-row and
+round-count guards, their unit tests, and re-rendered pages for four sibling
+features. None of it was SRS-MD-005. It was removed at the operator's direction
+before this branch landed, and `tools/evidence.py`, `tests/unit/` and the
+sibling `EVIDENCE.md` files are back at their `origin/main` state.
+
+The reason it accumulated is worth recording, because it is the expensive
+lesson of this session. **The judgment critic reviews the whole diff.** Each
+round I fixed its findings by adding tooling; the added tooling was surface for
+the next round; and rounds 21 to 25 were largely finding defects in code rounds
+19 to 24 had just introduced. Twelve rounds, 82 findings, every one real, and
+ZERO of them in the restart-window behaviour - which had been green and
+mutation-verified since round 5.
+
+If a review loop stops finding defects in the FEATURE and starts finding them in
+what you added to satisfy the last round, the loop is being fed. Stop adding
+scope, and say so.
+
+The lessons from those rounds are kept in the playbooks where they belong to
+this feature (the cache TTL bounds, the guard-bounding rules, never fabricating
+a result). Entries whose subject was the evidence harness were removed with the
+code.
+
 ## Why this feature was only ever half-built
 
 Every CONSUMER of the restart window already existed and had for months:
@@ -353,10 +379,10 @@ BLOCK, and shrinking the diff with --base to make it finish is forbidden).
       EVIDENCE-path file, and the workflow commits those separately BY DESIGN,
       so no ordering and no choice of which side is authoritative can make a
       cross-boundary check green. Twice I re-anchored the check; twice it went
-      red again. The fix was the PLACE: all three currency checks now live in
-      `evidence.py::record_self_consistency_problems`, which `verify` runs and
-      `close_feature.py` calls, where the whole working tree is in hand. The
-      unit tests keep synthetic fixtures and NO live assertion.
+      red again. The fix was the PLACE: the currency checks belonged in
+      `evidence.py verify`, at close time, where the whole working tree is in
+      hand. That harness work was REMOVED at the operator's direction (see
+      "What was removed, and why" below); the lesson is kept, the code is not.
       The rest were real too: `with_probe_ttl` promised "reuse for `ttl_ns`"
       while `ttl_for` silently capped a positive at 100 ms; the exempt-function
       scan used `<[^{}();]*?>` and so could not span `<F: Fn() -> bool>` (the
@@ -508,10 +534,10 @@ count.
       typed-result guard's own comment named `cat <<EOF` as one of three
       bypasses it had closed, and the code closed two - a comment claiming a
       guard is complete is worse than no comment, because a reader checking it
-      stops at the list. And `_round_count_drift` still read LINES while
-      `_queue_row_problems`, one function above it in the same file, had been
-      taught to assemble wrapped ROWS: same defect, same file, one function
-      apart. Both share the row assembly now.
+      stops at the list. And one queue-document check still read LINES while
+      its neighbour in the same file had been taught to assemble wrapped ROWS:
+      same defect, same file, one function apart. Both were part of the harness
+      work that was later removed.
 
 ## Playbook updates
 

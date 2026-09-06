@@ -157,22 +157,6 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   `(SRS-MD-005 r6)`
 
 
-- **Enumerate the recorders; do not fix the one that was caught.** `evidence.py` has four
-  commands that write the record, and three re-rendered `EVIDENCE.md` afterwards.
-  `cmd_critic` - the LAST one to run before a close - did not, so the page a reviewer
-  opens in the PR read `critics: none recorded` while `evidence.json` beside it, in the
-  same commit, held a `block`. The guard is an AST walk over `cmd_*` asserting that
-  anything calling `save_record` also refreshes the page; it immediately found a second
-  instance the sweep had missed. When a rendered artifact can lag its source, the class is
-  "every writer of the source", never "this writer". `(SRS-MD-005 r14)`
-- **A row that promises a command must be checked against the state that command reads.**
-  The verification queue told the operator "Nothing" was missing and handed over
-  `close_feature.py --verified --attested-by operator`, which exits 3 while a critic
-  verdict is `block` - `--attested-by` relaxes which STEPS count, never the critic gate.
-  The guard now cross-reads every `close_feature.py <ID>` in the queue against
-  `.harness/runs/<ID>/evidence.json`. Prose that instructs is prose that can be wrong in
-  a way the reader only discovers by running it. `(SRS-MD-005 r14)`
-
 - **A rustdoc that argues for a design outlives the design by rounds.** The reachability
   cache changed policy in r14; the constant's rustdoc still called the OLD policy "the
   whole design" in r16, `state()` still promised "a fresh probe on every read", and
@@ -193,44 +177,6 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   had actually drifted. Match `rounds: N` and `at|after N rounds`; leave ordinals alone.
   `(SRS-MD-005 r16)`
 
-- **A verification transcript must certify the tree it SHIPS with, and re-running is the
-  only honest repair.** `VERIFICATION.md` said its commands "were re-run against the
-  integrated tree (`ed36c790`)" while the diff carrying it had rewritten 215 lines of the
-  module those captures covered; its pytest block reported 101 collected where the same
-  command now collected 110. The captures were real - they just certified different code,
-  which a reader cannot see. Re-run every block (scripted, so nothing is retyped), and
-  re-apply each deliberate mutation around its own command for the sections that capture
-  a broken tree. `tests/unit/test_evidence_artifacts.py::test_a_verification_transcript_certifies_the_tree_it_ships_with`
-  now compares the transcript's own `git rev-parse HEAD` capture against
-  `code_changed_since`. `(SRS-MD-005 r16)`
-
-- **A rendered page that EMBEDS a checker's output cannot also be checked by it.** Adding
-  "is EVIDENCE.md current?" to `verify` made `render_markdown` -> `verify` -> render
-  recurse without bound, and once that was guarded, the page began reporting its own
-  staleness - which changed what a fresh render said, so no fixed point existed and the
-  page could never be current. The flag has to wrap the RENDER, not the check: while a
-  render is in progress the self-check stands down, so the page never makes a claim about
-  itself. `(SRS-MD-005 r19)`
-- **A command that rebuilds a record entry silently drops the fields you did not pass.**
-  `evidence.py critic` builds a fresh entry, so the re-stamp prescribed by the
-  verification queue erased `rounds` - and the corroboration check only compares counts
-  that are PRESENT, so following the documented command turned off the guard the same
-  change had just added.
-
-  The first fix here was "carry unspecified fields forward", and it was WRONG - recorded
-  because a playbook that teaches a superseded fix is worse than one that says nothing.
-  Carrying forward cannot work when the field is derived: the round that produces an
-  `approve` appends its own line to the ledger, so the documented re-stamp wrote N against
-  a ledger of N+1 and `verify` refused. The rule is: re-read a derived field from ITS
-  SOURCE, and fall back to the previous value only when the source is unreadable.
-  `(SRS-MD-005 r19, corrected r21, recorded r24)`
-
-- **Delete the hand-maintained number, keep the command.** A session-note section stated a
-  playbook-entry count three times and was stale all three times - each version printing,
-  two lines above the wrong figure, the exact command that would have corrected it. A
-  number a human maintains beside a command that computes it will disagree with the
-  command; the only fix that holds is to stop stating it. Name WHAT changed, which does
-  not rot, and let the reader run the count. `(SRS-MD-005 r22)`
 - **An invariant asserted in five places and held in none.** "`ttl_for` takes a `min`, so
   both directions only ever shorten" appeared in two module comments, a constant's
   rustdoc, a unit test and an L7 docstring - while the function applied `min` to one

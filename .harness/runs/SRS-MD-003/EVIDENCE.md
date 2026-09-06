@@ -10,11 +10,7 @@
 
 ## Outstanding
 
-- deterministic critic approved at an unrecorded commit, which cannot be checked against this one (missing, unknown, unreadable, or on another line of history). An unverifiable verdict is not a current one — re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
-- verification_method is 'live-ib' and 1 image artifact(s) are attached to step 3, but the commit they record cannot be checked against this one (unknown, unreadable, or on another line of history). An unverifiable head is not a fresh one — re-run the step.
-- step(s) [1, 2] ran against code that has since moved (234 path(s) changed, e.g. .env.example, .github/workflows/ci.yml, .github/workflows/integration.yml) - re-run them with `tools/evidence.py run SRS-MD-003 --step N -- <command>`
-- step(s) [3, 4] record a commit that cannot be checked against this one (missing, unknown, unreadable, or on another line of history); an unverifiable step is not a fresh one
 
 ## Acceptance criterion
 

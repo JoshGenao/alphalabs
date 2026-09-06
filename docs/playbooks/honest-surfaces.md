@@ -255,13 +255,6 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
   what a method is FOR, and if there are none, say so - "kept honest by tests rather than
   by use" is an accurate and perfectly respectable thing for a method to be.
   `(SRS-MD-005 r21)`
-- **A disclosure must name WHAT is wrong, not merely contain the word.** The queue-row
-  check accepted any `` `block` `` code span anywhere on the row, so a row disclosing the
-  DETERMINISTIC layer while hiding a judgment `block` passed, as did one quoting the word
-  about a different feature. Require the layer name and the verdict together. And read
-  ROWS, not lines: a reflowed markdown row put the disclosure and the command on different
-  lines and escaped the check entirely. `(SRS-MD-005 r21)`
-
 - **Do the arithmetic before writing "orders of magnitude".** Two constants 10x apart were
   described as "two orders of magnitude" in two rustdocs, and 100 ms against a 300 s window
   as "four orders below" when it is a factor of 3,000. Both read as precise safety
