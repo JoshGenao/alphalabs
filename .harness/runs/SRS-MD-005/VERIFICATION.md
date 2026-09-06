@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was re-run at the commit this document ships with (`2a9895a`). It is a
+block was re-run at the commit this document ships with (`20bf2f1`). It is a
 re-verification, not a replay of the session that built the feature.
 
 Round 16 caught the earlier version presenting captures from `ed36c790` as
@@ -49,7 +49,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-2a9895a7e94e9ab6be0ece2e4844d5cd37e79016
+20bf2f1005c31d31340d2759a49a88fff8d3c2ae
 [exit 0]
 
 $ git log --oneline origin/main -14 | cat
@@ -191,8 +191,8 @@ step 2: PASS | exit=0 | cargo test -p atp-orchestrator --test srs_md_005_restart
 step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_windo
 step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
 
-deterministic critic: approve @ 2a9895a7
-judgment critic    : block | rounds: 25 | reviewer: claude-fallback
+deterministic critic: approve @ 20bf2f10
+judgment critic    : block | rounds: 26 | reviewer: claude-fallback
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -203,7 +203,7 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the integrated commit, straight from GitHub ===
 
-$ gh run list --commit 2a9895a7e94e9ab6be0ece2e4844d5cd37e79016 --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
+$ gh run list --commit 20bf2f1005c31d31340d2759a49a88fff8d3c2ae --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
 	ci
 success	security
 skipped	integration
@@ -246,10 +246,10 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-127 passed, 11 subtests passed in 351.38s (0:05:51)
+129 passed, 17 subtests passed in 344.72s (0:05:44)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
-8 passed in 0.31s
+8 passed in 0.32s
 [exit 0]
 ```

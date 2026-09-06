@@ -539,6 +539,23 @@ count.
       same defect, same file, one function apart. Both were part of the harness
       work that was later removed.
 
+  r26 block/7  - the FIRST round run against the reduced diff, after the harness
+      work was removed. It found the real one this whole loop existed to find:
+      `_without_test_module` counted braces without knowing where a brace can
+      HIDE. Every scan in `connectivity_check.py` reads its output first, so a
+      test module containing `let s = "{";` never closed, the stripper ate every
+      production line after it, and each scan then read an empty tail and
+      reported a CLEAN, CLOSED SET. Six hiding places now handled (string, raw
+      string, line comment, block comment, char literal, and NOT treating a
+      lifetime as an open quote - which is how the first attempt failed on the
+      real tree rather than on a fixture). Three findings were fallout from the
+      revert itself: the transcript claimed a commit it had been EDITED to
+      claim rather than re-run at, the close recipe described the reverted
+      `cmd_critic`, and the playbook list named entries that no longer ship.
+      Two were claims that survived r25: a WRAPPED "two orders of magnitude" the
+      guard could not see because it did not strip `///`, and an NFR-P1 assert
+      pinning 4x one line below its sibling corrected to 10x.
+
 ## Playbook updates
 
   docs/playbooks/adversarial-precheck.md - "When a guard keeps failing, stop
@@ -562,59 +579,45 @@ count.
     round 14: the row had promised a close command that cannot succeed while a
     critic verdict stands at `block`.
   **There is deliberately no count here.** This section stated one three times
-  and it was stale three times - "rounds 14-17, 23 entries" caught at r18,
-  "rounds 14-19, 29 entries" caught at r22 - each version printing the very
-  command that would have corrected it. A number a human maintains beside a
-  command that computes it is a number that will disagree with the command.
-  Run it:
+  and it was stale three times, each version printing the very command that
+  would have corrected it. A number a human maintains beside a command that
+  computes it is a number that will disagree with the command. Run it:
 
       git diff origin/main...HEAD -- docs/playbooks/ \
-        | grep -oE '\(SRS-MD-005 r[0-9]+\)' | sort -V | uniq -c
+        | grep -oE '\\(SRS-MD-005 r[0-9]+[^)]*\\)' | sort -V | uniq -c
 
-  What follows is which playbook gained what, which is the part a reader
-  actually needs and which does not go stale by counting.
+  Entries whose subject was the EVIDENCE HARNESS were removed together with
+  that code (see "What was removed, and why" at the top). What ships is the
+  lessons that belong to this feature:
 
-  adversarial-precheck.md (r14, r15, r16, r17)
-    A character class terminates on the `>` of a `->` - written four separate
-    times before it stuck, once per pattern: impl generics, impl target, `fn`
-    generics, and the depth counter in `_strip_generic_args`. Also: a
-    hard-coded subject list bounds a scan by its writing date; an exemption
-    should be self-expiring, not asserted; an impl TARGET is a type, not an
-    identifier; grep the file for the same shape BEFORE writing the playbook
-    entry about it; a "class" guard keyed on a DIRECT call sees only the odd
-    path; scope a cross-file check to the LINE; a real gate is not
-    automatically a RELEVANT gate.
-  contract-drift.md (r14, r15, r16)
-    Enumerate the recorders rather than fixing the one that was caught; a row
-    that promises a command must be checked against the state that command
-    reads; a rustdoc that ARGUES for a design outlives the design by rounds; a
-    session note's Key decisions is a claim about shipped code, not a diary;
-    distinguish a TOTAL from an ordinal before writing a consistency guard; a
-    verification transcript must certify the tree it ships with.
-  test-integrity.md (r15, r16, r17)
-    Never write a result you did not capture under a document promising
-    captured output; a spy whose default equals the expected value cannot fail;
-    ban a shape by what it MEANS, not how it was written; a check comparing a
-    CODE-path file to an EVIDENCE-path file is red across the commit boundary
-    whichever side you anchor to; a pytest asserting on live evidence state is
-    red at every code commit by construction.
-  safety-paths.md (r14, r15)
+  adversarial-precheck.md
+    A `->` defeats a bracket matcher - written four times before it stuck, once
+    per pattern, and finally replaced by a counter. An impl TARGET is a type,
+    not an identifier. A guard keyed on a NAME is defeated by a rename, and a
+    rename can be two hops. A hard-coded subject list bounds a scan by its
+    writing date. Make an exemption self-expiring. A backstop bounded like the
+    pattern it backs up is not a backstop, and one that cries wolf on legal code
+    is deleted. A hand-written parser must return "unparseable", never
+    "nothing". Test the FALSE-POSITIVE direction, not only the bypass. When you
+    correct a claim, grep for its peer surfaces in the same commit.
+  contract-drift.md
+    A rustdoc that ARGUES for a design outlives the design by rounds. A session
+    note's Key decisions is a claim about shipped code, not a diary. A
+    verification transcript must certify the tree it ships with. An invariant
+    asserted in five places and held in none.
+  safety-paths.md
     Caching only the negative outcome trades a latency defect for a churn
-    defect, and the TTL bound then becomes the safety property, so pin it at
-    compile time; when you change a cache's policy, grep every surface that
-    FILTERS on the old TTL.
-  pipeline-and-integrate.md (r17)
-    A chore commit carrying evidence must carry NOTHING else; stamp a round
-    count FROM the ledger, never by hand.
-  measurement-and-certification.md (r20)
-    A step certifies the code it ran on, and nothing was checking that - the
-    currency check was bound to image artifacts, so every feature without
-    screenshots had step freshness never checked at all. And: give a scan a
-    completeness backstop rather than a sixth pattern.
-  honest-surfaces.md (r21)
-    Check that a documented surface has a CALLER before describing what it does
-    for operators; a disclosure must name what is wrong, not merely contain the
-    word.
+    defect, and the TTL bound then becomes the safety property. When you change
+    a cache's policy, grep every surface that FILTERS on the old TTL.
+  test-integrity.md
+    Never write a result you did not capture under a document promising captured
+    output. A spy whose default equals the expected value cannot fail.
+  measurement-and-certification.md
+    Give a scan a completeness backstop rather than a sixth pattern. A test
+    cited as proof of an invariant must exercise the branch that could break it.
+  honest-surfaces.md
+    Check a documented surface has a CALLER before describing what it does for
+    operators. Do the arithmetic before writing "orders of magnitude".
 
 ## Notes for the operator
 
