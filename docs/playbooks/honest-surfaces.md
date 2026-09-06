@@ -246,3 +246,19 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
   to a vocabulary that drives a safety verdict, grep the type name, and delete
   the wildcard so the compiler names each site the next time.
   `(NOTIF-001, found on the operator's first live run)`
+
+- **Check that a documented surface has a caller before describing what it does for
+  operators.** `last_outcome()`'s rustdoc said the probe reason "surfaces here and through
+  the operator CLI's `reachability:` field"; the CLI reads `observe_if_needed()`, and this
+  method had no production caller at all. A playbook entry had repeated the claim, which is
+  how a small false statement becomes project memory. `grep` for callers before writing
+  what a method is FOR, and if there are none, say so - "kept honest by tests rather than
+  by use" is an accurate and perfectly respectable thing for a method to be.
+  `(SRS-MD-005 r21)`
+- **Do the arithmetic before writing "orders of magnitude".** Two constants 10x apart were
+  described as "two orders of magnitude" in two rustdocs, and 100 ms against a 300 s window
+  as "four orders below" when it is a factor of 3,000. Both read as precise safety
+  arguments and neither was checked. Worse, the compile-time assert cited as enforcing the
+  first pinned only a 5x separation, so it could not fail for the ratio the prose argued.
+  If a ratio is load-bearing enough to state, state the numbers beside it and assert the
+  ratio you actually claim. `(SRS-MD-005 r25)`

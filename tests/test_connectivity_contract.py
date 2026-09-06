@@ -11,10 +11,13 @@ event-record calls).
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
@@ -24,6 +27,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from connectivity_check import (  # noqa: E402
     ConnectivityCheckError,
+    _without_test_module,
     assert_connectivity_static,
     check_brokerage_connectivity_port,
     check_connectivity_event_sink_port,
@@ -36,6 +40,7 @@ from connectivity_check import (  # noqa: E402
     check_restart_escalation_arm,
     check_restart_phase_enum,
     check_restart_window_defaults,
+    check_restart_window_gate_implementors,
     check_restart_window_producer,
     execution_source,
     load_config,
@@ -533,6 +538,72 @@ impl Sneaky for ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, self._inject(bypass))
         self.assertIn("is_subscribed", str(ctx.exception))
 
+    def test_a_parenthesised_generic_bound_cannot_hide_a_second_declaration(self) -> None:
+        """The hole the round-16 fix left one line away from the one it closed.
+
+        `<[^{}();]*?>` excludes `(`, so a bound like `<F: Fn() -> bool>` ends the
+        match early and the declaration is invisible. The scan then still counts
+        exactly ONE `is_subscribed`, the exemption is inherited, and the new
+        function reaches the consolidated registry without consulting the
+        window - with every guard, the L7 suite and all three CLI proofs green.
+
+        `Fn() -> _` is not an exotic shape here: the producer's own injected
+        clock is one.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<F: Fn() -> bool>(&mut self, k: SecurityKey, s: StrategyId, f: F) {
+        if f() {
+            self.subscribers.insert(k, vec![s]);
+        }
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
+    def test_a_nested_generic_bound_cannot_hide_a_second_declaration(self) -> None:
+        """One level of nesting was enough until `<T: Into<Vec<u8>>>` arrived.
+
+        Every regex attempt at bounding a generic list failed on a shape it did
+        not anticipate: a `->` closed it early, then a parenthesis, then two
+        levels of nesting. The scan counts brackets now, so it has no depth
+        limit at all.
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<T: Into<Vec<u8>>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
+        let _ = v;
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
+    def test_a_semicolon_inside_a_generic_bound_cannot_hide_a_declaration(self) -> None:
+        """The counter FAILED OPEN, which is worse than the regex it replaced.
+
+        `<T: Into<[u8; 4]>>` contains a `;` - legal, inside an array type. The
+        counter bailed on it and returned the start index, so the declaration
+        was silently DROPPED, the count stayed at 1, and the exemption was
+        inherited by a function the scan could not read. Unparseable is not
+        absent (CLAUDE.md rule 3).
+        """
+        bypass = """
+impl ConsolidatedSubscriptionRegistry {
+    pub fn is_subscribed<T: Into<[u8; 4]>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
+        let _ = v;
+        self.subscribers.insert(k, vec![s]);
+    }
+}
+"""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("is_subscribed", str(ctx.exception))
+
     def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
         """The exemption says the function CANNOT admit. Changing its receiver
         makes that claim false, so the claim has to be re-checked."""
@@ -785,6 +856,443 @@ class RestartWindowProducerTest(unittest.TestCase):
         self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
         with self.assertRaises(ConnectivityCheckError):
             check_reachability_seam_is_unpinned(self.config, mutated)
+
+
+class TestModuleStripperTest(unittest.TestCase):
+    """Every scan in this file reads `_without_test_module`'s output first.
+
+    It counted braces without knowing where a brace can HIDE, so a
+    `#[cfg(test)] mod tests { let s = "{"; }` never closed and the stripper ate
+    every production line after it. Each scan built on that then read an empty
+    tail and reported a clean, closed set - the worst failure mode for an
+    enumeration whose whole claim is exhaustiveness.
+
+    The real tree uses all six of these; the raw-string case alone appears 46
+    times in one adapter.
+    """
+
+    KEEP = "pub fn keep() { self.subscribers.insert(k, v); }"
+
+    def _tree(self, body: str) -> str:
+        return f"pub fn a() {{}}\n#[cfg(test)]\nmod tests {{\n    {body}\n}}\n{self.KEEP}\n"
+
+    def test_a_brace_that_is_not_code_does_not_extend_the_test_module(self) -> None:
+        for label, body in {
+            "string literal": 'let s = "{";',
+            "raw string": 'let s = r#"{"id":1}"#;',
+            "line comment": "// a stray { here\n",
+            "block comment": "/* a stray { here */",
+            "lifetime": "fn g<'a>(x: &'a str) {}",
+            "char literal": "let c = '}';",
+        }.items():
+            with self.subTest(shape=label):
+                out = _without_test_module(self._tree(body))
+                self.assertIn("keep", out, "production code after the module was swallowed")
+                self.assertNotIn("mod tests", out, "the test module was not stripped")
+
+    def test_an_unterminated_test_module_refuses_rather_than_truncating(self) -> None:
+        """Unparseable is not empty. A truncated read must be red, not clean."""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            _without_test_module('pub fn a() {}\n#[cfg(test)]\nmod tests {\n    let s = ";\n')
+        self.assertIn("unterminated", str(ctx.exception))
+
+
+class GateImplementorScanTest(unittest.TestCase):
+    """The scan that makes the port unforgeable, tested against real bypasses.
+
+    This enumeration is the ONLY thing standing between the tree and a
+    production `impl RestartWindowGate` that always returns `Admitted` — which
+    would bypass the SyRS SYS-75(a) suspension with every other guard, the L7
+    suite and all three CLI proofs still green. A guard in that position gets
+    tested by trying to walk past it, not by being read.
+
+    Both bypasses below were live holes found by adversarial review, not
+    hypotheticals.
+    """
+
+    PRODUCER = "crates/atp-orchestrator/src/restart_window_connectivity.rs"
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # A minimal tree holding the REAL producer, so the only difference
+        # between a clean run and a caught run is the injected bypass.
+        dest = self.tmp / self.PRODUCER
+        dest.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / self.PRODUCER, dest)
+
+    def _inject(self, crate: str, body: str) -> None:
+        path = self.tmp / "crates" / crate / "src" / "sneaky.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_the_clean_tree_passes(self) -> None:
+        """Non-vacuity: without this, both tests below pass on a broken scan."""
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("ScheduledRestartConnectivity", evidence)
+
+    def test_an_arrow_in_the_generic_bounds_does_not_hide_an_implementor(self) -> None:
+        """The `[^>]*` hole: that class terminates on the `>` of `->`.
+
+        The producer's own clock is an `Fn() -> i64`, so this is the shape an
+        implementor in this codebase naturally takes — the guard was blind to
+        precisely the idiom the feature uses.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct AlwaysOpen<C> {
+    clock: C,
+}
+
+impl<C: Fn() -> i64> atp_market_data::RestartWindowGate for AlwaysOpen<C> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_an_implementor_in_any_crate_is_caught(self) -> None:
+        """The hard-coded-crate-list hole.
+
+        The scan listed the four crates that had the trait in view when it was
+        written. Any crate that later gains an atp-market-data dependency could
+        implement the gate unscanned, while the contract claimed the check
+        "walks the crate sources".
+        """
+        self._inject(
+            "atp-simulation",
+            """
+pub struct SimGate;
+
+impl RestartWindowGate for SimGate {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("SimGate", str(ctx.exception))
+
+    def test_the_impl_target_is_a_type_not_an_identifier(self) -> None:
+        """`for &X`, `for &'a X` and `for (X, u8)` all escaped a `(\\w+)` capture.
+
+        Rust lets you implement a trait for a reference or a tuple, so requiring
+        a bare identifier after `for` left the "closed set" open to exactly the
+        always-admitting production gate the enumeration exists to forbid. Each
+        shape below was verified against the old compiled pattern as a real
+        bypass, not a hypothetical.
+        """
+        shapes = {
+            "reference": "impl atp_market_data::RestartWindowGate for &AlwaysOpen {",
+            "lifetime": "impl<'a> atp_market_data::RestartWindowGate for &'a AlwaysOpen {",
+            "tuple": "impl atp_market_data::RestartWindowGate for (AlwaysOpen, u8) {",
+            "where_clause": (
+                "impl<C> atp_market_data::RestartWindowGate for AlwaysOpen<C>\n"
+                "where\n    C: Fn() -> i64,\n{"
+            ),
+        }
+        for label, header in shapes.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_type_parameter_is_not_mistaken_for_an_implementor(self) -> None:
+        """The false-positive direction of the fix.
+
+        Stripping generics is what stops `ScheduledRestartConnectivity<P, C>`
+        reporting `P` and `C` as two undeclared production implementors, which
+        would make the guard cry wolf on the declared producer itself.
+        """
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+
+    def test_the_dispatcher_gives_root_to_every_check_that_takes_one(self) -> None:
+        """The `root` parameter must be PASSED, not merely declared.
+
+        Round 14 added `root` to this check and recorded the finding as fixed;
+        `assert_connectivity_static` forwarded it only to `_sources`, so this
+        one check kept its `ROOT` default and scanned the REAL repository while
+        its twelve siblings scanned the caller's tree.
+
+        The root under test is a DISTINCT directory, not `ROOT`. The first
+        version of this test spied with `root=cc.ROOT` as the default and
+        asserted the spy saw `ROOT` - which it did either way, so the test
+        passed with the dispatcher's fix reverted. A guard that cannot fail is
+        not a guard, and this one proved it on its own first mutation run.
+        """
+        import inspect
+
+        import connectivity_check as cc
+
+        takes_root = [
+            name
+            for name, check, _ in cc._STATIC_CHECKS
+            if "root" in inspect.signature(check).parameters
+        ]
+        self.assertIn("restart_window_gate_implementors", takes_root)
+
+        sentinel = self.tmp
+        self.assertNotEqual(sentinel, ROOT, "the test root must differ from the real one")
+        seen: dict[str, object] = {}
+
+        def spy(config, source, root=cc.ROOT):
+            seen["root"] = root
+            return "spied"
+
+        table = tuple(
+            (n, spy if n == "restart_window_gate_implementors" else c, s)
+            for n, c, s in cc._STATIC_CHECKS
+        )
+        # `_sources` reads real files, so it keeps the real tree; only the root
+        # handed to the checks is the sentinel.
+        real_sources = cc._sources
+        with (
+            mock.patch.object(cc, "_STATIC_CHECKS", table),
+            mock.patch.object(cc, "_sources", lambda config, root=ROOT: real_sources(config, ROOT)),
+        ):
+            cc.assert_connectivity_static(self.config, sentinel)
+        self.assertEqual(
+            seen.get("root"),
+            sentinel,
+            "the dispatcher dropped `root`, so this check scans the real repo "
+            "while its siblings scan the caller's tree",
+        )
+
+    def test_a_return_arrow_in_the_impl_target_does_not_cry_wolf(self) -> None:
+        """The FALSE-POSITIVE direction, and the fourth arrow defect here.
+
+        `_strip_generic_args` closed its bracket depth on the `>` of a `->`, so
+        in `impl Gate for Wrapper<fn() -> EpochNanos>` the depth fell to zero at
+        the arrow, ` EpochNanos` was emitted at depth 0, and the uppercase sweep
+        reported it as an undeclared production implementor. The guard would
+        `fail()` on a legal shape - which is how a guard gets disabled.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct Wrapper<T>(T);
+
+impl atp_market_data::RestartWindowGate for Wrapper<fn() -> EpochNanos> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        msg = str(ctx.exception)
+        self.assertIn("Wrapper", msg)
+        self.assertNotIn(
+            "EpochNanos", msg, "a return type was reported as a production implementor"
+        )
+
+    def test_a_renamed_trait_import_does_not_hide_an_implementor(self) -> None:
+        """`use ... as Gate;` is a two-word rename that walked past the scan.
+
+        The check kept printing "this enumeration is what makes it unforgeable"
+        while producing no match at all for the aliased impl.
+        """
+        for label, header in {
+            "simple use-as": (
+                "use atp_market_data::RestartWindowGate as Gate;\nimpl Gate for AlwaysOpen {"
+            ),
+            "braced use-as": (
+                "use atp_market_data::{RestartWindowGate as G2, MarketDataAdmission};\n"
+                "impl G2 for AlwaysOpen {"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_an_impl_target_the_scan_cannot_name_fails_rather_than_collecting_nothing(self):
+        """Unnameable is not absent (CLAUDE.md rule 3).
+
+        Names were extracted with `\\b([A-Z]\\w*)`, so an impl target carrying no
+        uppercase identifier collected NOTHING and the "closed set" stayed open
+        while the check reported a clean tree - the worst possible failure mode
+        for an enumeration whose whole claim is that it is exhaustive.
+        """
+        for label, target in {
+            "primitive": "i64",
+            "lowercase alias": "gate_alias",
+            "array": "[u8; 4]",
+        }.items():
+            with self.subTest(target=label):
+                self._inject(
+                    "atp-orchestrator",
+                    f"""
+impl atp_market_data::RestartWindowGate for {target} {{
+    fn admission(&self) -> MarketDataAdmission {{
+        MarketDataAdmission::Admitted
+    }}
+}}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                msg = str(ctx.exception)
+                # Either refusal is correct: the scan parsed the header and
+                # could not NAME the target, or it could not parse the header at
+                # all and the completeness backstop caught the shortfall. Both
+                # end in a refusal rather than a clean report, which is the
+                # property under test.
+                self.assertTrue(
+                    "cannot name" in msg or "could parse only" in msg,
+                    msg,
+                )
+
+    def test_the_backstop_does_not_share_the_blind_spot_it_backs_up(self) -> None:
+        """A backstop bounded like the pattern it backs up is not a backstop.
+
+        The completeness count was written with `[^;]`, the same boundary the
+        strict pattern used, so any shape a `;` defeated defeated BOTH and the
+        scan reported `expected == matched == 0`: a clean, closed set with an
+        always-admitting implementor sitting in it.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct AlwaysOpen;
+
+impl<T: Into<[u8; 4]>> atp_market_data::RestartWindowGate for AlwaysOpen {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        msg = str(ctx.exception)
+        self.assertTrue(
+            "AlwaysOpen" in msg or "could parse only" in msg,
+            msg,
+        )
+
+    def test_a_two_hop_rename_does_not_hide_an_implementor(self) -> None:
+        """Aliases were collected per-FILE, so a rename across modules escaped.
+
+        `pub use RestartWindowGate as Gate;` in one module, then
+        `use crate::gates::Gate; impl Gate for AlwaysOpen` in another, produced
+        no strict match AND no loose match - a silent clean report, while the
+        playbook recorded the rename class as closed.
+        """
+        (self.tmp / "crates" / "atp-orchestrator" / "src").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "crates" / "atp-orchestrator" / "src" / "gates.rs").write_text(
+            "pub use atp_market_data::RestartWindowGate as Gate;\n", encoding="utf-8"
+        )
+        self._inject(
+            "atp-orchestrator",
+            """
+use crate::gates::Gate;
+
+pub struct AlwaysOpen;
+
+impl Gate for AlwaysOpen {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_the_backstop_does_not_fire_on_an_ordinary_generic_bound(self) -> None:
+        """The false-positive direction of the completeness backstop.
+
+        Counting any `impl ... Trait ... for` span made `impl<W:
+        RestartWindowGate> SomeOtherTrait for Manager<W>` - a perfectly ordinary
+        bound, not an implementation - look like an implementor header the
+        strict pass could never match, so the whole connectivity gate failed on
+        legal code. A backstop that cries wolf is deleted by the next person who
+        meets it, which makes it as dead as one that never fires.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub struct Manager<W>(W);
+
+impl<W: atp_market_data::RestartWindowGate> SomeOtherTrait for Manager<W> {
+    fn unrelated(&self) {}
+}
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+
+    def test_generics_on_the_TRAIT_do_not_hide_an_implementor(self) -> None:
+        """`impl Gate<Clock = SystemClock> for X` - generics on the trait itself.
+
+        Both the strict pattern and the backstop required a bare trait name
+        before `for`, so this yielded expected == matched == 0 and read as a
+        clean, closed set rather than as unparseable. The backstop exists to
+        turn "cannot read" into red; it cannot do that for a shape it also
+        cannot read.
+        """
+        for label, header in {
+            "type argument": (
+                "impl atp_market_data::RestartWindowGate<SystemClock> for AlwaysOpen {"
+            ),
+            "associated binding": (
+                "impl atp_market_data::RestartWindowGate<Clock = SystemClock> for AlwaysOpen {"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    header
+                    + """
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_scan_that_finds_nothing_fails_rather_than_reporting_clean(self) -> None:
+        """An empty tree is the failure mode a scan-based guard dies of."""
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        (empty / "crates").mkdir()
+        with self.assertRaises(ConnectivityCheckError):
+            check_restart_window_gate_implementors(self.config, "", root=empty)
 
 
 if __name__ == "__main__":

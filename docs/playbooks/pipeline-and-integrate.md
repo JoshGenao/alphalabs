@@ -308,3 +308,4 @@ one `main`. Most of this playbook is about that sharing.
   The first version matched a bare `"-p"` and flagged nine innocent files running
   `cargo test -p <crate>`. Give such a guard tests in BOTH directions plus a planted
   offender, so "found nothing" is distinguishable from "scanned nothing". `(2026-09-02)`
+

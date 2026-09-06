@@ -84,3 +84,17 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
 27. **Honest CLI docs:** the `python/` tree is not pip-installed — document
     `PYTHONPATH=python python -m X` and add a subprocess test that runs independent of
     pytest's pythonpath.
+
+- **Give a scan a completeness backstop, not a sixth pattern.** Five separate reviewer
+  findings were "your regex did not anticipate this shape". The fix that ends the class is
+  not a better regex: count the impls a LOOSE pattern can see, count what the strict one
+  parsed, and `fail()` when the strict pass accounts for fewer. Any future shape the
+  parser cannot read then turns the guard red instead of silently shrinking the set it
+  claims is closed. `(SRS-MD-005 r20)`
+
+- **A test cited as proof of an invariant must exercise the branch that could break it.**
+  A module comment named `a_shortened_ttl_shortens_both_directions` as the thing pinning
+  the runtime shorten-only invariant. That test configured 50 ms - below BOTH defaults -
+  so the `min` on the negative branch never bit, and deleting it left the test green.
+  Citing a test by name is a claim about what it covers; check the citation by mutating
+  the thing it is supposed to pin. `(SRS-MD-005 r23)`
