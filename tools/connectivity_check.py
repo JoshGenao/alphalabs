@@ -496,14 +496,73 @@ def _without_test_module(source: str) -> str:
         if match.start() < index:
             continue
         out.append(source[index : match.start()])
+        # Braces inside STRING and CHAR literals are not braces. Counting them
+        # meant a test module containing `let s = "{";` never closed, so the
+        # stripper swallowed the whole rest of the file - and every scan built
+        # on it, including the completeness backstop, then read an empty tail
+        # and reported a clean, closed set.
+        # Braces only count when they are CODE. Rust has four ways to hide one,
+        # and the real tree uses all of them: a string literal, a raw string
+        # (`r#"{"id":1}"#`, 46 of them in one adapter), a line comment, and a
+        # block comment. A lifetime (`'a`) is not a char literal either, and
+        # reading one as an open quote swallowed the rest of the file.
+        #
+        # Counting naively meant a test module never closed and the stripper ate
+        # every production line after it - which every scan built on this then
+        # read as an empty, clean tree.
         depth, cursor = 1, match.end()
         while cursor < len(source) and depth:
             char = source[cursor]
+            two = source[cursor : cursor + 2]
+            if two == "//":
+                nl = source.find("\n", cursor)
+                cursor = len(source) if nl == -1 else nl + 1
+                continue
+            if two == "/*":
+                close = source.find("*/", cursor + 2)
+                cursor = len(source) if close == -1 else close + 2
+                continue
+            if char == "r" and source[cursor + 1 : cursor + 2] in ("#", '"'):
+                hashes = 0
+                probe = cursor + 1
+                while source[probe : probe + 1] == "#":
+                    hashes += 1
+                    probe += 1
+                if source[probe : probe + 1] == '"':
+                    close = source.find('"' + "#" * hashes, probe + 1)
+                    if close != -1:
+                        cursor = close + 1 + hashes
+                        continue
+            if char == '"':
+                probe = cursor + 1
+                while probe < len(source):
+                    if source[probe] == "\\":
+                        probe += 2
+                        continue
+                    if source[probe] == '"':
+                        break
+                    probe += 1
+                cursor = probe + 1
+                continue
+            if char == "'":
+                if source[cursor + 1 : cursor + 2] == "\\":
+                    close = source.find("'", cursor + 2)
+                    cursor = close + 1 if close != -1 else cursor + 1
+                    continue
+                if source[cursor + 2 : cursor + 3] == "'":
+                    cursor += 3
+                    continue
             if char == "{":
                 depth += 1
             elif char == "}":
                 depth -= 1
             cursor += 1
+        if depth:
+            fail(
+                "an unterminated `#[cfg(test)] mod` was found while stripping test code; "
+                "the remainder of the file cannot be classified, so this scan refuses "
+                "rather than reading a truncated source as a clean tree"
+            )
         index = cursor
     out.append(source[index:])
     return "".join(out)

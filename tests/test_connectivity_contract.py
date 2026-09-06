@@ -27,6 +27,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from connectivity_check import (  # noqa: E402
     ConnectivityCheckError,
+    _without_test_module,
     assert_connectivity_static,
     check_brokerage_connectivity_port,
     check_connectivity_event_sink_port,
@@ -855,6 +856,45 @@ class RestartWindowProducerTest(unittest.TestCase):
         self.assertNotEqual(mutated, self.reachability_src, "the connect anchor moved")
         with self.assertRaises(ConnectivityCheckError):
             check_reachability_seam_is_unpinned(self.config, mutated)
+
+
+class TestModuleStripperTest(unittest.TestCase):
+    """Every scan in this file reads `_without_test_module`'s output first.
+
+    It counted braces without knowing where a brace can HIDE, so a
+    `#[cfg(test)] mod tests { let s = "{"; }` never closed and the stripper ate
+    every production line after it. Each scan built on that then read an empty
+    tail and reported a clean, closed set - the worst failure mode for an
+    enumeration whose whole claim is exhaustiveness.
+
+    The real tree uses all six of these; the raw-string case alone appears 46
+    times in one adapter.
+    """
+
+    KEEP = "pub fn keep() { self.subscribers.insert(k, v); }"
+
+    def _tree(self, body: str) -> str:
+        return f"pub fn a() {{}}\n#[cfg(test)]\nmod tests {{\n    {body}\n}}\n{self.KEEP}\n"
+
+    def test_a_brace_that_is_not_code_does_not_extend_the_test_module(self) -> None:
+        for label, body in {
+            "string literal": 'let s = "{";',
+            "raw string": 'let s = r#"{"id":1}"#;',
+            "line comment": "// a stray { here\n",
+            "block comment": "/* a stray { here */",
+            "lifetime": "fn g<'a>(x: &'a str) {}",
+            "char literal": "let c = '}';",
+        }.items():
+            with self.subTest(shape=label):
+                out = _without_test_module(self._tree(body))
+                self.assertIn("keep", out, "production code after the module was swallowed")
+                self.assertNotIn("mod tests", out, "the test module was not stripped")
+
+    def test_an_unterminated_test_module_refuses_rather_than_truncating(self) -> None:
+        """Unparseable is not empty. A truncated read must be red, not clean."""
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            _without_test_module('pub fn a() {}\n#[cfg(test)]\nmod tests {\n    let s = ";\n')
+        self.assertIn("unterminated", str(ctx.exception))
 
 
 class GateImplementorScanTest(unittest.TestCase):

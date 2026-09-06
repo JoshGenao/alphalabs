@@ -85,9 +85,9 @@ pub const RECONNECT_ATTEMPT_BUDGET: Duration = Duration::from_secs(15);
 /// must be exact.
 ///
 /// The residual, stated: a gateway that comes back can be reported unreachable
-/// for up to one second. Against a 300 s default window that is two orders of
-/// magnitude smaller, and it is comfortably inside NFR-R2's 15 s
-/// detection-to-attempt budget.
+/// for up to one second. Against a 300 s default window that is a factor of 300
+/// smaller, and it is comfortably inside NFR-R2's 15 s detection-to-attempt
+/// budget.
 pub const REACHABILITY_CACHE_TTL_NS: i64 = 1_000_000_000;
 
 /// How long a REACHABLE observation may be reused.
@@ -138,7 +138,11 @@ pub const REACHABLE_CACHE_TTL_NS: i64 = 100_000_000;
 // TEN, not five. The prose two lines up argues a ten-times separation; an
 // assert that only pins five cannot fail for the ratio it is cited as enforcing.
 const _: () = assert!(REACHABLE_CACHE_TTL_NS * 10 <= REACHABILITY_CACHE_TTL_NS);
-const _: () = assert!(REACHABLE_CACHE_TTL_NS * 4 <= 1_000_000_000);
+// TEN, matching "an order of magnitude below the NFR-P1 order budget" two
+// rustdocs above. The sibling assert was corrected to `* 10` in round 25 with
+// the note that an assert pinning five cannot fail for a ratio of ten; this one
+// still pinned four for a claim of ten, one line below it.
+const _: () = assert!(REACHABLE_CACHE_TTL_NS * 10 <= 1_000_000_000);
 const _: () = assert!(REACHABLE_CACHE_TTL_NS > 0);
 
 /// One recorded reconnection attempt.

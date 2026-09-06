@@ -1252,10 +1252,17 @@ def test_the_documented_ttl_ratio_is_asserted_at_compile_time() -> None:
     assert "REACHABLE_CACHE_TTL_NS * 10 <= REACHABILITY_CACHE_TTL_NS" in source, (
         "the compile assert must pin the ten-times ratio the rustdoc argues"
     )
-    normalised = " ".join(source.split())
-    assert "two orders of magnitude" not in normalised.lower(), (
-        "10x is one order of magnitude, not two"
-    )
-    assert "four orders below" not in normalised.lower(), (
-        "100 ms against 300 s is a factor of 3,000, not four orders"
+    # Strip the `///` prefixes BEFORE joining. Without that, a phrase wrapped
+    # across two doc-comment lines reads as "...two orders of /// magnitude..."
+    # and the substring test misses it - which it did: one instance survived
+    # round 25's sweep for exactly this reason.
+    prose = " ".join(re.sub(r"^\s*///?", " ", source, flags=re.M).split()).lower()
+    for phrase, why in {
+        "two orders of magnitude": "10x is one order of magnitude, not two",
+        "four orders below": "100 ms against 300 s is a factor of 3,000",
+    }.items():
+        assert phrase not in prose, f"{phrase!r}: {why}"
+
+    assert "REACHABLE_CACHE_TTL_NS * 10 <= 1_000_000_000" in source, (
+        "the NFR-P1 assert must pin the ten-times claim the rustdoc makes, not four"
     )
