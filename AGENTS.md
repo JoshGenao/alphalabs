@@ -92,7 +92,7 @@ back to `main`. No file, branch, or port collisions.
 |----------|------|---------|
 | Always-on rules | `CLAUDE.md` | Auto-loaded in every worktree: the rules whose violation is expensive and silent |
 | Playbooks | `docs/playbooks/` | Distilled lessons from prior sessions, routed by `INDEX.md`; read the matching ones, add to them |
-| Stakeholder requirements | `docs/StRS_v0.7.md` | Why we're building this |
+| Stakeholder requirements | `docs/StRS_v0.8.md` | Why we're building this |
 | System requirements | `docs/SyRS_v0.7.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
 | Feature list | `feature_list.json` | Source of truth for all work |

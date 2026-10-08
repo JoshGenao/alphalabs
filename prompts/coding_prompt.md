@@ -110,7 +110,7 @@ broken, fix that first (it is in-scope for your branch) before building anything
 ```bash
 cat docs/SRS.md         # cross-reference your feature's "srs_ref" — the HOW
 cat docs/SyRS_v0.7.md   # scope: what's in / out (check before adding any dependency)
-cat docs/StRS_v0.7.md   # stakeholder WHY
+cat docs/StRS_v0.8.md   # stakeholder WHY
 ```
 
 Read the architecture/data-systems references under `~/.codex/skills/` (e.g.

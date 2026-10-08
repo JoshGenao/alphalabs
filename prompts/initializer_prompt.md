@@ -19,7 +19,7 @@ ls -la
 Then read every file in the `docs/` folder:
 
 ```bash
-cat docs/StRS_v0.7.md
+cat docs/StRS_v0.8.md
 cat docs/SyRS_v0.7.md
 cat docs/SRS.md
 ```
@@ -35,7 +35,7 @@ ticket. Read them in this order and hold all three in mind simultaneously:
 
 | File | Purpose | Agent use |
 |------|---------|-----------|
-| `docs/StRS_v0.7.md` | **Why** — stakeholder vision, goals, success criteria | Understand priority and intent |
+| `docs/StRS_v0.8.md` | **Why** — stakeholder vision, goals, success criteria | Understand priority and intent |
 | `docs/SyRS_v0.7.md` | **What** — system-level constraints, interfaces, non-functional requirements | Understand scope and boundaries |
 | `docs/SRS.md`  | **How** — software-level functional requirements, module breakdowns | Derive the feature list from this |
 
@@ -195,7 +195,7 @@ Date: [today's date]
 Status: Environment initialised. No features implemented.
 
 Actions taken:
-- Read docs/StRS_v0.7.md, docs/SyRS_v0.7.md, docs/SRS.md
+- Read docs/StRS_v0.8.md, docs/SyRS_v0.7.md, docs/SRS.md
 - Generated feature_list.json with [N] test cases
 - Created init.sh
 - Created AGENTS.md
@@ -234,7 +234,7 @@ Read it first. Follow the links. Do not guess.
 
 | Document | Path | Purpose |
 |----------|------|---------|
-| Stakeholder requirements | `docs/StRS_v0.7.md` | Why we're building this |
+| Stakeholder requirements | `docs/StRS_v0.8.md` | Why we're building this |
 | System requirements | `docs/SyRS_v0.7.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
 | Feature list | `feature_list.json` | Source of truth for all work |
