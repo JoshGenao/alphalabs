@@ -16,14 +16,14 @@ ones.)*
 Requirements flow from stakeholder intent down to developer tickets:
 
 ```
-docs/StRS_v0.8.md  →  docs/SyRS_v0.7.md  →  docs/SRS.md  →  feature_list.json
+docs/StRS_v0.8.md  →  docs/SyRS_v0.8.md  →  docs/SRS.md  →  feature_list.json
      (Why)                 (What)              (How)        (Agent work queue)
 ```
 
 | Document | Read it to understand… |
 |----------|----------------------|
 | `StRS_v0.8.md` | The stakeholder vision, business goals, and success criteria. Use this when you need the *priority* or *intent* behind a requirement. |
-| `SyRS_v0.7.md` | System-level constraints, non-functional requirements, and architectural rules. Use this to understand *scope* and to check whether a proposed approach is in bounds. |
+| `SyRS_v0.8.md` | System-level constraints, non-functional requirements, and architectural rules. Use this to understand *scope* and to check whether a proposed approach is in bounds. |
 | `SRS.md` | Software-level functional requirements, module structure, and acceptance criteria. This is the **primary source for `feature_list.json`**. |
 
 Superseded revisions live in `docs/archive/`. They are history, not truth.
@@ -44,7 +44,7 @@ Superseded revisions live in `docs/archive/`. They are history, not truth.
 
 - Read the requirement your feature traces to (`srs_ref`) before implementing —
   not all three documents end to end.
-- If `SRS.md` conflicts with a constraint in `SyRS_v0.7.md`, **the constraint
+- If `SRS.md` conflicts with a constraint in `SyRS_v0.8.md`, **the constraint
   wins**; record the conflict in your session note.
 - If a requirement is unclear, check `StRS_v0.8.md` for the underlying intent.
 - Never implement a feature that cannot be traced to a requirement in `SRS.md`.

@@ -30,7 +30,7 @@ the ``unified_historical_data`` (API-7) block, which pins the provider-facing ad
 
 The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS``. This check is contract EVIDENCE that the query
 substrate is correctly built and stays a regression gate. SRS-DATA-007 is COMPLETE and closes to passes:true at integration (close_feature.py --verified flips feature_list.json under the scheduler lock; this branch deliberately does NOT edit that file): its AC is a CONTRACT TEST
-(docs/SRS.md line 177) proving all four named consumers query this provider-neutral interface. The in-process consumer binding (the Python ``StoreBackedHistoricalData``; see
+(docs/SRS.md, SRS-DATA-007 row) proving all four named consumers query this provider-neutral interface. The in-process consumer binding (the Python ``StoreBackedHistoricalData``; see
 ``tools/store_history_check.py`` + ``store_history_binding_contract``) reads this engine by
 symbol/date-range/resolution with no provider named, serving RAW verbatim AND the gated SPLIT_ADJUSTED
 (the HistoricalData Protocol default) through the SRS-DATA-011 coverage gate (an uncovered query fails
@@ -42,7 +42,7 @@ store path in BacktestEngine::run); the FACTOR-JOB consumer now READS the store
 run_scheduled_factor_job_over_store DERIVES its data as-of from the calendar's session_as_of_ts for the
 scheduled session, so a caller cannot pair a session with a future as-of -- only the concrete real-calendar
 mapping is deferred, see SRS-FAC-001); and strategy + notebook/research code read via the binding. The Jupyter
-notebook HOST is the SEPARATE SRS-RES-002 feature (docs/SRS.md line 209), not a DATA-007 consumer gap -- the notebook DATA ACCESS goes through the binding. Other owners
+notebook HOST is the SEPARATE SRS-RES-002 feature (docs/SRS.md, SRS-RES-002 row), not a DATA-007 consumer gap -- the notebook DATA ACCESS goes through the binding. Other owners
 that compose this read path also remain deferred (the real provider network
 adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the LIVE-subscription
 normalization selection of SRS-DATA-012 (all four historical modes are served), SSD/NAS tiering via

@@ -6,7 +6,7 @@ Two layers of drift protection (mirrors ``tools/perf_measurement_check.py``):
   ``availability_measurement_contract`` block in ``runtime_services.json``;
 * the distinctive NFR-R1 phrases the contract pins (99.9%, rolling 30-day period,
   market-holiday exclusion, the SYS-75 restart exclusion, the 1.17-minute
-  approximation) are actually present in ``docs/SyRS_v0.7.md`` — so the JSON cannot
+  approximation) are actually present in ``docs/SyRS_v0.8.md`` — so the JSON cannot
   silently diverge from the spec.
 """
 

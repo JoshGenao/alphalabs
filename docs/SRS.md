@@ -1,10 +1,10 @@
 # Software Requirements Specification (SRS)
 
 **Document ID:** SRS-001  
-**Version:** 0.3  
-**Status:** Review-response patch applied  
-**Last updated:** 2026-05-02  
-**Traces from:** StRS v0.7 and SyRS v0.7
+**Version:** 0.5  
+**Status:** MVP release scope set (Section 3.1)  
+**Last updated:** 2026-10-08  
+**Traces from:** StRS v0.8 and SyRS v0.8
 
 ---
 
@@ -12,8 +12,8 @@
 
 This Software Requirements Specification defines the software-level
 requirements for the Algorithmic Trading Platform (ATP). It translates
-stakeholder needs from `docs/archive/StRS/StRS_v0.7.md` and system requirements from
-`docs/SyRS_v0.7.md` into implementable, verifiable software requirements.
+stakeholder needs from `docs/StRS_v0.8.md` and system requirements from
+`docs/SyRS_v0.8.md` into implementable, verifiable software requirements.
 
 This document is the authoritative source for deriving `feature_list.json`,
 software design tasks, verification cases, and implementation acceptance
@@ -79,6 +79,71 @@ Out of scope:
 - Credential rotation without service restart for IB, SMTP, and push
   credentials. Encryption-at-rest is required (SRS-SEC-001); rotation without
   service restart is deferred to a future phase.
+
+### 3.1 Releases: what the MVP requires
+
+StRS v0.8 Section 1.1 defines the MVP: one Python strategy trading stocks
+and multi-leg options live through IB, on a watchlist of fewer than 100
+symbols, with up to 5 paper strategies, a manual Hot-Swap, and automatic
+recovery. SyRS v0.8 Section 1.1 carries it to the system level. This
+section assigns every requirement in Sections 5 through 8 to a release.
+The requirement rows themselves are unchanged from v0.4, because tools
+and tests parse them.
+
+- **R2:** deferred to Release 2. The feature is out of MVP scope, and no
+  MVP feature may wait on it.
+- **Split:** the MVP acceptance criteria in the table below replace the
+  row's acceptance criteria for the MVP. The rest of the row is R2.
+- **MVP:** every requirement not listed below is required as written,
+  read through the global rules.
+
+The five global rules in SyRS v0.8 Section 1.1 apply here unchanged:
+SSD-only storage, host-clock latency measurement at p95, a 1 live + 5
+paper baseline wherever "release baseline load" or "at least 30 paper
+strategies" appears, the Reservoir as the set of paper strategies, and no
+MVP dependency on an R2 requirement.
+
+#### R2 requirements
+
+| ID | What it was for |
+|----|-----------------|
+| SRS-SDK-008 | Renko and range bars |
+| SRS-DATA-005 | Sharadar fundamentals ingestion |
+| SRS-DATA-009 | NAS cold-read fallback |
+| SRS-DATA-010 | SSD eviction policy |
+| SRS-DATA-014 | Ingestion anomaly detection |
+| SRS-FAC-001 | Full-universe factor pipeline |
+| SRS-RESV-002 | Reservoir ranking over an evaluation window |
+| SRS-REL-001 | Measured 99.9% market-hours availability |
+| SRS-PERF-001 | PTP-disciplined latency measurement |
+
+#### MVP acceptance criteria for Split requirements
+
+| ID | MVP acceptance criteria | R2 part |
+|----|-------------------------|---------|
+| SRS-EXE-001 | As written, with "at least 30 paper strategies" read as "5 paper strategies", and the 1,000 ms p95 acknowledgement measured with the host monotonic clock. | 30-paper load; PTP measurement. |
+| SRS-DATA-001 | A nightly job retrieves daily OHLCV bars from Databento for every watchlist symbol and the benchmark (default SPY), writes validated data to the SSD, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day. | 8,000+ securities; NAS sync. |
+| SRS-DATA-003 | Backfill retrieves the maximum available Databento daily and minute history for the watchlist symbols and the benchmark, with floors of ≥ 15 years daily and ≥ 6 months minute for each symbol that has that much history; a symbol with less records a deviation note. A symbol added to the watchlist later is backfilled the same way. Data is stored through the same validation and catalog path as incremental ingestion. | Full-universe backfill. |
+| SRS-DATA-004 | As written, limited to option chains whose underlying is on the watchlist, stored on the SSD. | Underlyings beyond the watchlist; NAS. |
+| SRS-DATA-008 | All ingestion writes to the SSD, which retains all ingested data indefinitely; Section 12.1 growth estimates cover the watchlist scope. | NAS sync and the 90-day SSD window. |
+| SRS-DATA-018 | Weekly default backups export the SSD-retained market data and backtest results to an external target (the NAS may be the target); completion validates integrity; RPO is no more than 7 days. | Backup of the NAS archival tier. |
+| SRS-DATA-019 | **Detect and halt, live.** When corporate-action data marks a split, reverse split, dividend, delisting, merger, or symbol change effective today on a security in which the live strategy has a resting order or an open position: (1) the strategy's resting orders in that security are cancelled before the regular session opens; (2) new orders in that security are rejected with structured error `CORPORATE_ACTION_HALT` until the operator clears the halt through the dashboard, CLI, or REST API; (3) the operator is notified through the strategy callback, the dashboard, and the notification subsystem. | Automatic adjustment of resting order quantities and prices. |
+| SRS-DATA-020 | Live position quantity and cost basis are never adjusted by the software. When the operator clears a halt, the live position in that security is re-read from the IB account, and any difference from stored state is shown on the dashboard. | Automatic adjustment and successor remapping of live positions. |
+| SRS-DATA-021 | **Detect and halt, paper.** On the SRS-DATA-019 trigger, for each paper strategy holding or ordering the security: its virtual resting orders in the security are cancelled; its virtual position is closed at the prior session's closing price and recorded as a corporate-action close; new virtual orders in the security are rejected with `CORPORATE_ACTION_HALT` until the halt is cleared. One clear action per security covers the live strategy and all paper strategies. | Automatic adjustment of virtual positions and orders. |
+| SRS-RESV-001 | One live strategy and 5 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements. | 30 paper strategies. |
+| SRS-RESV-003 | Manual promotion is available and every swap trigger is logged. | Drawdown-triggered demotion, top-ranked promotion, and highest-momentum promotion. |
+| SRS-UI-003 | Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, and each paper strategy's simulated P&L, Sharpe ratio, and Sortino ratio since it started. | Paper strategy rankings and momentum scores. |
+| SRS-API-001 | As written, without Reservoir ranking. | Reservoir ranking paths. |
+| UI-1 | As written, with "Reservoir rankings" read as the paper strategy list from SRS-UI-003. | Reservoir rankings. |
+| UI-5 | User can trigger manual promotion, inspect demotion-pending state, and view cool-down expiry. | Automatic-trigger configuration. |
+| API-2 | As written, without Reservoir ranking. | Reservoir ranking. |
+| API-3 | As written, without Reservoir ranking. | Reservoir ranking. |
+| API-6 | Watchlist daily download, watchlist backfill, incremental update, options import, and user Parquet import. | Full-universe bulk download and fundamentals ingestion. |
+
+Section 9.1 acceptance scenarios apply as narrowed here: the "Data
+ingestion" scenario covers the watchlist and the benchmark on the SSD, the
+"Reservoir ranking" scenario is R2, and the "Hot-Swap" scenario uses a
+manual trigger.
 
 ## 4. Software Architecture Modules
 
@@ -607,3 +672,4 @@ following table with an owner and target resolution date.
 | 0.2 review patch | 2026-04-30 | Codex | Addressed SRS review findings: completed partial SyRS flowdown, split mixed-priority requirements, added Strategy API documentation requirement, added storage growth estimates, clarified cloud deployment as a future target, and kept platform pre-trade risk controls out of scope. |
 | 0.3 | 2026-05-02 | Claude (review-response patch) | Incorporated stakeholder responses to v0.2 review findings. Clarified SRS-SDK-001 paper-mode terminology (live IB execution vs. internal paper simulation with live market data, QuantConnect-style fictional capital). Expanded SRS-EXE-005 to cover the NFR-R3 user-accessible state dictionary, account equity snapshot, position state, and warm-up re-execution within the 60-second recovery target. Added SRS-EXE-008 (order lifecycle state machine with documented states, transitions, and client correlation ID idempotency). Added SRS-EXE-009 (durable outbox commit before IB submission with restart reconciliation against acknowledged broker IDs). Added SRS-MD-007 (market-data sequence gap detection with stale-state propagation). Added SRS-PERF-001 (PTP-disciplined clock and p50/p95/p99/p99.9 reporting for latency NFRs). Rewrote SRS-SEC-002 to bind dashboard/API to RFC 1918 / loopback addresses by default. Updated SRS-SAFE-001 to align with the QuantConnect Liquidate sequence and added HALTED-state observability through SRS-LOG-001 within 1 second under NFR-SC1. Updated SRS-DATA-003 backfill targets to concrete floors (≥ 15 years daily, ≥ 6 months minute) with deviation-note fallback. Added a future-scope item for credential rotation without service restart. Added §13.1 TBD Register noting no open TBDs at v0.2 baseline. Updated reverse SyRS coverage in §10.2 to include the new SRS IDs. |
 | 0.4 | 2026-08-17 | Claude (SRS-NOTIF-001) | **IF-11 changed from SMS to push notification.** SN-1.12's Phase 1 channels are now email + push (ntfy); SMS moves to future phases alongside Telegram and Discord. Rationale: US A2P 10DLC registration is weeks of lead time and carriers filter unregistered traffic silently, so an SMS channel could not be proven to deliver — while a self-hosted ntfy on the LAN, reached from the operator's phone over VPN, preserves SN-1.12's intent of reaching the operator when they are not looking. Updated IF-11, SYS-44b, SYS-46, SYS-49c, NFR-P6, NFR-S4, the data dictionary and the cost model. SC-9 ("at least two configured channels") is unchanged and still satisfied. Notification-channel credentials are now ATP_PUSH_TOKEN and ATP_PUSH_TOPIC; the topic is catalogued **secret** because on ntfy holding the topic is by itself enough to publish. |
+| 0.5 | 2026-10-08 | Claude (MVP scope) | **MVP release scope.** Added Section 3.1, which carries StRS v0.8 and SyRS v0.8 down to every SRS requirement. Nine requirements move to R2: SRS-SDK-008, SRS-DATA-005, SRS-DATA-009, SRS-DATA-010, SRS-DATA-014, SRS-FAC-001, SRS-RESV-002, SRS-REL-001, and SRS-PERF-001. Eighteen are Split, each with MVP acceptance criteria: SRS-EXE-001, SRS-DATA-001, -003, -004, -008, -018, -019, -020, -021, SRS-RESV-001, SRS-RESV-003, SRS-UI-003, SRS-API-001, UI-1, UI-5, API-2, API-3, and API-6. Corporate actions in live and paper become detect-and-halt with the new structured error `CORPORATE_ACTION_HALT`. Requirement rows in Sections 5 through 8 are unchanged so that tools and tests that parse them keep working. Traces now point at StRS v0.8 and SyRS v0.8. |
