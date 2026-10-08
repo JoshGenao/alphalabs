@@ -19,6 +19,7 @@ def _feat(fid, **kw):
         "id": fid,
         "category": "data",
         "priority": "P1",
+        "release": "MVP",
         "passes": False,
         "needs_clarification": False,
         "description": f"{fid} description",

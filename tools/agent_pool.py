@@ -443,9 +443,63 @@ def worktree_dirty(wt: Path) -> bool:
 # ----------------------------------------------------------------------------
 # Scheduling core
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Release scope (docs/SRS.md §3.1). The scheduler works one release at a time.
+# ----------------------------------------------------------------------------
+ACTIVE_RELEASE = "MVP"
+KNOWN_RELEASES = ("MVP", "R2")
+
+
+def release_of(feat: dict) -> str:
+    """The feature's declared ``release``, or "" when absent or blank."""
+    return str(feat.get("release") or "").strip()
+
+
+def in_active_release(feat: dict) -> bool:
+    return release_of(feat) == ACTIVE_RELEASE
+
+
+def deferred(feat: dict) -> bool:
+    """Explicitly tagged for a later, known release.
+
+    Only an explicit tag defers. A missing or misspelled ``release`` is NOT
+    deferred: it is unknown, and unknown fails closed (CLAUDE.md rule 3) — the
+    feature is never offered, and any feature that depends on it stays blocked,
+    until someone tags it. Treating "no tag" as either MVP or R2 would decide
+    scope silently.
+    """
+    r = release_of(feat)
+    return r in KNOWN_RELEASES and r != ACTIVE_RELEASE
+
+
+def unknown_release(features) -> list[str]:
+    """Feature ids whose ``release`` is missing or not one of KNOWN_RELEASES."""
+    return sorted(f["id"] for f in features if release_of(f) not in KNOWN_RELEASES)
+
+
+def live_deps(deps: dict, by_id: dict) -> dict:
+    """The dependency edges that constrain the active release.
+
+    An edge ``f -> p`` is dropped when ``f`` is deferred (nobody schedules it) or
+    when ``p`` is deferred: an active-release feature never waits on a later one
+    (SyRS §1.1 global rule 5). The edges stay in tools/feature_deps.json, so
+    moving a feature back into the active release restores them. Ids not in
+    ``by_id`` are kept as before; ``compute`` already ignores them.
+    """
+    out = {}
+    for f, prereqs in deps.items():
+        if f in by_id and deferred(by_id[f]):
+            continue
+        kept = [p for p in prereqs if not (p in by_id and deferred(by_id[p]))]
+        if kept:
+            out[f] = kept
+    return out
+
+
 def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
     """Return (ready, blocked, active_leases, held_subsystems, by_id)."""
     by_id = {f["id"]: f for f in features}
+    deps = live_deps(deps, by_id)
     passed = {fid for fid, f in by_id.items() if f.get("passes") is True}
     now = time.time()
     active = {
@@ -458,6 +512,10 @@ def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
     ready, blocked = [], {}
     for fid, f in by_id.items():
         if f.get("passes") is True or f.get("needs_clarification") is True:
+            continue
+        # Out of the active release, or untagged (fails closed): never offered.
+        # `status` lists both, so a missing tag cannot hide a feature silently.
+        if not in_active_release(f):
             continue
         # A blocker no FEATURE owns. `block --on` cannot express "needs 30 real
         # market-hours days" or "needs an SMS provider account", because the thing
@@ -494,11 +552,13 @@ def externally_blocked(features) -> dict:
 
     A feature that has since closed keeps no claim on the operator's attention,
     so an already-green feature with a stale ``external_blocker`` is not listed.
+    Neither is a deferred one: nobody needs to obtain a resource for work that
+    is out of the active release.
     """
     return {
         f["id"]: external_blocker(f)
         for f in features
-        if external_blocker(f) and f.get("passes") is not True
+        if external_blocker(f) and f.get("passes") is not True and not deferred(f)
     }
 
 
@@ -509,8 +569,10 @@ def impact_scores(deps: dict, by_id: dict) -> dict:
     for a prerequisite ``p``, every feature that (directly or transitively)
     depends on ``p`` — i.e. the work ``p`` unlocks. Higher = more of a keystone.
     Used to steer the greedy scheduler toward features that open the most
-    downstream work instead of the alphabetically-first leaf.
+    downstream work instead of the alphabetically-first leaf. Only edges live in
+    the active release count, so deferred work does not inflate a keystone.
     """
+    deps = live_deps(deps, by_id)
     rev: dict = {}
     for f, prereqs in deps.items():
         for p in prereqs:
@@ -666,8 +728,14 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
     ``integrate --force-complete`` or the ``verified-e2e`` label.
     """
     ready, blocked, active, held, by_id = compute(features, deps, runtime)
-    total = len(by_id)
-    passed = [fid for fid, f in by_id.items() if f.get("passes") is True]
+    # "Done" is scoped to the active release. Untagged features stay IN scope:
+    # a release whose scope is unknown cannot be declared finished.
+    in_scope = [fid for fid, f in by_id.items() if not deferred(f)]
+    total = len(in_scope)
+    passed = [fid for fid in in_scope if by_id[fid].get("passes") is True]
+    deferred_open = sorted(
+        fid for fid, f in by_id.items() if deferred(f) and f.get("passes") is not True
+    )
     awaiting = sorted(serialized_notes() & set(ready)) if skip_awaiting else []
     awaiting_set = set(awaiting)
     claimable = [fid for fid in ready if fid not in awaiting_set]
@@ -704,6 +772,9 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
         "external_blocked": external,
         "external_root_blockers": external_roots,
         "active": active,
+        "release": ACTIVE_RELEASE,
+        "deferred": deferred_open,
+        "unknown_release": unknown_release(features),
     }
 
 
@@ -725,6 +796,13 @@ def deadlock_advice(assessment: dict) -> list:
       · guarded   — the work may be done; it needs a human to verify and attest.
     """
     lines = []
+    untagged = assessment.get("unknown_release") or []
+    if untagged:
+        lines.append(
+            f"these have no valid release tag, so nothing schedules them — set "
+            f'"release" to one of {"/".join(KNOWN_RELEASES)} in feature_list.json '
+            f"(docs/SRS.md §3.1): " + ", ".join(untagged[:5])
+        )
     external = assessment.get("external_root_blockers") or []
     reasons = assessment.get("external_blocked") or {}
     if external:
@@ -881,18 +959,29 @@ def cmd_status(args):
                     "guarded_root_blockers": assessment["guarded_root_blockers"],
                     "external_blocked": assessment["external_blocked"],
                     "external_root_blockers": assessment["external_root_blockers"],
+                    "release": assessment["release"],
+                    "deferred": assessment["deferred"],
+                    "unknown_release": assessment["unknown_release"],
                 },
                 indent=2,
             )
         )
         return 0
 
-    done = sum(1 for f in by_id.values() if f.get("passes"))
     print(
-        f"== agent pool == done:{done}/{assessment['total']}  ready:{len(claimable)}  "
-        f"awaiting-verify:{len(awaiting)}  blocked:{len(blocked)}  leased:{len(active)}"
+        f"== agent pool [{assessment['release']}] == "
+        f"done:{assessment['passed']}/{assessment['total']}  ready:{len(claimable)}  "
+        f"awaiting-verify:{len(awaiting)}  blocked:{len(blocked)}  leased:{len(active)}  "
+        f"deferred:{len(assessment['deferred'])}"
     )
     print(f"   frontier: {assessment['state'].upper()}")
+    if assessment["unknown_release"]:
+        print(
+            f"   ⚠ {len(assessment['unknown_release'])} feature(s) have no valid release "
+            f'tag and are never scheduled — set "release" to one of '
+            f"{'/'.join(KNOWN_RELEASES)} in feature_list.json (docs/SRS.md §3.1): "
+            + ", ".join(assessment["unknown_release"][:5])
+        )
 
     # How much of `done` is actually backed by evidence. A feature closed before
     # the evidence gate existed is not re-verified and must not read as if it were.
@@ -971,6 +1060,9 @@ def cmd_status(args):
         print("\n-- blocked on an external resource (operator; no feature owns these) --")
         for fid in sorted(ext, key=lambda f: (-impact.get(f, 0), f)):
             print(f"  {fid:18} unblocks:{impact.get(fid, 0):<3} {ext[fid]}")
+    if assessment["deferred"]:
+        print("\n-- deferred to a later release (not scheduled; docs/SRS.md §3.1) --")
+        print("  " + ", ".join(assessment["deferred"]))
     nc = [f for f, x in by_id.items() if x.get("needs_clarification")]
     if nc:
         print("\n-- needs clarification (operator) --")
@@ -1105,6 +1197,18 @@ def cmd_claim(args):
             if by_id[fid].get("passes") is True:
                 print(f"✗ {fid} already passes on origin/main — nothing to close.", file=sys.stderr)
                 return 1
+            # Scope is the one guard --id does NOT bypass. The frontier filters
+            # protect an autonomous agent from churn; the release tag records a
+            # stakeholder decision, and a claim is not the place to reverse it.
+            if not in_active_release(by_id[fid]):
+                tag = release_of(by_id[fid]) or "(missing)"
+                print(
+                    f"✗ {fid} has release={tag}, outside the active {ACTIVE_RELEASE} scope.\n"
+                    f"  To work on it, move it into {ACTIVE_RELEASE} first: docs/SRS.md §3.1 "
+                    f'and its "release" in feature_list.json, on main.',
+                    file=sys.stderr,
+                )
+                return 1
             lease = active.get(fid)
             if lease and lease.get("owner") != owner and not args.reclaim:
                 print(
@@ -1164,7 +1268,15 @@ def cmd_claim(args):
             assessment = assess_frontier(features, deps, runtime, skip_awaiting=skip_awaiting)
             note = []
             if assessment["state"] == "done":
-                note.append("ALL features pass — the application is complete. 🎉")
+                note.append(
+                    f"ALL {ACTIVE_RELEASE} features pass — the {ACTIVE_RELEASE} is complete. 🎉"
+                    + (
+                        f" {len(assessment['deferred'])} feature(s) remain deferred to a "
+                        f"later release (docs/SRS.md §3.1)."
+                        if assessment["deferred"]
+                        else ""
+                    )
+                )
             elif assessment["state"] == "deadlock":
                 note.append(
                     "DEADLOCK — no autonomous progress possible; every remaining "
@@ -1208,7 +1320,8 @@ def cmd_claim(args):
 def cmd_block(args):
     fid = args.id
     with Lock():
-        ids = {f["id"] for f in load_features(fetch=False)}
+        feats = {f["id"]: f for f in load_features(fetch=False)}
+        ids = set(feats)
         if fid not in ids:
             print(f"✗ unknown feature id: {fid}", file=sys.stderr)
             return 1
@@ -1221,6 +1334,22 @@ def cmd_block(args):
                     f"✗ unknown dependency id: {u}" + (f" (did you mean {hint}?)" if hint else ""),
                     file=sys.stderr,
                 )
+            return 1
+        # An edge onto a deferred feature would be recorded and then ignored by
+        # live_deps(), so the feature would come straight back to the frontier and
+        # the agent would churn on it. Refuse it here instead, all-or-nothing like
+        # the cycle check below: MVP work never waits on R2 (SyRS §1.1 rule 5).
+        later = sorted(d for d in known if deferred(feats[d]))
+        if later and not deferred(feats[fid]):
+            print(
+                f"✗ {fid}: refusing to record — {', '.join(later)} "
+                f"{'is' if len(later) == 1 else 'are'} deferred to a later release, and "
+                f"{ACTIVE_RELEASE} work never waits on deferred work (SyRS §1.1 rule 5). "
+                f"NOTHING was written.\n"
+                f"  Build the piece {fid} actually needs as part of {fid}, or ask the "
+                f"operator to move it into {ACTIVE_RELEASE} (docs/SRS.md §3.1).",
+                file=sys.stderr,
+            )
             return 1
         # Cycle-forming edges are REFUSED, and refusing is a failure — not a
         # warning on the way to exit 0. The old code dropped them, printed
