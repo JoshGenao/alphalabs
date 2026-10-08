@@ -15,7 +15,9 @@ Read it first. Follow the links. Do not guess.
    (~170k tokens); it would consume the context window you need for the work.
    Query it instead: `python3 tools/progress_query.py --feature <id>`.
 5. `git log --oneline -20` - understand recent changes
-6. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
+6. `python3 tools/agent_pool.py status` - remaining work in the active release.
+   Every feature carries `"release": "MVP"` or `"R2"` (`docs/SRS.md` §3.1); the
+   scheduler offers MVP only, so do not count `"passes": false` lines by hand.
 
 See `prompts/coding_prompt.md` for the full per-session workflow.
 

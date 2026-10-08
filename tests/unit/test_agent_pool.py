@@ -19,11 +19,14 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _feat(fid, category="data", passes=False, priority="P1", description="", steps=None):
+def _feat(
+    fid, category="data", passes=False, priority="P1", description="", steps=None, release="MVP"
+):
     return {
         "id": fid,
         "category": category,
         "priority": priority,
+        "release": release,
         "passes": passes,
         "needs_clarification": False,
         "description": description,

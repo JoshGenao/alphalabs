@@ -128,6 +128,14 @@ discover mid-build that you need an *unbuilt* prerequisite. Handle that in Step 
 If your feature is `needs_clarification:true`, STOP: record why in the session
 note, `python3 tools/agent_pool.py release "$ATP_FEATURE_ID"`, and end.
 
+**Build the active release only.** Every feature carries a `release` tag
+(`MVP` or `R2`; `docs/SRS.md` §3.1). The scheduler only hands out `MVP` work.
+If your Step 3 reads "Verify MVP acceptance criteria (docs/SRS.md §3.1)", those
+criteria are the target, and the "Out of MVP scope (R2)" part is not yours to
+build. If your feature needs a piece of an `R2` feature, build that piece as part
+of your feature: MVP work never waits on R2 work, and `block --on` refuses the
+edge (SyRS §1.1 rule 5).
+
 ---
 
 ## Step 4.1 — Plan & get operator approval (you are in PLAN MODE)
@@ -183,6 +191,7 @@ agent could claim and no human could close (`docs/verification-queue.md`).
 | another **feature** that isn't built | `agent_pool.py block --on <ids>` |
 | a **real-world resource no feature owns** — an account you have not bought, hardware you do not have, calendar time that has not elapsed | an `"external_blocker"` on the feature in `feature_list.json` |
 | nothing; the work is done and only evidence is missing | neither — finish the record and close it |
+| a feature tagged `R2` (deferred) | neither — build the piece you need inside your feature; `block --on` refuses the edge |
 
 **Never use `block --on` for the second kind.** A dependency edge asserts that some
 feature owns the blocker; if none does, the edge never clears and the feature is

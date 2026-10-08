@@ -260,6 +260,10 @@ def build_queue(features=None, deps=None, runtime=None) -> dict:
     for fid, feat in by_id.items():
         if feat.get("passes") is True or feat.get("needs_clarification") is True:
             continue
+        # Deferred to a later release: not in this queue. Untagged features stay
+        # in it, and find_drift reports them — unknown scope is never silence.
+        if agent_pool.deferred(feat):
+            continue
         cls = classify(fid, feat, blocked, cycle_members)
         rows.append(
             {
@@ -367,6 +371,20 @@ def find_drift(queue: dict) -> list:
                         "action": f"re-run the affected steps: evidence.py run {fid} --step N -- ...",
                     }
                 )
+
+    # A feature with no valid release tag is never scheduled (agent_pool fails
+    # closed on it), so without this it would sit in the queue looking actionable.
+    for fid in agent_pool.unknown_release(queue["features"]):
+        findings.append(
+            {
+                "kind": "untagged-release",
+                "severity": "high",
+                "id": fid,
+                "detail": "no valid release tag — the scheduler will never offer it",
+                "action": f'set "release" to one of {"/".join(agent_pool.KNOWN_RELEASES)} '
+                f"in feature_list.json (docs/SRS.md §3.1)",
+            }
+        )
 
     # A feature marked passing that was never evidenced. Honest bookkeeping, not an
     # accusation — but it must not read as verified when `status` counts it as done.
