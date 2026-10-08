@@ -18,7 +18,7 @@ artifacts." The contract guarantees:
       metadata and ``perf.rs`` (``REPORTED_PERCENTILES`` + ``Percentile::per_mille``);
   (b) the ``LatencyNfr`` catalog covers exactly the seven AC NFRs;
   (c) each NFR's budget(s) MATCH its spec measurement condition — NFR-P1/P4/P5/
-      P6/P9/P10 against the SyRS §5.1 table (``docs/SyRS_v0.7.md`` `<`/`≤` ms) and
+      P6/P9/P10 against the SyRS §5.1 table (``docs/SyRS_v0.8.md`` `<`/`≤` ms) and
       SRS-MD-001 fan-out against the SRS requirement row (``docs/SRS.md`` prose
       "no more than 100 ms") — the "boundaries match the measurement conditions"
       AC clause, enforced by inspection;
@@ -150,7 +150,7 @@ def _compact(text: str) -> str:
 # --------------------------------------------------------------------------- #
 # Spec-doc parsing (the "boundaries match the measurement conditions" authority)
 #
-# Most budgets live in the SyRS §5.1 performance table (docs/SyRS_v0.7.md) with an
+# Most budgets live in the SyRS §5.1 performance table (docs/SyRS_v0.8.md) with an
 # explicit `<`/`≤ N ms`. The SRS-MD-001 fan-out budget lives in the SRS
 # requirement row (docs/SRS.md) stated in prose ("no more than 100 ms additional
 # latency"), so it is validated separately.

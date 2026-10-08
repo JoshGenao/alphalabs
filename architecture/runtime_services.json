@@ -10355,7 +10355,7 @@
     "evidence_module": "python/atp_reliability/evidence.py",
     "cli_module": "python/atp_reliability/cli.py",
     "cli_entry": "PYTHONPATH=python python -m atp_reliability",
-    "syrs_doc": "docs/SyRS_v0.7.md",
+    "syrs_doc": "docs/SyRS_v0.8.md",
     "srs_doc": "docs/SRS.md",
     "verification_method": "Analysis, system test",
     "target_per_mille": 999,
@@ -10430,7 +10430,7 @@
     "evidence_module": "python/atp_reliability/boot_evidence.py",
     "cli_module": "python/atp_reliability/restart_cli.py",
     "cli_entry": "PYTHONPATH=python python -m atp_reliability.restart_cli",
-    "syrs_doc": "docs/SyRS_v0.7.md",
+    "syrs_doc": "docs/SyRS_v0.8.md",
     "srs_doc": "docs/SRS.md",
     "verification_method": "System test",
     "budget_seconds": 600,
@@ -10511,7 +10511,7 @@
   },
   "perf_measurement_contract": {
     "requirement": "SRS-PERF-001",
-    "description": "SRS-PERF-001 (the software shall measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50/p95/p99/p99.9 percentiles in verification artifacts; SyRS 5.1 NFR-P1 / NFR-P4 / NFR-P5 / NFR-P6 / NFR-P9 / NFR-P10 + SRS-MD-001 fan-out latency; StRS SN-1.01 / SN-2.03). SCOPE: this contract pins the vendor- and runtime-neutral MEASUREMENT SUBSTRATE in crates/atp-types/src/perf.rs -- the pure nearest-rank percentile engine (LatencyPercentiles over nanosecond samples: p50/p95/p99/p99.9, every reported value an actually-observed sample, no interpolation), the PtpClockDiscipline offset-bound model (Disciplined{max_offset_ns} vs Undisciplined), the LatencyNfr catalog binding each of the seven AC NFRs to its measurement boundary + budget(s), and the LatencyVerificationArtifact report type. The artifact constructor (from_samples) FAILS CLOSED: it rejects a non-PTP-disciplined clock (so a produced artifact always documents a max clock offset bound), an empty/inverted measurement window, and an empty sample set -- so every artifact carries the four percentiles, a documented offset, and a real window. tools/perf_measurement_check.py asserts each NFR budget + boundary phrase in the catalog matches its measurement condition in the spec docs: NFR-P1/P4/P5/P6/P9/P10 against the SyRS 5.1 performance table (docs/SyRS_v0.7.md, explicit '<'/'<=' ms budgets), and the SRS-MD-001 fan-out budget against the SRS requirement row (docs/SRS.md, the prose 'no more than 100 ms additional latency' AC) -- so 'measurement boundaries match the measurement conditions for each NFR' is enforced by inspection. NFR-P4 reuses the authoritative LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS constants and NFR-P9 reuses STRATEGY_STARTUP_DEADLINE_MS (no duplication); NFR-P6 mirrors atp_notification::event::DISPATCH_SLA_MS (a crate above dependency-free atp-types, so it cannot be imported) and both trace SyRS NFR-P6, pinned to it here. DEFERRED: this substrate performs NO measurement itself (no clock I/O; samples + the clock offset bound are supplied by the runtimes each NFR measures). Producing the REAL end-to-end verification artifacts requires those runtimes plus a PTP-disciplined host clock (a deployment/operator + hardware inspection that cannot run in the parallel sandbox), so SRS-PERF-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
+    "description": "SRS-PERF-001 (the software shall measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50/p95/p99/p99.9 percentiles in verification artifacts; SyRS 5.1 NFR-P1 / NFR-P4 / NFR-P5 / NFR-P6 / NFR-P9 / NFR-P10 + SRS-MD-001 fan-out latency; StRS SN-1.01 / SN-2.03). SCOPE: this contract pins the vendor- and runtime-neutral MEASUREMENT SUBSTRATE in crates/atp-types/src/perf.rs -- the pure nearest-rank percentile engine (LatencyPercentiles over nanosecond samples: p50/p95/p99/p99.9, every reported value an actually-observed sample, no interpolation), the PtpClockDiscipline offset-bound model (Disciplined{max_offset_ns} vs Undisciplined), the LatencyNfr catalog binding each of the seven AC NFRs to its measurement boundary + budget(s), and the LatencyVerificationArtifact report type. The artifact constructor (from_samples) FAILS CLOSED: it rejects a non-PTP-disciplined clock (so a produced artifact always documents a max clock offset bound), an empty/inverted measurement window, and an empty sample set -- so every artifact carries the four percentiles, a documented offset, and a real window. tools/perf_measurement_check.py asserts each NFR budget + boundary phrase in the catalog matches its measurement condition in the spec docs: NFR-P1/P4/P5/P6/P9/P10 against the SyRS 5.1 performance table (docs/SyRS_v0.8.md, explicit '<'/'<=' ms budgets), and the SRS-MD-001 fan-out budget against the SRS requirement row (docs/SRS.md, the prose 'no more than 100 ms additional latency' AC) -- so 'measurement boundaries match the measurement conditions for each NFR' is enforced by inspection. NFR-P4 reuses the authoritative LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS constants and NFR-P9 reuses STRATEGY_STARTUP_DEADLINE_MS (no duplication); NFR-P6 mirrors atp_notification::event::DISPATCH_SLA_MS (a crate above dependency-free atp-types, so it cannot be imported) and both trace SyRS NFR-P6, pinned to it here. DEFERRED: this substrate performs NO measurement itself (no clock I/O; samples + the clock offset bound are supplied by the runtimes each NFR measures). Producing the REAL end-to-end verification artifacts requires those runtimes plus a PTP-disciplined host clock (a deployment/operator + hardware inspection that cannot run in the parallel sandbox), so SRS-PERF-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
     "srs_refs": [
       "SRS-PERF-001",
       "SRS-MD-001"
@@ -10537,7 +10537,7 @@
     "module_file": "src/perf.rs",
     "order_event_file": "src/order_event.rs",
     "types_lib_file": "src/lib.rs",
-    "syrs_doc": "docs/SyRS_v0.7.md",
+    "syrs_doc": "docs/SyRS_v0.8.md",
     "srs_doc": "docs/SRS.md",
     "percentile_method": "nearest-rank",
     "reported_percentiles": [

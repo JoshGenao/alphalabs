@@ -109,7 +109,7 @@ broken, fix that first (it is in-scope for your branch) before building anything
 
 ```bash
 cat docs/SRS.md         # cross-reference your feature's "srs_ref" — the HOW
-cat docs/SyRS_v0.7.md   # scope: what's in / out (check before adding any dependency)
+cat docs/SyRS_v0.8.md   # scope: what's in / out (check before adding any dependency)
 cat docs/StRS_v0.8.md   # stakeholder WHY
 ```
 
@@ -167,7 +167,7 @@ Write the code. As you work:
 - Follow the architecture in `AGENTS.md`; respect SRS module boundaries and the
   one-way dependency direction (lower layers never import dashboard/orchestrator).
 - Keep broker/data-vendor logic behind adapter interfaces; no vendor SDK in core.
-- No new dependency without confirming scope in `docs/SyRS_v0.7.md`.
+- No new dependency without confirming scope in `docs/SyRS_v0.8.md`.
 - Keep changes atomic + focused; no unrelated refactors.
 - **Never hand-edit `feature_list.json` or `progress.txt`** on your branch — the
   flip happens only in Step 7.1 via the locked `integrate`. Your only status
