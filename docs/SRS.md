@@ -12,7 +12,7 @@
 
 This Software Requirements Specification defines the software-level
 requirements for the Algorithmic Trading Platform (ATP). It translates
-stakeholder needs from `docs/StRS_v0.7.md` and system requirements from
+stakeholder needs from `docs/archive/StRS/StRS_v0.7.md` and system requirements from
 `docs/SyRS_v0.7.md` into implementable, verifiable software requirements.
 
 This document is the authoritative source for deriving `feature_list.json`,
