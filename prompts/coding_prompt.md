@@ -463,6 +463,16 @@ If the loop will not converge because each round names the next *deferred*
 dependency, stop honestly — `docs/playbooks/scope-and-serialization.md` has the stop
 signals and the honest-close procedure. Never fake an APPROVE.
 
+**The round budget stops you if you do not stop yourself.** After 8 BLOCK rounds on
+one feature (`ATP_REVIEW_ROUND_BUDGET`), the next `adversarial_review.py` call does
+not review: it exits **3** with an escalation report built from your round ledger:
+the recurring blocking classes, the last three rounds, and the diff size. On exit 3:
+copy the report into your session note, name the option you recommend (split, close
+serialized, or continue), and **stop for the operator**. Only the operator runs
+`tools/adversarial_review.py --authorize-continue "<why>"`; running it yourself is
+the same as faking an APPROVE. Exit 3 is not a failure of your work. It is the point
+where continuing alone costs more than asking.
+
 ---
 
 ## Step 7 — Commit to your branch (prep → feat → chore)
