@@ -30,7 +30,10 @@ Usage:
     tools/adversarial_review.py --force-claude # skip Codex (testing / known-down)
 
 Exit code: 0 on approve/warn, 1 on block, 2 on a usage error (matches the
-block-halts-you contract in prompts/coding_prompt.md).
+block-halts-you contract in prompts/coding_prompt.md), 3 when the feature's round
+budget is exhausted and the decision has passed to the operator.
+
+    tools/adversarial_review.py --authorize-continue "<why>"   # OPERATOR ONLY
 """
 
 from __future__ import annotations
@@ -518,6 +521,19 @@ def unreadable_reason(raw: str) -> str:
 
 ATTEMPT_KIND = "attempt"
 ROUND_KIND = "round"
+# Operator decisions written into the same ledger as the rounds they govern.
+AUTHORIZATION_KIND = "authorization"
+ESCALATION_KIND = "escalation"
+
+# The round budget. After this many BLOCK rounds the tool stops reviewing and hands
+# the decision to the operator. Rounds kept finding real defects long past this point
+# (SRS-LOG-001 r35 was a genuine kill-switch alert delay), so the budget does NOT end
+# review and never approves anything: it ends AUTONOMOUS review. Past 8, the
+# telemetry shows the loop mostly re-finding classes and the consequences of its own
+# fixes (LOG-001 38, RESV-006 28, MD-005 26, NOTIF-001 18 rounds), and the only exit
+# was already a human authorizing an honest close, just 20-30 rounds later.
+ROUND_BUDGET_DEFAULT = 8
+EXIT_ESCALATE = 3
 
 
 def is_round(rec: dict) -> bool:
@@ -533,8 +549,152 @@ def is_round(rec: dict) -> bool:
     A record written before `kind` existed is a ROUND: absent here means "old",
     not "attempt", and defaulting the other way would silently rewrite history
     down to zero for every feature already on main.
+
+    Equality, not "anything but an attempt": the ledger also holds operator
+    authorizations and escalations now, and counting those as review passes would
+    inflate exactly the number this function exists to keep honest.
     """
-    return str(rec.get("kind") or ROUND_KIND) != ATTEMPT_KIND
+    return str(rec.get("kind") or ROUND_KIND) == ROUND_KIND
+
+
+def round_budget() -> int:
+    """The configured budget (ATP_REVIEW_ROUND_BUDGET), else the default of 8.
+
+    A malformed value falls back to the default rather than to "unlimited": a typo
+    must not silently switch the budget off.
+    """
+    raw = os.environ.get("ATP_REVIEW_ROUND_BUDGET", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return ROUND_BUDGET_DEFAULT
+    return value if value > 0 else ROUND_BUDGET_DEFAULT
+
+
+def budget_state(recs: list[dict], budget: int) -> dict:
+    """How much of the round budget a feature's ledger has used.
+
+    Only BLOCK rounds spend it: a warn or approve round is the loop converging.
+    Each operator authorization grants one more budget's worth.
+    """
+    blocks = sum(1 for r in recs if is_round(r) and r.get("verdict") == "block")
+    grants = sum(1 for r in recs if r.get("kind") == AUTHORIZATION_KIND)
+    allowed = budget * (1 + grants)
+    return {
+        "block_rounds": blocks,
+        "authorizations": grants,
+        "allowed": allowed,
+        "exhausted": blocks >= allowed,
+    }
+
+
+def escalation_report(fid: str, recs: list[dict], state: dict, diffstat: str) -> str:
+    """What the operator needs to decide, built from the ledger the tool already keeps.
+
+    The recurring classes are the point: a rule that blocks round after round is the
+    signature of fixing instances instead of the class (CLAUDE.md rule 1), and a run of
+    new rules each touching the previous fix is the loop chasing its own changes.
+    """
+    rounds = [r for r in recs if is_round(r)]
+    seen: dict[str, int] = {}
+    for r in rounds:
+        for rule in r.get("blocking_rules") or []:
+            seen[rule] = seen.get(rule, 0) + 1
+    recurring = sorted(((n, rule) for rule, n in seen.items() if n > 1), reverse=True)
+    lines = [
+        f"ROUND BUDGET EXHAUSTED for {fid}: {state['block_rounds']} BLOCK rounds "
+        f"(budget {state['allowed']}, {state['authorizations']} prior authorization(s)).",
+        "Autonomous review has stopped. Nothing was approved. The operator decides.",
+        "",
+        f"Diff under review: {diffstat or '(unknown)'}",
+        f"Recurring blocking classes ({len(recurring)}):",
+    ]
+    lines += [f"  {n:3}x  {rule}" for n, rule in recurring[:10]] or ["  (none repeat)"]
+    lines.append("Last 3 rounds:")
+    for r in rounds[-3:]:
+        lines.append(
+            f"  {str(r.get('ts', '?'))[:16]}  {r.get('verdict')}  "
+            f"{', '.join(r.get('blocking_rules') or []) or '(no blocking rules)'}"
+        )
+    lines += [
+        "",
+        "Options (docs/playbooks/scope-and-serialization.md rules 8-12):",
+        "  1. SPLIT the feature; integrate the converged part as serialized.",
+        "  2. CLOSE honestly at serialized, naming the open findings and their owners.",
+        "  3. CONTINUE: the operator runs",
+        f'       tools/adversarial_review.py --authorize-continue "<why>"  (feature {fid})',
+        "     which grants one more budget of rounds and records the reason.",
+        "An agent must not run --authorize-continue itself: write this report into the",
+        "session note and stop.",
+    ]
+    return "\n".join(lines)
+
+
+def ledger_path(fid: str) -> Path:
+    return REPO_ROOT / ".harness" / "runs" / fid / "review.jsonl"
+
+
+def ledger_records(fid: str) -> list[dict] | None:
+    """The feature's ledger. A missing file is a feature never reviewed: []. A file
+    that exists but cannot be read is None — unknown, never empty (CLAUDE.md rule 3)."""
+    path = ledger_path(fid)
+    if not path.exists():
+        return []
+    return read_records(path)
+
+
+def _diffstat(base_ref: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "diff", "--shortstat", f"{base_ref}...HEAD"],
+        text=True,
+        capture_output=True,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def check_budget(fid: str, base_ref: str) -> dict | None:
+    """None to proceed, or an escalation result that halts the review.
+
+    Fails closed: a ledger that exists but cannot be read escalates, because a budget
+    that a corrupt file switches off is no budget.
+    """
+    if not fid:
+        return None
+    recs = ledger_records(fid)
+    if recs is None:
+        return {
+            "verdict": "escalate",
+            "reviewer": "none",
+            "summary": f"round ledger {ledger_path(fid)} is unreadable; the round budget "
+            "cannot be checked. Operator: inspect or repair it.",
+            "report": "",
+        }
+    state = budget_state(recs, round_budget())
+    if not state["exhausted"]:
+        return None
+    report = escalation_report(fid, recs, state, _diffstat(base_ref))
+    return {
+        "verdict": "escalate",
+        "reviewer": "none",
+        "summary": report.splitlines()[0],
+        "report": report,
+        "budget": state,
+    }
+
+
+def authorize_continue(fid: str, reason: str) -> Path | None:
+    """Record an operator's decision to grant one more budget of rounds."""
+    budget = round_budget()
+    return _append(
+        lambda: {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "kind": AUTHORIZATION_KIND,
+            "grants": budget,
+            "reason": reason.strip()[:500],
+            "verdict": "none",
+        },
+        fid,
+    )
 
 
 def read_records(path: Path) -> list[dict] | None:
@@ -716,7 +876,36 @@ def emit(result: dict) -> int:
         else:
             note += f" · round {n} recorded"
     print(note, file=sys.stderr)
+    # Say it on the round that spends the budget, not only on the next invocation,
+    # so the agent plans its stop instead of discovering it.
+    fid = os.environ.get("ATP_FEATURE_ID", "")
+    if result["verdict"] == "block" and fid and not result.get("no_verdict"):
+        recs = ledger_records(fid)
+        if recs:
+            state = budget_state(recs, round_budget())
+            if state["exhausted"]:
+                print(
+                    f"round budget reached ({state['block_rounds']}/{state['allowed']} BLOCK "
+                    "rounds): the next review will escalate to the operator instead of running.",
+                    file=sys.stderr,
+                )
     return 1 if result["verdict"] == "block" else 0
+
+
+def emit_escalation(result: dict, fid: str) -> int:
+    """Halt the loop: print the decision the operator now owns, record it, exit 3."""
+    print(json.dumps({k: v for k, v in result.items() if k != "report"}, indent=2))
+    print(result.get("report") or result["summary"], file=sys.stderr)
+    _append(
+        lambda: {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "kind": ESCALATION_KIND,
+            "verdict": "none",
+            "summary": str(result.get("summary") or "")[:300],
+        },
+        fid,
+    )
+    return EXIT_ESCALATE
 
 
 def review(base_ref: str, *, force_claude: bool = False, paths: list[str] | None = None) -> dict:
@@ -837,7 +1026,25 @@ def main() -> int:
         "review.jsonl, then exit. For callers that run a reviewer themselves "
         "(tools/codex_review.sh) so no round goes unrecorded.",
     )
+    ap.add_argument(
+        "--authorize-continue",
+        metavar="REASON",
+        help="OPERATOR ONLY: grant this feature (ATP_FEATURE_ID) one more round budget "
+        "after an escalation, recording why. An agent must never run this.",
+    )
     args = ap.parse_args()
+
+    if args.authorize_continue is not None:
+        fid = os.environ.get("ATP_FEATURE_ID", "")
+        if not fid or not args.authorize_continue.strip():
+            print("✗ needs ATP_FEATURE_ID and a non-empty reason.", file=sys.stderr)
+            return 2
+        path = authorize_continue(fid, args.authorize_continue)
+        if path is None:
+            print("✗ could not record the authorization.", file=sys.stderr)
+            return 1
+        print(f"✓ {fid}: {round_budget()} more round(s) authorized — recorded in {path}")
+        return 0
 
     if args.record_round:
         # A round the caller already ran. Normalize it the same way review() would,
@@ -871,6 +1078,11 @@ def main() -> int:
     if not CRITIC_PROMPT.is_file():
         print(json.dumps({"verdict": "error", "reason": f"missing {CRITIC_PROMPT}"}))
         return 2
+    # Checked BEFORE calling a reviewer: an exhausted budget spends no reviewer quota.
+    fid = os.environ.get("ATP_FEATURE_ID", "")
+    escalation = check_budget(fid, args.base_ref)
+    if escalation is not None:
+        return emit_escalation(escalation, fid)
     return emit(review(args.base_ref, force_claude=args.force_claude, paths=args.paths))
 
 
