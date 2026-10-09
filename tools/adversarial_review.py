@@ -783,6 +783,9 @@ def round_record(result: dict) -> dict:
         # is how we will know whether the policy moved anything: drift that used to
         # block should now show up here without showing up in blocking_rules.
         "categories": sorted({finding_category(f) or "?" for f in findings}),
+        # The size of what was reviewed. Round counts track diff size (LOG-001's
+        # 38 rounds were over an 8,643-line diff), and this is how to see it.
+        "diffstat": str(result.get("diffstat") or ""),
         "reviewer_note": result.get("reviewer_note", ""),
         # The reviewer's own account of the round. For an unreadable one this is the
         # only actionable content there is ("you've hit your usage limit…"), and
@@ -1083,7 +1086,9 @@ def main() -> int:
     escalation = check_budget(fid, args.base_ref)
     if escalation is not None:
         return emit_escalation(escalation, fid)
-    return emit(review(args.base_ref, force_claude=args.force_claude, paths=args.paths))
+    result = review(args.base_ref, force_claude=args.force_claude, paths=args.paths)
+    result["diffstat"] = _diffstat(args.base_ref)
+    return emit(result)
 
 
 if __name__ == "__main__":
