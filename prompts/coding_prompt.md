@@ -431,6 +431,16 @@ python3 tools/evidence.py critic "$ATP_FEATURE_ID" --layer judgment \
 Commit/integrate **only when both passes are `approve`** (a `warn` needs a one-line
 written override; any `block` halts you — exit code 1).
 
+**What blocks is computed, not asserted.** Every finding carries a category
+(`prompts/critic_prompt.md` "Severity policy"). Only `runtime`, `safety`,
+`data-loss`, `security`, `concurrency`, and `meta` findings at high severity block;
+`contract-drift`, `test-gap`, and `hygiene` warn. The dispatcher derives the verdict
+from the findings, never from the reviewer's verdict word, and an untagged finding
+blocks. Fix every warning in ONE batch before integrating; you do not need another
+full round for a batch of warn-only fixes, because the deterministic contract checks
+re-verify drift. Never re-tag a finding to dodge a block: the category describes the
+defect, and a stale contract over WRONG code is `runtime`, not `contract-drift`.
+
 ### Handling a BLOCK — fix the CLASS, not the instance
 
 A finding is not resolved when the named line is fixed. Before you re-run the review:
