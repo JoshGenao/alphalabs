@@ -139,6 +139,13 @@ def test_authorize_continue_requires_a_reason(ledger, monkeypatch, reason):
     assert ar.main() == 2
 
 
+def test_each_round_records_the_size_of_what_was_reviewed(ledger, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["adversarial_review.py", "origin/main"])
+    ar.main()
+    rec = ar.ledger_records("F-B")[-1]
+    assert rec["kind"] == "round" and rec["diffstat"] == "3 files changed"
+
+
 def test_the_budget_spending_round_warns_ahead(ledger, monkeypatch, capsys):
     ledger([_round()] * 7)
     ar.emit({"verdict": "block", "reviewer": "codex", "findings": [{"severity": "high"}]})
