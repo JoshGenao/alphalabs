@@ -154,6 +154,18 @@ operator to approve it** (ExitPlanMode). The plan must state:
   solo) vs `serialized` (needs IB/integration/live/e2e). Be honest up front.
 - **Dependencies** — if you already know you'll need an unbuilt feature `Y`, say so;
   you'll `block --on Y` after approval (Step 5).
+- **Who owns what the AC names** — list every system, source, or event the
+  acceptance criteria require, and the feature that produces each. Any producer
+  that is not `passes:true` is a dependency: name it and `block --on` it, even if
+  your own code would "work" without it. SRS-LOG-001's AC named eight log sources;
+  five had no producer, nobody listed them, and 38 review rounds hardened a surface
+  that could not close.
+- **Size and surfaces** — your estimated diff in lines (code + tests), and which
+  operator surfaces you will touch (REST, CLI, WebSocket, dashboard). Build the
+  smallest surface the AC names: "viewable from the dashboard" is one pane, not a
+  REST route plus a CLI command plus a live channel. **Above ~1,500 lines or more
+  than two surfaces, propose a split** into features that each close on their own.
+  Review rounds track diff size: LOG-001's 38 rounds were over 8,643 lines.
 
 Only after the operator approves does implementation begin. Two follow-ups:
 
