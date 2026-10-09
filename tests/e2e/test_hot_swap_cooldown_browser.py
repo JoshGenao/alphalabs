@@ -435,7 +435,19 @@ def test_a_promoted_swap_whose_window_failed_says_so_in_the_browser(binaries, li
             ".includes('COOL-DOWN IS NOT IN EFFECT')",
             timeout=15_000,
         )
+        # Then wait for the durable refresh that shows the candidate LIVE. That render
+        # resolves the pending swap in the same synchronous pass, and it used to replace
+        # this warning with a green "promoted … live": the fail-open was on screen for
+        # one poll interval. Reading before that refresh made this test pass or fail on
+        # timing (it failed on main at 21c4190). Reading after it pins the warning's
+        # persistence, not just its first paint.
+        page.wait_for_function(
+            f"() => ((document.getElementById('hs-live')||{{}}).textContent||'')"
+            f".includes('{CANDIDATE}')",
+            timeout=15_000,
+        )
         reported = page.inner_text("#hs-status")
+        assert "COOL-DOWN IS NOT IN EFFECT" in reported, reported
         # The swap SUCCEEDED — the operator must not be told it was blocked...
         assert "NOT promoted" not in reported, reported
         assert "PROMOTED" in reported, reported
