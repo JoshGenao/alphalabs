@@ -1235,11 +1235,25 @@ def cmd_claim(args):
                 )
                 return 1
 
+            # Unmet deps REFUSE unless the operator says why. Reporting them was not
+            # enough: SRS-LOG-001 was hand-claimed while five of the eight log sources
+            # its own AC names had no producer, and spent 38 review rounds hardening a
+            # surface that could not close. A feature closing out by hand normally has
+            # no unmet deps; one that does is usually the wrong thing to start.
             unmet = blocked.get(fid) or []
+            allow = str(getattr(args, "allow_unmet", None) or "").strip()
+            if unmet and not allow:
+                print(
+                    f"✗ {fid} has unmet deps ({', '.join(sorted(unmet))}); its acceptance "
+                    "criteria cannot be met until they pass.\n"
+                    f'  If starting it anyway is deliberate, say why: --allow-unmet "<reason>"',
+                    file=sys.stderr,
+                )
+                return 1
             if unmet:
                 print(
                     f"# note: {fid} has unmet deps ({', '.join(sorted(unmet))}) — "
-                    "claiming anyway (operator-selected).",
+                    f"claiming anyway (operator-selected): {allow}",
                     file=sys.stderr,
                 )
             return _finish_claim(runtime, active, fid, branch, wt, owner)
@@ -2014,7 +2028,12 @@ def main() -> int:
         metavar="FEATURE_ID",
         help="claim THIS feature instead of auto-picking (operator-selected). "
         "Bypasses the ready-frontier and awaiting-verification filters; "
-        "unmet deps are reported, not enforced.",
+        "refuses a feature with unmet deps unless --allow-unmet gives a reason.",
+    )
+    cp.add_argument(
+        "--allow-unmet",
+        metavar="REASON",
+        help="with --id: claim even though some dependencies have not passed, recording why.",
     )
     cp.add_argument(
         "--branch",
