@@ -39,6 +39,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -57,6 +58,29 @@ USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit|hit your (?:usage|rate) lim
 # literal inside normalize_verdict and as this constant 236 lines later — so the two
 # could drift silently and disagree about the same finding.
 BLOCKING_SEVERITIES = {"block", "critical", "high"}
+# Every severity either reviewer emits. Anything else is unreadable, and unreadable
+# blocks (CLAUDE.md rule 3): Codex's schema is a closed enum, the fallback's is
+# block|warn|info, so an unknown value means the reviewer said something we cannot read.
+KNOWN_SEVERITIES = BLOCKING_SEVERITIES | {"medium", "low", "warn", "info"}
+
+# The severity policy (prompts/critic_prompt.md "Severity policy"). A finding blocks
+# only when its CATEGORY says the running system is wrong AND its severity is high.
+# Before this, Codex's own "high" decided alone, so stale prose blocked exactly as
+# hard as a lost audit record: SRS-LOG-001 spent ~10 of its 38 rounds on contract
+# and documentation drift, and the telemetry shows 98 of 102 rounds ending in BLOCK.
+BLOCKING_CATEGORIES = {"runtime", "safety", "data-loss", "security", "concurrency", "meta"}
+WARN_CATEGORIES = {"contract-drift", "test-gap", "hygiene"}
+KNOWN_CATEGORIES = BLOCKING_CATEGORIES | WARN_CATEGORIES
+# Codex's output schema is closed (additionalProperties: false) and has no category
+# field, so the prompt asks for the category as a title prefix: "[data-loss] ...".
+CATEGORY_PREFIX_RE = re.compile(r"^\s*\[([a-z-]+)\]")
+# What the Codex companion prints when it cannot run at all. This is an outage, not
+# an unparseable verdict: from 2026-09-05 a dangling Homebrew symlink sent every
+# review to the fallback, and the ledger called each one "codex output unparseable".
+CODEX_MISSING_RE = re.compile(
+    r"Codex CLI is not installed|codex-companion\.mjs not found|node not on PATH",
+    re.IGNORECASE,
+)
 RESET_RE = re.compile(r"try again at\s+(\d{1,2}):(\d{2})\s*([AaPp][Mm])")
 
 FRESH_EYES_SYSTEM = (
@@ -119,24 +143,31 @@ def parse_reset_time(summary: str, hit_at: datetime | None = None) -> datetime |
 def normalize_verdict(payload: dict, reviewer: str) -> dict:
     """Map any reviewer's payload to the canonical block|warn|approve schema.
 
-    Codex's plugin schema uses ``approve|needs-attention``; the Claude fallback
-    follows critic_prompt.md and already emits ``block|warn|approve``. For
-    ``needs-attention`` we escalate to ``block`` when any finding is
-    critical/high severity, else ``warn`` (never silently ``approve``).
+    The verdict is COMPUTED from the findings under the severity policy, never taken
+    from the reviewer's verdict word. Codex says ``approve|needs-attention`` and the
+    fallback says ``block|warn|approve``; either way, with findings present:
+
+      * any finding that blocks (``is_blocking``) → ``block``
+      * otherwise → ``warn`` (findings exist, so never a silent ``approve``)
+
+    Trusting the word let a reviewer BLOCK with no blocking finding: SRS-MD-003
+    recorded 7 BLOCK rounds whose findings carried zero blocking severities.
+
+    With no findings, the word stands: ``approve``/``warn`` as given, and
+    ``block``/``needs-attention`` stays ``block``. A block with nothing behind it is
+    usually an availability failure (CLAUDE.md rule 7) and must still halt the
+    agent rather than read as clean. An unknown verdict word fails closed to block.
     """
     raw = str(payload.get("verdict", "")).strip().lower()
-    findings = payload.get("findings") or []
-    severities = {
-        str(f.get("severity", "")).strip().lower() for f in findings if isinstance(f, dict)
-    }
+    findings = findings_list(payload.get("findings"))
 
-    if raw in ("block", "warn", "approve"):
-        verdict = raw
-    elif raw == "needs-attention":
-        verdict = "block" if severities & BLOCKING_SEVERITIES else "warn"
-    else:
+    if raw not in ("block", "warn", "approve", "needs-attention"):
         # Unknown/empty verdict from a reviewer we can't read → fail closed.
         verdict = "block"
+    elif findings:
+        verdict = "block" if any(is_blocking(f) for f in findings) else "warn"
+    else:
+        verdict = "block" if raw in ("block", "needs-attention") else raw
     return {
         "verdict": verdict,
         "reviewer": reviewer,
@@ -422,17 +453,41 @@ def finding_rule(finding: object) -> str:
     return "?"
 
 
-def is_blocking(finding: object) -> bool:
-    """Is this finding severe enough to block? A malformed one is not evidence of safety.
+def finding_category(finding: object) -> str:
+    """The policy category of a finding, or "" when it has none we recognise.
 
-    Fails toward "not blocking" only because the VERDICT (which `normalize_verdict`
-    computes independently, and which defaults to `block` on anything unreadable)
-    is what gates the agent — this feeds the ledger's `blocking_rules` list, not the
-    exit code.
+    Read from an explicit ``category`` field (the fallback's schema) or, failing that,
+    a ``[category]`` prefix on the title (the only channel Codex's closed schema
+    leaves). An unrecognised value is "" — unknown, which ``is_blocking`` treats as
+    blocking.
     """
     if not isinstance(finding, dict):
+        return ""
+    explicit = str(finding.get("category") or "").strip().lower()
+    if explicit in KNOWN_CATEGORIES:
+        return explicit
+    m = CATEGORY_PREFIX_RE.match(str(finding.get("title") or ""))
+    if m and m.group(1) in KNOWN_CATEGORIES:
+        return m.group(1)
+    return ""
+
+
+def is_blocking(finding: object) -> bool:
+    """Does this finding block under the severity policy? This decides the verdict.
+
+    Blocks when its severity is blocking AND its category is a blocking one. Every
+    unreadable part fails closed (CLAUDE.md rule 3): a malformed finding, an unknown
+    severity, and a missing or unknown category all block. Only a finding that is
+    positively readable as low-severity, or as a warn-only category, does not.
+    """
+    if not isinstance(finding, dict):
+        return True
+    severity = str(finding.get("severity") or "").strip().lower()
+    if severity not in KNOWN_SEVERITIES:
+        return True
+    if severity not in BLOCKING_SEVERITIES:
         return False
-    return str(finding.get("severity") or "").strip().lower() in BLOCKING_SEVERITIES
+    return finding_category(finding) not in WARN_CATEGORIES
 
 
 def unreadable_reason(raw: str) -> str:
@@ -564,6 +619,10 @@ def round_record(result: dict) -> dict:
         # tools/critic_check.py — the loop the playbooks currently run by hand.
         "rules": sorted({finding_rule(f) for f in findings}),
         "blocking_rules": sorted({finding_rule(f) for f in findings if is_blocking(f)}),
+        # Which policy categories the round hit ("?" = untagged, which blocks). This
+        # is how we will know whether the policy moved anything: drift that used to
+        # block should now show up here without showing up in blocking_rules.
+        "categories": sorted({finding_category(f) or "?" for f in findings}),
         "reviewer_note": result.get("reviewer_note", ""),
         # The reviewer's own account of the round. For an unreadable one this is the
         # only actionable content there is ("you've hit your usage limit…"), and
@@ -680,6 +739,13 @@ def review(base_ref: str, *, force_claude: bool = False, paths: list[str] | None
     # set ATP_REVIEW_DISPATCHED=1, so codex_review.sh deliberately did NOT record —
     # if we also say nothing, a rate-limited Codex vanishes and the ledger claims the
     # fallback was the only reviewer ever asked.
+    if CODEX_MISSING_RE.search(out or ""):
+        # Checked BEFORE the parse: the companion's not-installed message is not JSON,
+        # so it would otherwise land in the "unparseable" branch below and hide a
+        # broken install behind a parse error for weeks.
+        note = "codex CLI not installed — fix: brew reinstall --cask codex"
+        append_attempt("codex", note, out)
+        return _claude(base_ref, note)
     if is_rate_limited(out, code):
         reset = record_cooldown(out)
         note = f"codex limited until {reset:%-I:%M %p}" if reset else "codex usage limit"
@@ -732,6 +798,12 @@ def _claude(base_ref: str, note: str, paths: list[str] | None = None) -> dict:
 
 
 def cmd_status() -> int:
+    # Installed is checked first: "available" used to mean only "no rate limit
+    # recorded", so it reported a reviewer that could not start as ready.
+    # shutil.which also rejects a dangling symlink (not executable).
+    if shutil.which("codex") is None:
+        print("Codex CLI not found on PATH — reviews will use the Claude fallback.")
+        return 0
     until = codex_cooldown_until()
     if until:
         print(f"Codex limited until {until:%-I:%M %p %Z} — reviews will use the Claude fallback.")
