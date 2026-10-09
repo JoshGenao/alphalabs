@@ -2638,6 +2638,16 @@
   let hotLiveStrategy = null;
 
   function hsBtn() { return $("hs-btn"); }
+  // ONE wording for the SYS-49e fail-open, shared by the swap response and the durable
+  // confirmation that follows it, so the two cannot drift apart.
+  function cooldownNotInEffectMessage(swapId, candidate, cooldownWindow) {
+    return "swap " + swapId + " PROMOTED " + candidate + " — but its cool-down window is " +
+      cooldownWindow + ". THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are " +
+      "armed against a strategy that just went live. Repair it with " +
+      "resv006_hot_swap_cooldown_cli record-completion, or disable the automatic " +
+      "triggers until you have (SRS-RESV-006 · SYS-49e)";
+  }
+
   function hsStatus(text, tone) {
     const s = $("hs-status");
     if (s) { s.textContent = text; s.dataset.tone = tone || ""; }
@@ -2797,17 +2807,17 @@
           candidate: candidate,
           priorLive: hotLiveStrategy,
           promoted: promoted,
+          // Carried so the durable confirmation below keeps the warning. Without it,
+          // the next refresh saw the candidate live and replaced the fail-open with a
+          // green "promoted … live" one poll interval after it first appeared.
+          cooldownWindow: cooldownNeedsRepair ? cooldownWindow : null,
         };
         if (cooldownNeedsRepair) {
           // Loud, and pointed at the RIGHT owner. The swap succeeded and the cool-down
           // did not start, so nothing is suppressing the automatic triggers against a
           // strategy that just went live — the SYS-49e fail-open, which is reported
           // rather than swallowed precisely so it can be repaired.
-          hsStatus("swap " + swapId + " PROMOTED " + candidate + " — but its cool-down window is " +
-            cooldownWindow + ". THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are " +
-            "armed against a strategy that just went live. Repair it with " +
-            "resv006_hot_swap_cooldown_cli record-completion, or disable the automatic " +
-            "triggers until you have (SRS-RESV-006 · SYS-49e)", "error");
+          hsStatus(cooldownNotInEffectMessage(swapId, candidate, cooldownWindow), "error");
         } else if (promoted) {
           hsStatus("swap " + swapId + " reported PROMOTED — verifying live strategy is " +
             candidate + "…", "pending");
@@ -3093,8 +3103,14 @@
       const prior = hotPendingSwap.priorLive;
       if (hotLiveStrategy === want) {
         // The candidate IS live now — the swap promoted, whatever the response said
-        // (covers an ambiguous timeout whose swap actually completed).
-        hsStatus("promoted " + want + " live · swap " + sw, "fired");
+        // (covers an ambiguous timeout whose swap actually completed). Confirming it
+        // must not clear a cool-down that never started: the promotion is real AND
+        // the automatic triggers are still armed against it.
+        if (hotPendingSwap.cooldownWindow) {
+          hsStatus(cooldownNotInEffectMessage(sw, want, hotPendingSwap.cooldownWindow), "error");
+        } else {
+          hsStatus("promoted " + want + " live · swap " + sw, "fired");
+        }
         hotPendingSwap = null;
       } else if (hotDemotionPending === true || hotChangeoverActive) {
         // A blocked / demotion-pending state is now observed — a terminal outcome.
