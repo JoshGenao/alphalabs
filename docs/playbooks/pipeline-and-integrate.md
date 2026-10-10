@@ -308,3 +308,14 @@ one `main`. Most of this playbook is about that sharing.
   The first version matched a bare `"-p"` and flagged nine innocent files running
   `cargo test -p <crate>`. Give such a guard tests in BOTH directions plus a planted
   offender, so "found nothing" is distinguishable from "scanned nothing". `(2026-09-02)`
+- **Before a lint auto-fix, grep the contracts for the text it will rewrite.** Raising the
+  workspace `rust-version` (1.75 -> 1.89) enabled MSRV-gated clippy lints; `cargo clippy
+  --fix` rewrote `self.kind.map_or(` to `is_none_or`, and 11 tests failed because
+  `architecture/runtime_services.json` pinned the old spelling (`kind_filter_token`).
+  `grep -rn '<old text>' architecture tools tests` first. A version bump also belongs in
+  its own commit: Codex blocked it as hygiene when it rode inside a feature. `(EXE-001 r2)`
+- **A change to `tools/critic_check.py` always blocks the Codex pass** (refusal clause 4).
+  Put it in its own prep commit, get the operator to review it, then run
+  `tools/codex_review.sh <prep-sha>` so the feature is reviewed alone. That is the sanctioned
+  split, not shrinking the diff to make the reviewer finish. `(EXE-001 r0)`
+
