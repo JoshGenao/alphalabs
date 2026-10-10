@@ -349,7 +349,7 @@
               "summary": "Two-step confirmation token (UI-4 / SRS-SAFE-001)."
             }
           ],
-          "description": "Designate a strategy as the single live IB strategy. Enforces the one-live-strategy invariant; requires --confirm. SRS trace: SRS-API-001, SYS-2c, SYS-2d. Implemented by SRS-EXE-001. The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-EXE-001's handler exits non-zero with a structured error naming it as the owner. Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
+          "description": "Designate a strategy as the single live IB strategy. Enforces the one-live-strategy invariant; requires --confirm. SRS trace: SRS-API-001, SYS-2c, SYS-2d. Implemented by SRS-EXE-001; run it through `python -m atp_orchestration`, which composes the handler (`python -m atp_cli` is the contract surface and exits NOT_IMPLEMENTED). The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-EXE-001's handler exits non-zero with a structured error naming it as the owner. Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
           "exit_codes": [
             {
               "code": 0,
@@ -392,7 +392,7 @@
               "summary": "Emit machine-readable JSON instead of formatted text."
             }
           ],
-          "description": "Show which strategy currently holds the live IB designation. SRS trace: SRS-API-001, SYS-2c. Implemented by SRS-EXE-001. The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-EXE-001's handler exits non-zero with a structured error naming it as the owner.",
+          "description": "Show which strategy currently holds the live IB designation. SRS trace: SRS-API-001, SYS-2c. Implemented by SRS-EXE-001; run it through `python -m atp_orchestration`, which composes the handler (`python -m atp_cli` is the contract surface and exits NOT_IMPLEMENTED). The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-EXE-001's handler exits non-zero with a structured error naming it as the owner.",
           "exit_codes": [
             {
               "code": 0,
@@ -617,7 +617,7 @@
               "summary": "Emit machine-readable JSON instead of formatted text."
             }
           ],
-          "description": "Query system or strategy logs filtered by severity, source, time (streaming: subscribe to the LOGS WebSocket channel). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Implemented by SRS-LOG-001. The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-LOG-001's handler exits non-zero with a structured error naming it as the owner.",
+          "description": "Query system or strategy logs filtered by severity, source, time (streaming: subscribe to the LOGS WebSocket channel). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Implemented by SRS-LOG-001; run it through `python -m atp_logs_service`, which composes the handler (`python -m atp_cli` is the contract surface and exits NOT_IMPLEMENTED). The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-LOG-001's handler exits non-zero with a structured error naming it as the owner.",
           "exit_codes": [
             {
               "code": 0,

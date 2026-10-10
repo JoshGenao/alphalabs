@@ -197,6 +197,19 @@ class Command:
     #: costs them a tool they already have; set this in the change that binds the
     #: handler, exactly as :attr:`atp_api.routes.Route.served_by` is set for REST.
     served_by: str = ""
+    #: The program that COMPOSES the served handler (e.g. ``python -m atp_logs_service``).
+    #: Required whenever :attr:`served_by` is set. ``python -m atp_cli`` is the contract
+    #: surface and ``python -m atp_runtime`` a bare runtime; neither composes domain
+    #: handlers, so a manual that says "implemented" without naming the program that
+    #: runs it sends an operator to an entrypoint that exits NOT_IMPLEMENTED.
+    served_entrypoint: str = ""
+
+    def __post_init__(self) -> None:
+        if bool(self.served_by) != bool(self.served_entrypoint):
+            raise ValueError(
+                f"{self.group.value} {self.name}: served_by and served_entrypoint must be set "
+                "together (an implemented command must name the program that runs it)"
+            )
 
     @property
     def invocation(self) -> str:
@@ -390,6 +403,7 @@ COMMANDS: tuple[Command, ...] = (
         ),
         requires_confirmation=True,
         served_by="SRS-EXE-001",
+        served_entrypoint="python -m atp_orchestration",
     ),
     Command(
         group=Group.LIVE,
@@ -400,6 +414,7 @@ COMMANDS: tuple[Command, ...] = (
         # An unreadable snapshot is INTERNAL_ERROR, never "nothing is live".
         exit_codes=(ExitCode.OK, ExitCode.TIMEOUT, ExitCode.INTERNAL_ERROR),
         served_by="SRS-EXE-001",
+        served_entrypoint="python -m atp_orchestration",
     ),
     # ----- Hot-Swap  [SRS-RESV-003..006, SYS-49a..e]
     Command(
@@ -474,6 +489,7 @@ COMMANDS: tuple[Command, ...] = (
         ),
         srs_refs=("SRS-LOG-001", "SYS-38", "SYS-61"),
         served_by="SRS-LOG-001",
+        served_entrypoint="python -m atp_logs_service",
         # This command HAS a live handler, so its outcomes are real: a rejected
         # parameter is a 400 the dispatcher maps to USAGE_ERROR, and a missing,
         # corrupt, or rotation-racing audit store is a 500 mapped to

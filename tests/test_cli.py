@@ -213,3 +213,45 @@ class PublicDocstringsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServedEntrypointTest(unittest.TestCase):
+    """An implemented command must name the program that composes it (SRS-EXE-001).
+
+    ``python -m atp_cli`` is the contract surface and exits NOT_IMPLEMENTED; a manual
+    entry that says "implemented" without naming the composing program sends an
+    operator to the stub.
+    """
+
+    def test_served_by_without_an_entrypoint_is_refused(self) -> None:
+        from atp_cli.commands import Command, Group
+
+        with self.assertRaises(ValueError):
+            Command(group=Group.LIVE, name="x", summary="x", srs_refs=(), served_by="SRS-X")
+        with self.assertRaises(ValueError):
+            Command(group=Group.LIVE, name="x", summary="x", srs_refs=(), served_entrypoint="p")
+
+    def test_every_served_command_names_a_real_composing_module(self) -> None:
+        import importlib.util
+
+        from atp_cli.commands import COMMANDS
+        from atp_cli.manual import build_manual
+
+        served = [command for command in COMMANDS if command.served_by]
+        self.assertTrue(served, "no served commands found; the scan is vacuous")
+        entries = {
+            (c["group"], c["name"]): c
+            for group in build_manual()["groups"]
+            for c in group["commands"]
+        }
+        for command in served:
+            program = command.served_entrypoint
+            self.assertTrue(program.startswith("python -m "), program)
+            module = program.removeprefix("python -m ")
+            self.assertIsNotNone(
+                importlib.util.find_spec(f"{module}.__main__"),
+                f"{command.group.value} {command.name}: {module} has no __main__",
+            )
+            self.assertIn(
+                f"`{program}`", entries[(command.group.value, command.name)]["description"]
+            )
