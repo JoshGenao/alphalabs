@@ -1,7 +1,7 @@
 === SESSION SRS-EXE-001 ===
 Date: 2026-10-10
 Feature: SRS-EXE-001 — route orders to IB only for the designated live strategy
-Outcome: serialized (B: landing 1 of 2 integrated; the live-ib run waits on SRS-MD-004)
+Outcome: serialized (B: both landings built; the live-ib run waits on SRS-MD-004)
 
 ## What this landing is
 
@@ -106,11 +106,11 @@ Flake found and fixed in my own test: `an_oversize_frame_is_refused...` wrote 10
 past a host that correctly stops reading at the frame limit and closes, so the tail
 write could EPIPE and the `unwrap()` panicked. The write is now allowed to fail.
 
-## Critic verdicts
+## Critic verdicts (landing 1)
 
 deterministic (critic_check.py --staged): APPROVE on every commit (prep cd950aa,
   toolchain 3efb404, feat ec03557, docs b6608c7).
-Adversarial rounds: 4
+Adversarial rounds: 10
 judgment (tools/codex_review.sh), 4 rounds:
   r0 (base origin/main): BLOCK meta:critic-self-modification on the SAFETY_PATH_RE
      prep. Operator reviewed and APPROVED the 2-token change on 2026-10-10; later
@@ -130,27 +130,104 @@ judgment (tools/codex_review.sh), 4 rounds:
   (2026-10-10: "Authorize, integrate serialized"). The two ownerless gaps below
   are noted for a later operator decision, with no dependency edge.
 
+## Landing 2 (2026-10-10, same session, re-claimed with `claim --id`)
+
+### What I built
+
+* **`python/atp_strategy/live_client.py`** — `encode_submit` / `parse_reply` mirror
+  `live_host/protocol.rs`; the encoder refuses whatever the host would (control
+  characters, blank symbol, quantity <= 0, a price that is not a whole number of minor
+  units, never rounded). `socket_path` validates the strategy id with the host's
+  alphabet (a traversal id would reach another strategy's socket). `LiveHostClient`
+  never re-sends: a written frame with no valid reply is `LiveOrderOutcomeUnknown`.
+  `LiveOrderRouter` is the `order()` leg of a live `StrategyContext`: warm-up and
+  asset-class guards, then the host, then ONE queued `ACK` or `REJECTED` event per
+  order, delivered through `dispatch.deliver_order_event`; a `refused` reply raises.
+  It is the order leg only, not a whole live context or the in-container host process.
+* **`python/atp_orchestration/live_designation.py`** — promote-live (REST), `live
+  promote` / `live show` (CLI) over `exe001_live_designation_cli`. `promoted_at` is
+  null when nothing moved (the snapshot stores who, not when); `warning` carries
+  published-not-synced. Composed in `serve()` behind `ATP_LIVE_DESIGNATION_ROUTES=1`
+  (requires `ATP_HOT_SWAP_DESIGNATION_STATE`) and in a new composed CLI,
+  **`python -m atp_orchestration`**. The LIVE_DESIGNATION workflow is fully_served
+  when mounted; a bare runtime still answers the structured 501.
+* **`exe001_live_designation_cli` exit codes**: 0 ok, 2 refused input, 3 published
+  not synced, 4 state error (lock/read/pre-publish write), 5 another strategy live.
+  The handler maps codes, never stderr text.
+* **`nfr_p1_ack_cli`** (atp-types) — NFR-P1 p95 over host-monotonic samples using
+  the catalog's own budget and `LatencyPercentiles`; `--tier` is required and printed.
+* **Contract**: route field types, strict body, `served_by`; CLI exit codes the
+  handlers reach; `Command.served_entrypoint` (required with `served_by`; also set for
+  SRS-LOG-001's `admin logs`); manual/openapi regenerated; `operator_surface` +
+  `strategy_order_leg` blocks pinned by `check_operator_and_strategy_legs`.
+* **Flake fix (operator-approved to ride along)**: `test_bbands_property_matches_batch_talib`
+  bound now includes TA-Lib's running-sum cancellation error, sqrt(eps) * max|close|;
+  the falsifying case is pinned.
+
+### What I tested (per step)
+
+Step 1: PASS — `./init.sh` → `✓ Environment ready`.
+Step 2: PASS (fixture tier) — L1 `tests/unit/test_live_client.py` (51); L4
+  `tests/boundary/test_live_designation_surface.py` (13, incl. subprocess runs of the
+  shipped `python -m atp_orchestration`); L7 `tests/domain/test_live_execution_host.py`
+  (12).
+Step 3:
+  * Explicit confirmation: PASS on REST (428, nothing written) and CLI (exit 3).
+  * 1 live + 5 paper through the Strategy API: PASS on the fixture tier — operator
+    promotes via the REST handler; 3 orders each; live gets ACK x3 (`IB-*` ids), each
+    paper strategy REJECTED x3 with `NON_LIVE_STRATEGY_SUBMISSION/NotDesignatedLiveStrategy`;
+    wire ledger = live only. Also: a designation made with the shipped CLI is what the
+    host routes on.
+  * < 1,000 ms p95, host monotonic clock: PASS on the fixture tier —
+    `nfr:NFR-P1 clock:host-monotonic tier:FIXTURE samples:1000 p95_ms:28.04
+    budget_ms:1000 verdict:PASS` (p50 25.07, p99.9 34.14). Most of each order is the
+    durable outbox write before the broker.
+  * Real IB (`--tier LIVE_IB`): NOT RUN — the live tier refuses until SRS-MD-004.
+Step 4: NOT DONE — waits for the live-ib run.
+
+Mutation-verified: rounding a price; delivering inside `order()`; a reject mapped as
+an ack; always stamping `promoted_at`; dropping the quantity guard; reporting a
+corrupt snapshot as a refusal (binary) and as a bad request (handler); the served-
+entrypoint and contract guards (negative tests each).
+
+### Critic verdicts (landing 2)
+
+deterministic: APPROVE on every commit.
+judgment (codex_review.sh, base origin/main), 6 rounds:
+  r1 [high] CLI commands unmounted in any shipped entrypoint → FIXED (`python -m
+     atp_orchestration` + subprocess tests + domain test).
+  r2 [medium] negative quantity made an undeliverable REJECTED event → FIXED (encoder
+     guard). [low] flake fix rides along → operator: keep.
+  r3 [high] manual named `python -m atp_cli` (the stub) for served commands → FIXED
+     for the class (`served_entrypoint`, incl. `admin logs`). [medium] flake → kept.
+  r4 [high] corrupt snapshot reported as bad input → FIXED (distinct exit codes).
+  r5 [high] socket path from an unvalidated strategy id → FIXED; [medium] `live show`
+     USAGE_ERROR undeclared → FIXED for the class (test requires it on every served
+     command); [medium] flake → kept.
+  r6 no verdict: the run stopped mid-analysis, then the retry hit Codex's usage limit.
+  The harness failover then refused to review: **ROUND BUDGET EXHAUSTED for
+  SRS-EXE-001: 9 BLOCK rounds (budget 8, 0 prior authorization(s))**. Options it gives
+  the operator: split; close honestly at serialized; or
+  `tools/adversarial_review.py --authorize-continue "<why>"` (operator only).
+  Every finding of r1-r5 was in scope and is fixed; none repeated a class.
+  Integration decision: operator chose "Close at serialized now" (2026-10-10), with the
+  budget exhausted, CI green (5,560 passed, every step ran) and mypy clean.
+
 ## Resume / next
 
-Landing 2 (SRS-EXE-001, same feature):
-1. `python/atp_strategy/live_client.py` — socket client speaking `ATP-LIVE-HOST/1`
-   (mirror `live_host/protocol.rs`; refuse to encode a value the parser refuses).
-2. Concrete live `StrategyContext.order()` → client → on `ack` call the existing
-   `atp_strategy.dispatch.deliver_order_event` (do not rebuild it).
-3. Register `POST /api/v1/strategies/{strategy_id}/promote-live` and `live promote
-   <id> --confirm` / `live show` on `atp_runtime.HandlerRegistry` (pattern:
-   `python/atp_safety/wiring.py:60-62`), shelling `exe001_live_designation_cli`.
-4. p95 from `order()` to the ack callback, `perf_counter_ns`, via `nfr_p95_cli` /
-   `LatencyPercentiles` (precedent `tests/domain/test_paper_callback_delivery.py`),
-   labelled host-monotonic MVP evidence.
-Then `block SRS-EXE-001 --on SRS-MD-004`. When MD-004 lands: wire its freshness
-producer into the `ib` tier, wire `ScheduledRestartConnectivity`, lift the adapter
-gate, and the operator runs, in one live window, the SRS-EXE-006 paper re-run plus
-the 1 live + 5 paper run with the p95 recorded.
+1. `block SRS-EXE-001 --on SRS-MD-004` (the live tier's stale-data producer).
+2. When SRS-MD-004 lands: wire its freshness producer and `ScheduledRestartConnectivity`
+   into the `ib` tier; meet the two live-tier preconditions in
+   `live_designation_contract.deferred[]` (deadline-bounded transport; a submit timeout
+   recorded as UNKNOWN, owner SRS-EXE-009); lift the adapter live-account gate.
+3. Operator live window: SRS-EXE-006 paper re-run, then 1 live + 5 paper real strategy
+   containers through the host, and `nfr_p1_ack_cli --tier LIVE_IB` over the live
+   strategy's samples.
 
 Known trade: the outbox snapshot is rewritten in full per order and acknowledged
 orders stay non-terminal until order-state updates exist (SRS-EXE-008/009), so the
-per-order write grows with live order count. Fine at MVP volume; owned there.
+per-order write grows with live order count (~25 ms/order at 1,000 orders on this
+Mac). Fine at MVP volume; owned there.
 
 Two gaps for the operator, neither owned by an open feature:
 * **Container socket mount.** The concrete Docker `StrategyContainerRuntime` must
