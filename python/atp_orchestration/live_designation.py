@@ -77,10 +77,14 @@ _DEFAULT_TIMEOUT_S = 20.0
 #: Checked here too so a bad id is a 400 that names the rule, not a binary refusal.
 _STRATEGY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
-#: The binary's exit codes (``exe001_live_designation_cli.rs``).
+#: The binary's exit codes (``exe001_live_designation_cli.rs``). Each is a distinct
+#: fact, so this module never parses stderr to tell a bad request from a broken
+#: snapshot (Codex landing-2 r4).
 _EXIT_OK = 0
 _EXIT_REFUSED = 2
 _EXIT_PUBLISHED_NOT_SYNCED = 3
+_EXIT_STATE_ERROR = 4
+_EXIT_ANOTHER_LIVE = 5
 
 
 def default_binary(env: Mapping[str, str] | None = None) -> Path:
@@ -182,14 +186,28 @@ class LiveDesignationHandlers:
                 acknowledgement,
             ]
         )
-        if completed.returncode == _EXIT_REFUSED:
-            detail = completed.stderr.strip() or "no detail"
-            already = "already the designated live strategy" in detail
+        detail = completed.stderr.strip() or "no detail"
+        if completed.returncode == _EXIT_ANOTHER_LIVE:
             raise InterfaceError(
                 ErrorCategory.BAD_REQUEST,
                 detail,
-                type="LIVE_STRATEGY_ALREADY_DESIGNATED" if already else "LIVE_DESIGNATION_REFUSED",
+                type="LIVE_STRATEGY_ALREADY_DESIGNATED",
                 detail={"strategy_id": strategy_id},
+            )
+        if completed.returncode == _EXIT_REFUSED:
+            raise InterfaceError(
+                ErrorCategory.BAD_REQUEST,
+                detail,
+                type="LIVE_DESIGNATION_REFUSED",
+                detail={"strategy_id": strategy_id},
+            )
+        if completed.returncode == _EXIT_STATE_ERROR:
+            # A snapshot that cannot be locked, read, or written is the platform's
+            # problem, never the operator's input; nothing changed.
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                f"the live-designation record could not be read or written: {detail}",
+                type="LIVE_DESIGNATION_UNREADABLE",
             )
         if completed.returncode not in (_EXIT_OK, _EXIT_PUBLISHED_NOT_SYNCED):
             raise InterfaceError(

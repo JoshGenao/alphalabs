@@ -216,7 +216,7 @@ def test_a_second_strategy_cannot_be_designated_while_one_is_live(binaries, root
     assert _designate(binaries, state, LIVE, "yes").returncode == 0
     before = state.read_bytes()
     second = _designate(binaries, state, PAPER[0], "yes")
-    assert second.returncode == 2
+    assert second.returncode == 5  # a different strategy is live: a Hot-Swap
     assert "already the designated live strategy" in second.stderr
     assert "Hot-Swap" in second.stderr
     assert state.read_bytes() == before
@@ -465,3 +465,19 @@ def test_a_designation_made_with_the_shipped_cli_is_what_the_host_routes_on(
     rejected = host.submit(LIVE, "l-1")
     assert rejected["category"] == "NON_LIVE_STRATEGY_SUBMISSION", rejected
     assert host.wire() == [PAPER[0]]
+
+
+def test_an_unreadable_snapshot_is_a_state_error_not_a_refusal(binaries, root):
+    """A corrupt live-designation record is the platform's fault, never bad input."""
+
+    state = root / "designation"
+    state.write_text("not a designation snapshot\n")
+    promoted = _designate(binaries, state, LIVE, "yes")
+    assert promoted.returncode == 4, promoted.stderr
+    status = subprocess.run(
+        [str(binaries[DESIGNATE_BIN]), "status", "--state", str(state)],
+        capture_output=True,
+        text=True,
+    )
+    assert status.returncode == 4, status.stderr
+    assert state.read_text() == "not a designation snapshot\n"

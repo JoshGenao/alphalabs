@@ -154,6 +154,17 @@ def test_an_unreadable_snapshot_is_not_reported_as_nobody_live(runtime) -> None:
     assert body["error"]["type"] == "LIVE_DESIGNATION_UNREADABLE", body
 
 
+def test_promote_over_an_unreadable_snapshot_is_an_internal_error(runtime) -> None:
+    rt, state = runtime
+    state.write_text("not a designation snapshot\n")
+    status, body = rt.dispatch_rest("POST", PROMOTE.format("live-a") + "?confirm=true")
+    assert status == 500, body
+    assert body["error"]["type"] == "LIVE_DESIGNATION_UNREADABLE", body
+    code, text = _cli(rt, "live", "promote", "live-a", "--confirm")
+    assert code != 2, "an unreadable snapshot must not be reported as a usage error"
+    assert state.read_text() == "not a designation snapshot\n"
+
+
 def test_the_workflow_is_fully_served_once_mounted(runtime) -> None:
     rt, _ = runtime
     workflow = next(w for w in rt.status_snapshot()["workflows"] if w["id"] == "LIVE_DESIGNATION")

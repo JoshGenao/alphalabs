@@ -26,9 +26,16 @@
 //! RESV-004 liquidation would leave the strategy's open IB positions with no
 //! strategy allowed to manage them.
 //!
-//! Output is `key:value` lines. Exit 0 on success, 2 on a refusal (nothing was
-//! written), 3 when the snapshot was renamed into place but the directory fsync
-//! failed (the designation HAS moved; only crash-durability is uncertain).
+//! Output is `key:value` lines. Exit codes, each a distinct fact so a caller never
+//! parses stderr to tell them apart:
+//!
+//! * 0 — success (including an idempotent re-promote).
+//! * 2 — refused input: bad flags, an empty confirmation, an invalid strategy id.
+//! * 3 — published but the directory fsync failed: the designation HAS moved; only
+//!   crash-durability is uncertain.
+//! * 4 — state error: the snapshot could not be locked, read, or written before
+//!   publishing. Nothing changed, and it is not the operator's mistake.
+//! * 5 — a different strategy is live; moving the slot is a Hot-Swap. Nothing changed.
 
 use atp_execution::designation::{LiveDesignationConfirmation, LiveDesignationError};
 use atp_orchestrator::live_designation_store::{
@@ -53,10 +60,18 @@ USAGE:
 
 const EXIT_REFUSED: u8 = 2;
 const EXIT_PUBLISHED_NOT_SYNCED: u8 = 3;
+/// The designation state could not be locked, read, or written (nothing changed).
+/// Distinct from a refusal: the operator did nothing wrong, and a corrupt snapshot
+/// must never be reported as bad input.
+const EXIT_STATE_ERROR: u8 = 4;
+/// A DIFFERENT strategy is live; moving the slot is a Hot-Swap (nothing changed).
+const EXIT_ANOTHER_LIVE: u8 = 5;
 
 enum Failure {
     Refused(String),
     PublishedNotSynced(String),
+    StateError(String),
+    AnotherLive(String),
 }
 
 fn main() -> ExitCode {
@@ -70,6 +85,14 @@ fn main() -> ExitCode {
         Err(Failure::PublishedNotSynced(message)) => {
             eprintln!("{message}");
             ExitCode::from(EXIT_PUBLISHED_NOT_SYNCED)
+        }
+        Err(Failure::StateError(message)) => {
+            eprintln!("{message}");
+            ExitCode::from(EXIT_STATE_ERROR)
+        }
+        Err(Failure::AnotherLive(message)) => {
+            eprintln!("{message}");
+            ExitCode::from(EXIT_ANOTHER_LIVE)
         }
     }
 }
@@ -106,7 +129,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
     let refused = Failure::Refused;
     match args.first().map(String::as_str) {
         Some("promote") => promote(&args[1..]),
-        Some("status") => status(&args[1..]).map_err(refused),
+        Some("status") => status(&args[1..]),
         Some("help" | "--help" | "-h") => {
             print!("{USAGE}");
             Ok(())
@@ -116,11 +139,12 @@ fn run(args: &[String]) -> Result<(), Failure> {
     }
 }
 
-fn status(args: &[String]) -> Result<(), String> {
-    let flags = parse_flags(args, &["--state"])?;
-    let path = PathBuf::from(required(&flags, "--state")?);
-    let _guard = ExclusiveGuard::acquire_creating(&path).map_err(|error| error.to_string())?;
-    let designation = load_designation(&path)?;
+fn status(args: &[String]) -> Result<(), Failure> {
+    let flags = parse_flags(args, &["--state"]).map_err(Failure::Refused)?;
+    let path = PathBuf::from(required(&flags, "--state").map_err(Failure::Refused)?);
+    let _guard = ExclusiveGuard::acquire_creating(&path)
+        .map_err(|error| Failure::StateError(error.to_string()))?;
+    let designation = load_designation(&path).map_err(Failure::StateError)?;
     println!(
         "designated:{}",
         designation.designated().map_or("none", StrategyId::as_str)
@@ -146,13 +170,13 @@ fn promote(args: &[String]) -> Result<(), Failure> {
             .map_err(|error| Failure::Refused(error.to_string()))?;
 
     let _designation_guard = ExclusiveGuard::acquire_creating(&path)
-        .map_err(|error| Failure::Refused(error.to_string()))?;
-    let mut designation = load_designation(&path).map_err(Failure::Refused)?;
+        .map_err(|error| Failure::StateError(error.to_string()))?;
+    let mut designation = load_designation(&path).map_err(Failure::StateError)?;
     let before = designation.designated().cloned();
     designation
         .designate(strategy.clone(), confirmation)
         .map_err(|error| match error {
-            LiveDesignationError::AlreadyDesignated { .. } => Failure::Refused(format!(
+            LiveDesignationError::AlreadyDesignated { .. } => Failure::AnotherLive(format!(
                 "{error}. Moving the live slot is a Hot-Swap (resv005_hot_swap_promote_cli \
                  swap), which liquidates and demotes before it promotes."
             )),
@@ -175,7 +199,7 @@ fn promote(args: &[String]) -> Result<(), Failure> {
             println!("designation-persisted:true");
             Ok(())
         }
-        PublishOutcome::FailedBeforePublish(reason) => Err(Failure::Refused(format!(
+        PublishOutcome::FailedBeforePublish(reason) => Err(Failure::StateError(format!(
             "the designation was NOT written (nothing changed): {reason}"
         ))),
         PublishOutcome::PublishedNotSynced(reason) => {
