@@ -465,6 +465,14 @@ def check_operator_and_strategy_legs(config: dict, root: Path = ROOT) -> str:
         )
     if surface["opt_in_knob"] not in serve_src:
         fail(f"{surface['serve_module']} no longer reads {surface['opt_in_knob']}")
+    cli_main = root / surface["cli_entrypoint"]
+    if not cli_main.is_file() or f"{surface['mount']}(runtime" not in cli_main.read_text(
+        encoding="utf-8"
+    ):
+        fail(
+            f"{surface['cli_entrypoint']} does not compose {surface['mount']}: `live promote` "
+            "and `live show` would answer 501 from every shipped CLI"
+        )
 
     leg = block["strategy_order_leg"]
     client = (root / leg["module"]).read_text(encoding="utf-8")
@@ -479,7 +487,8 @@ def check_operator_and_strategy_legs(config: dict, root: Path = ROOT) -> str:
         fail(f"{leg['latency_cli']} is missing")
     return (
         f"operator surface: {len(surface['operations'])} operations registered by "
-        f"{surface['mount']} and composed in serve() via {surface['serve_arm']}; strategy "
+        f"{surface['mount']} and composed in serve() via {surface['serve_arm']} and in "
+        f"{surface['cli_entrypoint']}; strategy "
         f"order leg {leg['router']} delivers through {leg['delivery']}"
     )
 

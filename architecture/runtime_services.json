@@ -1609,6 +1609,7 @@
       ],
       "binary": "crates/atp-orchestrator/src/bin/exe001_live_designation_cli.rs",
       "serve_arm": "_mount_live_designation_arm",
+    "cli_entrypoint": "python/atp_orchestration/__main__.py",
       "serve_module": "python/atp_dashboard/server.py",
       "opt_in_knob": "ATP_LIVE_DESIGNATION_ROUTES",
       "note": "Writes the SAME snapshot the host re-reads and the Hot-Swap moves (ATP_HOT_SWAP_DESIGNATION_STATE). promoted_at is null when nothing moved: the snapshot records who is live, not when."

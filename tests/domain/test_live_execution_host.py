@@ -436,3 +436,32 @@ def test_live_ack_latency_p95_is_under_one_second_on_the_host_clock(binaries, ro
     assert "nfr:NFR-P1 clock:host-monotonic tier:FIXTURE samples:200" in lines[0]
     assert lines[0].endswith("verdict:PASS"), lines[0]
     assert verdict.returncode == 0
+
+
+def test_a_designation_made_with_the_shipped_cli_is_what_the_host_routes_on(
+    binaries, root, host_factory
+):
+    """Operator command to wire: `python -m atp_orchestration live promote` designates,
+    and the host's very next orders route for that strategy and no other."""
+
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ATP_")}
+    env["PYTHONPATH"] = str(REPO_ROOT / "python")
+    env["ATP_HOT_SWAP_DESIGNATION_STATE"] = str(root / "designation")
+    env["ATP_LIVE_DESIGNATION_BINARY"] = str(binaries[DESIGNATE_BIN])
+    promoted = subprocess.run(
+        [sys.executable, "-m", "atp_orchestration", "live", "promote", PAPER[0], "--confirm"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert promoted.returncode == 0, promoted.stdout + promoted.stderr
+
+    host = host_factory([LIVE, PAPER[0]])
+    assert host.submit(PAPER[0], "p-1")["outcome"] == "ack"
+    rejected = host.submit(LIVE, "l-1")
+    assert rejected["category"] == "NON_LIVE_STRATEGY_SUBMISSION", rejected
+    assert host.wire() == [PAPER[0]]

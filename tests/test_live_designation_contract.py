@@ -364,6 +364,7 @@ class OperatorAndStrategyLegsTest(unittest.TestCase):
             "serve": block["operator_surface"]["serve_module"],
             "client": block["strategy_order_leg"]["module"],
             "latency": block["strategy_order_leg"]["latency_cli"],
+            "cli": block["operator_surface"]["cli_entrypoint"],
         }
         self.root = Path(tempfile.mkdtemp(prefix="exe001-l2-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
@@ -398,6 +399,10 @@ class OperatorAndStrategyLegsTest(unittest.TestCase):
             "    pass\n",
         )
         self._caught("serve() does not call _mount_live_designation_arm")
+
+    def test_a_cli_entrypoint_that_does_not_compose_the_handlers_is_caught(self) -> None:
+        self._mutate("cli", "    mount_live_designation(runtime, state_path=state)\n", "")
+        self._caught("would answer 501")
 
     def test_bypassing_the_sdk_delivery_seam_is_caught(self) -> None:
         self._mutate("client", "deliver_order_event(", "on_order_event_direct(")

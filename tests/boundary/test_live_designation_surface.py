@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -203,3 +205,49 @@ def test_serve_refuses_a_malformed_opt_in_or_a_missing_snapshot() -> None:
         _mount_live_designation_arm(
             OperatorInterfaceRuntime(), {"ATP_LIVE_DESIGNATION_ROUTES": "1"}
         )
+
+
+# --------------------------------------------------------------------------- #
+# The shipped CLI entrypoint, in a fresh process (Codex landing-2 r1)
+# --------------------------------------------------------------------------- #
+
+
+def _shipped_cli(binary: Path, env_state: str | None, *argv: str):
+    env = {k: v for k, v in os.environ.items() if k != "ATP_HOT_SWAP_DESIGNATION_STATE"}
+    env["PYTHONPATH"] = str(REPO_ROOT / "python")
+    env["ATP_LIVE_DESIGNATION_BINARY"] = str(binary)
+    if env_state is not None:
+        env["ATP_HOT_SWAP_DESIGNATION_STATE"] = env_state
+    return subprocess.run(
+        [sys.executable, "-m", "atp_orchestration", *argv],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_shipped_cli_promotes_and_shows_through_the_shared_snapshot(
+    binary: Path, tmp_path: Path
+) -> None:
+    state = str(tmp_path / "designation")
+    shown = _shipped_cli(binary, state, "live", "show", "--json")
+    assert shown.returncode == 0, shown.stdout + shown.stderr
+    assert json.loads(shown.stdout) == {"designated": None}
+
+    unconfirmed = _shipped_cli(binary, state, "live", "promote", "live-a")
+    assert unconfirmed.returncode == 3, unconfirmed.stdout
+    promoted = _shipped_cli(binary, state, "live", "promote", "live-a", "--confirm")
+    assert promoted.returncode == 0, promoted.stdout + promoted.stderr
+    assert json.loads(promoted.stdout)["strategy_id"] == "live-a"
+
+    shown = _shipped_cli(binary, state, "live", "show", "--json")
+    assert json.loads(shown.stdout) == {"designated": "live-a"}
+    assert _designated(Path(state)) == "live-a"
+
+
+def test_the_shipped_cli_refuses_to_guess_the_snapshot(binary: Path) -> None:
+    refused = _shipped_cli(binary, None, "live", "show", "--json")
+    assert refused.returncode == 2, refused.stdout
+    assert "ATP_HOT_SWAP_DESIGNATION_STATE is not set" in refused.stderr
