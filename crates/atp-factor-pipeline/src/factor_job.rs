@@ -1195,19 +1195,19 @@ mod tests {
     struct EvenCalendar;
     impl TradingCalendar for EvenCalendar {
         fn is_session(&self, session: SessionOrdinal) -> bool {
-            session % 2 == 0
+            session.is_multiple_of(2)
         }
         fn session_open(&self, session: SessionOrdinal) -> Option<MinutesOfDay> {
-            (session % 2 == 0).then_some(570)
+            session.is_multiple_of(2).then_some(570)
         }
         fn session_close(&self, session: SessionOrdinal) -> Option<MinutesOfDay> {
-            (session % 2 == 0).then_some(960)
+            session.is_multiple_of(2).then_some(960)
         }
         fn is_early_close(&self, _session: SessionOrdinal) -> bool {
             false
         }
         fn next_session(&self, session: SessionOrdinal) -> Option<SessionOrdinal> {
-            Some(if session % 2 == 0 {
+            Some(if session.is_multiple_of(2) {
                 session + 2
             } else {
                 session + 1

@@ -8922,7 +8922,7 @@
       "resolution_filter_token": "key.resolution==self.resolution",
       "range_lower_token": "key.event_ts>=self.start_ts",
       "range_upper_token": "key.event_ts<=self.end_ts",
-      "kind_filter_token": "self.kind.map_or("
+      "kind_filter_token": "self.kind.is_none_or("
     },
     "module_reexport": {
       "lib_reexport_token": "pub mod query;"

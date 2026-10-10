@@ -196,11 +196,10 @@ impl GatewayReachability for TcpGatewayReachability {
                     // silent until the deadline. Either way the gateway is not
                     // serving — which during a restart is exactly expected.
                     //
-                    // Deliberately NOT listing `HostUnreachable`,
-                    // `NetworkUnreachable` or `NetworkDown`: those were
-                    // stabilised in Rust 1.83 and the workspace declares
-                    // `rust-version = "1.75"`, so naming them would make this
-                    // crate stop building at its own declared minimum. They
+                    // Not listing `HostUnreachable`, `NetworkUnreachable` or
+                    // `NetworkDown` (stabilised in Rust 1.83). This was written
+                    // when the workspace minimum was 1.75; it is now 1.89, so
+                    // they could be named, but that is a label-only change. They
                     // fall through to `ProbeFailed` below, which
                     // `is_reachable()` already treats as NOT reachable — the
                     // fail-closed direction, so the SAFETY answer is identical

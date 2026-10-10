@@ -92,7 +92,7 @@ struct Oscillator;
 
 impl BacktestStrategy for Oscillator {
     fn on_bar(&mut self, bar: &BacktestBar, _position: i64) -> Result<i64, BacktestError> {
-        Ok(if bar.ts % 2 == 0 { 1 } else { -1 })
+        Ok(if bar.ts.is_multiple_of(2) { 1 } else { -1 })
     }
 }
 
