@@ -106,6 +106,7 @@ write could EPIPE and the `unwrap()` panicked. The write is now allowed to fail.
 
 deterministic (critic_check.py --staged): APPROVE on every commit (prep cd950aa,
   toolchain 3efb404, feat ec03557, docs b6608c7).
+Adversarial rounds: 4
 judgment (tools/codex_review.sh), 4 rounds:
   r0 (base origin/main): BLOCK meta:critic-self-modification on the SAFETY_PATH_RE
      prep. Operator reviewed and APPROVED the 2-token change on 2026-10-10; later
