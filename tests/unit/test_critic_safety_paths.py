@@ -76,3 +76,16 @@ def test_documentation_carve_outs_still_apply():
     """A note or playbook NAMED for a safety subject carries no behavior to test."""
     assert _blocks(["docs/playbooks/safety-paths.md"]) == []
     assert _blocks(["progress.d/session-SRS-SAFE-001.md"]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "crates/atp-orchestrator/src/live_host/mod.rs",
+        "crates/atp-orchestrator/src/live_host/server.rs",
+        "crates/atp-orchestrator/src/bin/live_execution_host.rs",
+    ],
+)
+def test_live_execution_host_paths_are_safety_paths(path):
+    """SRS-EXE-001: the process that routes real orders to IB is a safety path."""
+    assert c.SAFETY_PATH_RE.search(path), f"{path} must be a safety path"
