@@ -39,6 +39,7 @@ from atp_strategy.live_client import (
     encode_submit,
     parse_reply,
     price_to_minor,
+    socket_path,
 )
 from atp_strategy.warmup import WarmupState
 
@@ -303,3 +304,17 @@ def test_an_unreachable_host_is_a_protocol_error_because_nothing_was_sent() -> N
     with pytest.raises(LiveHostProtocolError) as caught:
         LiveHostClient(missing, reply_timeout_s=1).submit("c-1", LIMIT)
     assert not isinstance(caught.value, LiveOrderOutcomeUnknown)
+
+
+@pytest.mark.parametrize(
+    "strategy_id",
+    ["paper-1/../live-a", "../live-a", "/abs", ".hidden", "", "a b", "x" * 65, "a\x00b"],
+)
+def test_a_strategy_id_that_could_name_another_socket_is_refused(strategy_id) -> None:
+    # The socket is the identity: a traversal id would reach another strategy's socket.
+    with pytest.raises(LiveHostProtocolError):
+        socket_path("/run/atp/live", strategy_id)
+
+
+def test_a_valid_strategy_id_maps_to_its_own_directory() -> None:
+    assert socket_path("/run/atp/live", "paper-1") == Path("/run/atp/live/paper-1/order.sock")

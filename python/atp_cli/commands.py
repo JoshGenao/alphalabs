@@ -411,8 +411,15 @@ COMMANDS: tuple[Command, ...] = (
         summary="Show which strategy currently holds the live IB designation.",
         srs_refs=("SRS-API-001", "SYS-2c"),
         arguments=(_JSON,),
-        # An unreadable snapshot is INTERNAL_ERROR, never "nothing is live".
-        exit_codes=(ExitCode.OK, ExitCode.TIMEOUT, ExitCode.INTERNAL_ERROR),
+        # An unreadable snapshot is INTERNAL_ERROR, never "nothing is live". The composed
+        # entrypoint exits USAGE_ERROR before dispatch when the shared snapshot knob
+        # (ATP_HOT_SWAP_DESIGNATION_STATE) is unset.
+        exit_codes=(
+            ExitCode.OK,
+            ExitCode.USAGE_ERROR,
+            ExitCode.TIMEOUT,
+            ExitCode.INTERNAL_ERROR,
+        ),
         served_by="SRS-EXE-001",
         served_entrypoint="python -m atp_orchestration",
     ),

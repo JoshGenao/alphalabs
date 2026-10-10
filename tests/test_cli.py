@@ -255,3 +255,12 @@ class ServedEntrypointTest(unittest.TestCase):
             self.assertIn(
                 f"`{program}`", entries[(command.group.value, command.name)]["description"]
             )
+            # Every composed entrypoint refuses missing configuration with USAGE_ERROR
+            # BEFORE dispatch, so a served command must document that exit.
+            from atp_cli.commands import ExitCode
+
+            self.assertIn(
+                ExitCode.USAGE_ERROR,
+                command.exit_codes,
+                f"{command.group.value} {command.name}: {program} can exit USAGE_ERROR",
+            )

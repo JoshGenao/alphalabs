@@ -40,6 +40,7 @@ to send one with.
 
 from __future__ import annotations
 
+import re
 import socket
 import time
 import uuid
@@ -173,9 +174,24 @@ class LiveRefused:
 LiveReply = LiveAck | LiveReject | LiveRefused
 
 
-def socket_path(socket_dir: str | Path, strategy_id: str) -> Path:
-    """``<socket_dir>/<strategy_id>/order.sock`` — the strategy's only door."""
+#: The alphabet the live host serves (``live_host/server.rs::validate_strategy_id``):
+#: a portable, separator-free file name, at most 64 bytes.
+_STRATEGY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
+
+def socket_path(socket_dir: str | Path, strategy_id: str) -> Path:
+    """``<socket_dir>/<strategy_id>/order.sock`` — the strategy's only door.
+
+    The socket IS the strategy's identity, so the id is validated with the host's own
+    alphabet first: an id like ``paper-1/../live-a`` would otherwise resolve to another
+    strategy's socket (Codex landing-2 r5).
+    """
+
+    if not isinstance(strategy_id, str) or not _STRATEGY_ID.fullmatch(strategy_id):
+        raise LiveHostProtocolError(
+            f"strategy id {strategy_id!r} must match [A-Za-z0-9][A-Za-z0-9._-]* and be at "
+            "most 64 characters; it names the strategy's socket directory"
+        )
     return Path(socket_dir) / strategy_id / SOCKET_FILE_NAME
 
 
