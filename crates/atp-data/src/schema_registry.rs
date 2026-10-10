@@ -239,7 +239,9 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
     SchemaDescriptor {
         entity_id: "hot-swap-live-designation",
         owner_srs: "SRS-RESV-005",
-        writer_path: "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs",
+        // SRS-EXE-001 moved the reader and writer into one shared module, so the Hot-Swap
+        // CLI, the operator designation CLI and the live execution host cannot drift.
+        writer_path: "crates/atp-orchestrator/src/live_designation_store.rs",
         marker: "DESIGNATION_STATE_SCHEMA_VERSION",
         magic: Some("RESV005-LIVE-DESIGNATION-STATE v1"),
         current_version: 1,

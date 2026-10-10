@@ -36,13 +36,16 @@
 //! that attempt; the durable demotion-pending lockout that would also block a
 //! later retry is SRS-RESV-004's (see `hot_swap_promotion_contract.deferred[]`).
 
-use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
+use atp_execution::designation::LiveDesignationConfirmation;
 use atp_orchestrator::cooldown::{ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
     CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
     HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
     PaperHistoryFingerprint, PaperHistorySource, PromotionPorts, SwapOrigin,
+};
+use atp_orchestrator::live_designation_store::{
+    load_designation, save_designation, PublishOutcome,
 };
 use atp_orchestrator::{
     demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
@@ -59,7 +62,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Read the REAL clock, with `--now` as the only override.
 ///
@@ -91,22 +93,6 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 /// not in a file header: the journal is append-only under `O_APPEND`, so no writer
 /// owns "the start of the file" and a header would race.
 const PROMOTION_LOG_SCHEMA_VERSION: u64 = 1;
-
-/// Schema version of the durable live-designation snapshot, embedded in the magic
-/// line so an old reader hits a clean version gate rather than "corrupt".
-const DESIGNATION_STATE_SCHEMA_VERSION: u64 = 1;
-
-/// Magic header compared for exact equality on load; a foreign or truncated file
-/// refuses the whole read rather than reading as "nothing is designated" — that
-/// silent empty would let a promotion run over a live strategy.
-const STATE_MAGIC: &str = "RESV005-LIVE-DESIGNATION-STATE v1";
-
-const _: () = {
-    assert!(DESIGNATION_STATE_SCHEMA_VERSION == 1);
-    assert!(matches!(STATE_MAGIC.as_bytes().last(), Some(b'1')));
-};
-
-static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const USAGE: &str = "\
 resv005_hot_swap_promote_cli — SRS-RESV-005 Hot-Swap promotion (demote, then promote)
@@ -830,157 +816,6 @@ fn cmd_status(rest: &[String]) -> Result<(), String> {
             .unwrap_or_else(|| "none".to_string())
     );
     Ok(())
-}
-
-// --------------------------------------------------------------------------- //
-// Durable live-designation snapshot
-// --------------------------------------------------------------------------- //
-
-/// Read the durable designation.
-///
-/// Three states, kept apart: **no file** = nothing designated (a first run);
-/// **a valid snapshot** = whatever it names; **a foreign, truncated, or malformed
-/// file** = an ERROR. Collapsing the third into the first is exactly the failure
-/// this gate exists to prevent — it would let a promotion proceed as though no
-/// strategy were live.
-fn load_designation(path: &Path) -> Result<LiveDesignation, String> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LiveDesignation::new())
-        }
-        Err(error) => {
-            return Err(format!(
-                "cannot read state file {}: {error}",
-                path.display()
-            ))
-        }
-    };
-    let mut lines = content.lines();
-    match lines.next() {
-        Some(line) if line == STATE_MAGIC => {}
-        _ => {
-            return Err(format!(
-                "state file {} is not a {STATE_MAGIC} snapshot (refusing a foreign or \
-                 truncated file rather than reading it as 'nothing is live')",
-                path.display()
-            ))
-        }
-    }
-    let mut designation = LiveDesignation::new();
-    let mut seen = false;
-    for (index, line) in lines.enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some(id) = line.strip_prefix("designated\t") else {
-            return Err(format!(
-                "state file {} line {} is malformed (expected a `designated\\t<id>` line)",
-                path.display(),
-                index + 2
-            ));
-        };
-        if seen {
-            return Err(format!(
-                "state file {} names more than one designated strategy; refusing an \
-                 ambiguous single-live record (SyRS SYS-2a)",
-                path.display()
-            ));
-        }
-        if id.trim().is_empty() {
-            return Err(format!(
-                "state file {} designates a blank strategy id",
-                path.display()
-            ));
-        }
-        let id = StrategyId::new(id.trim());
-        let confirmation = LiveDesignationConfirmation::from_operator(
-            id.clone(),
-            "restored from the durable designation snapshot",
-        )
-        .map_err(|error| error.to_string())?;
-        designation
-            .designate(id, confirmation)
-            .map_err(|error| error.to_string())?;
-        seen = true;
-    }
-    Ok(designation)
-}
-
-/// Publish the designation durably: unique scratch file → fsync → atomic rename →
-/// parent-directory fsync. The repo's durable-file pattern
-/// (`orch005_rollback_cli::save_state`, `atp_simulation::backtest_store`).
-/// Outcome of publishing the designation, split by whether the durable state
-/// ALREADY CHANGED when the failure happened.
-///
-/// The distinction is load-bearing for the REST surface: a non-2xx there documents
-/// "nothing mutated; retry is allowed". A failure AFTER the atomic rename has
-/// already moved the live slot, so reporting it the same way would invite a retry
-/// of a swap that already took effect.
-enum PublishOutcome {
-    /// Written and fsynced.
-    Durable,
-    /// Failed BEFORE the rename — the durable record is untouched.
-    FailedBeforePublish(String),
-    /// The rename SUCCEEDED (the next process will read the new designation) but a
-    /// later step did not. The live slot has moved; only crash-durability is
-    /// uncertain.
-    PublishedNotSynced(String),
-}
-
-fn save_designation(path: &Path, designation: &LiveDesignation) -> PublishOutcome {
-    let mut body = String::from(STATE_MAGIC);
-    body.push('\n');
-    if let Some(id) = designation.designated() {
-        // Write-side validation is a SUPERSET of the loader's, so a successful
-        // save can never produce a snapshot the next load refuses.
-        if id.as_str().trim().is_empty() || id.as_str().contains(['\t', '\n']) {
-            return PublishOutcome::FailedBeforePublish(format!(
-                "designated strategy id {:?} would write a snapshot the loader refuses",
-                id.as_str()
-            ));
-        }
-        body.push_str(&format!("designated\t{}\n", id.as_str()));
-    }
-    let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
-    let scratch = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
-    {
-        let mut file = match fs::File::create(&scratch) {
-            Ok(file) => file,
-            Err(error) => {
-                return PublishOutcome::FailedBeforePublish(format!(
-                    "cannot create scratch {}: {error}",
-                    scratch.display()
-                ))
-            }
-        };
-        if let Err(error) = file
-            .write_all(body.as_bytes())
-            .and_then(|()| file.sync_all())
-        {
-            let _ = fs::remove_file(&scratch);
-            return PublishOutcome::FailedBeforePublish(format!(
-                "cannot write scratch {}: {error}",
-                scratch.display()
-            ));
-        }
-    }
-    if let Err(error) = fs::rename(&scratch, path) {
-        let _ = fs::remove_file(&scratch);
-        return PublishOutcome::FailedBeforePublish(format!(
-            "cannot publish {} (rename): {error}",
-            path.display()
-        ));
-    }
-    // PAST THIS POINT the live slot has moved: the rename is atomic and the next
-    // process reads the new designation. A failure here is NOT "nothing happened".
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    match fs::File::open(parent.unwrap_or_else(|| Path::new("."))).and_then(|dir| dir.sync_all()) {
-        Ok(()) => PublishOutcome::Durable,
-        Err(error) => {
-            PublishOutcome::PublishedNotSynced(format!("cannot fsync state directory: {error}"))
-        }
-    }
 }
 
 // --------------------------------------------------------------------------- //

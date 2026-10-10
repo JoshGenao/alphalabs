@@ -332,6 +332,109 @@ def check_route_order_guard(config: dict, exec_src: str) -> str:
     )
 
 
+def _arm_block(source: str, arm: str) -> str:
+    """Return the text of the match arm starting at ``arm`` up to the next arm.
+
+    The binary's tier arms are ``"fixture" => { ... }`` and ``"ib" => { ... }``;
+    the arm ends at the next ``" =>`` or ``other =>`` at a shallower nesting, which
+    for this flat match is simply the next arm marker.
+    """
+    start = source.find(arm)
+    if start < 0:
+        fail(f"live host binary has no `{arm}` arm")
+    rest = source[start + len(arm) :]
+    ends = [index for index in (rest.find('" =>'), rest.find("other =>")) if index >= 0]
+    return rest[: min(ends)] if ends else rest
+
+
+def check_live_host(config: dict, root: Path = ROOT) -> str:
+    """The production call site: lock, fresh read, durable route, socket identity.
+
+    Pins the four properties the live execution host adds on top of route_order:
+    the swap guard is held (named binding) across a FRESH designation read and the
+    durable route, in that order; the host never calls the non-durable or
+    caller-trusting entry points; one module owns the snapshot format; and the
+    strategy identity comes from the socket, never the frame. Also pins that the
+    live IB tier refuses rather than wiring a fixture freshness probe.
+    """
+    spec = contract_block(config)["live_host"]
+    module = (root / spec["module"]).read_text(encoding="utf-8")
+    try:
+        submit = _fn_block(module, spec["submit_fn"])
+    except AssertionError as error:
+        fail(str(error))
+    # Scan code, not prose: a comment naming a call ("not `acquire_creating`") must
+    # neither satisfy nor trip the ordering check.
+    submit = re.sub(r"//[^\n]*", "", submit)
+    if "route_order_durably" not in submit:
+        fail(f"stripping comments from `{spec['submit_fn']}` removed its code; check the stripper")
+
+    positions = []
+    for call in spec["ordered_calls"]:
+        index = submit.find(call)
+        if index < 0:
+            fail(f"live host `{spec['submit_fn']}` never makes `{call}`")
+        positions.append(index)
+    if positions != sorted(positions):
+        fail(
+            f"live host `{spec['submit_fn']}` makes {spec['ordered_calls']} out of order: the "
+            "designation must be read under the swap guard, and routed while it is still held"
+        )
+    for call in spec["forbidden_calls"]:
+        if call in submit:
+            fail(f"live host `{spec['submit_fn']}` calls `{call}`, bypassing the durable route")
+
+    owners = []
+    for path in sorted((root / "crates").rglob("*.rs")):
+        text = path.read_text(encoding="utf-8")
+        for name in spec["designation_store_fns"]:
+            if re.search(rf"\bfn\s+{name}\s*\(", text):
+                owners.append((name, str(path.relative_to(root))))
+    strays = [owner for owner in owners if owner[1] != spec["designation_store"]]
+    if strays:
+        fail(
+            f"the designation snapshot is read or written outside {spec['designation_store']}: "
+            f"{strays} - two copies of the format can drift"
+        )
+    if {name for name, _ in owners} != set(spec["designation_store_fns"]):
+        fail(f"{spec['designation_store']} no longer defines {spec['designation_store_fns']}")
+
+    server = (root / spec["server_module"]).read_text(encoding="utf-8")
+    if spec["socket_identity"] not in server:
+        fail(
+            "the socket server no longer derives each connection's strategy from the socket "
+            f"it was bound for (`{spec['socket_identity']}`)"
+        )
+    for token in spec["socket_hardening"]:
+        if token not in server:
+            fail(
+                f"the socket server no longer makes `{token}`: each strategy's socket must "
+                "be private to its own directory under a socket_dir closed to other users"
+            )
+    protocol = (root / spec["protocol_module"]).read_text(encoding="utf-8")
+    keys = re.search(r"const SUBMIT_KEYS: \[&str; \d+\] = \[(.*?)\];", protocol, re.S)
+    if keys is None:
+        fail("the protocol module has no SUBMIT_KEYS allow-list")
+    for forbidden in spec["protocol_forbidden_keys"]:
+        if f'"{forbidden}"' in keys.group(1):
+            fail(f"a submit frame may carry `{forbidden}`; the socket is the only identity")
+
+    binary = (root / spec["binary"]).read_text(encoding="utf-8")
+    live_arm = _arm_block(binary, spec["live_tier_arm"])
+    if spec["live_tier_refusal_owner"] not in live_arm:
+        fail(f"the live IB tier arm no longer names its blocker {spec['live_tier_refusal_owner']}")
+    for token in spec["live_tier_forbidden"]:
+        if token in live_arm:
+            fail(f"the live IB tier arm uses `{token}`; it must refuse to start")
+
+    return (
+        f"live host `{spec['submit_fn']}` holds the swap guard across a fresh designation read "
+        "and route_order_durably (never submit_live_order / route_order); one module owns the "
+        "snapshot format; identity comes from the socket; the live IB tier refuses "
+        f"(owner {spec['live_tier_refusal_owner']})"
+    )
+
+
 def check_cargo_test_smoke(config: dict) -> str:
     block = contract_block(config)
     crate = block["execution_crate"]["crate"]
@@ -359,9 +462,22 @@ def check_cargo_test_smoke(config: dict) -> str:
             f"cargo test -p {crate} --test srs_exe_001_live_designation failed:\n"
             f"{integ.stdout}\n{integ.stderr}"
         )
+    host = subprocess.run(
+        [cargo, "test", "-p", "atp-orchestrator", "--test", "srs_exe_001_live_host", "--quiet"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if host.returncode != 0:
+        fail(
+            "cargo test -p atp-orchestrator --test srs_exe_001_live_host failed:\n"
+            f"{host.stdout}\n{host.stderr}"
+        )
     return (
-        f"cargo test -p {crate} --lib + srs_exe_001_live_designation: PASS "
-        "(authority invariants + only-the-designated-strategy-routes verified)"
+        f"cargo test -p {crate} --lib + srs_exe_001_live_designation + "
+        "atp-orchestrator srs_exe_001_live_host: PASS (authority invariants + only the "
+        "designated strategy reaches the broker through the live host)"
     )
 
 
@@ -384,6 +500,7 @@ def run_checks() -> list[str]:
     config = load_config()
     exec_src = execution_source(config)
     evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence.append(check_live_host(config))
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
@@ -391,7 +508,9 @@ def run_checks() -> list[str]:
 def assert_live_designation_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     exec_src = execution_source(config, root)
-    return [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence.append(check_live_host(config, root))
+    return evidence
 
 
 def main(argv: list[str] | None = None) -> int:
