@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import talib
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -120,6 +120,10 @@ def test_rsi_property_matches_batch_talib_after_stabilisation(
 
 
 @given(period=st.integers(min_value=2, max_value=25), closes=_CLOSE_STRATEGY)
+# The case Hypothesis found on 2026-10-10: a 723.0 spike earlier in the series leaves a
+# cancellation residual in TA-Lib's running sum of squares, so its band sits 1.03e-5 above
+# the exact answer (10.0) that the wrapper returns two bars later.
+@example(period=2, closes=[10.0] * 76 + [723.0, 50.34872221044259, 10.0, 10.0])
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_bbands_property_matches_batch_talib(period: int, closes: list[float]) -> None:
     if len(closes) < period:
@@ -145,7 +149,14 @@ def test_bbands_property_matches_batch_talib(period: int, closes: list[float]) -
         # The wrapper is the more accurate side there, so this is a reference-precision artifact,
         # not a wrapper defect. Carry a relative term alongside the contract's absolute tolerance.
         # The product contract value (_TOL["BollingerBands"]) is unchanged.
-        tolerance = max(_TOL["BollingerBands"], 1e-6, abs(batch_leg) * 1e-6)
+        #
+        # The relative term must scale with the LARGEST price in the series, not the last one.
+        # TA-Lib keeps RUNNING sums, so an earlier spike leaves a cancellation residual of about
+        # eps * max(x)^2 in the variance long after it leaves the window, and the square root
+        # turns that into ~sqrt(eps) * max|x| on the band (num_std = 2, plus headroom: x4).
+        # Scaling by the final price alone let a spike-then-flat series fail (2026-10-10).
+        cancellation = 4 * math.sqrt(sys.float_info.epsilon) * max(abs(c) for c in closes)
+        tolerance = max(_TOL["BollingerBands"], 1e-6, abs(batch_leg) * 1e-6, cancellation)
         assert abs(wrapper_leg - batch_leg) <= tolerance, (
             f"BB.{leg} period={period} n={len(closes)} wrapper={wrapper_leg} batch={batch_leg}"
         )
