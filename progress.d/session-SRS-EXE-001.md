@@ -11,7 +11,11 @@ it: only fixture CLIs called `route_order`. Landing 1 builds the production call
 site, the **live execution host**, plus the operator designation command. Landing 2
 (next session) builds the Python order path and the operator REST/CLI handlers.
 
-Plan, with the operator's decisions: `progress.d/plan-SRS-EXE-001.md`.
+Operator decisions (2026-10-10): lift the adapter live-account gate when the live
+tier can start (deferred from this landing, see below); two serialized landings;
+the live tier refuses until SRS-MD-004; approve both critic changes; integrate
+serialized over Codex r3's latent finding. (The plan file was not committed:
+`agent_pool.py integrate` refuses any branch-committed `progress.d/plan-*.md`.)
 
 ## What I built
 
