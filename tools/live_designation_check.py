@@ -435,6 +435,55 @@ def check_live_host(config: dict, root: Path = ROOT) -> str:
     )
 
 
+def check_operator_and_strategy_legs(config: dict, root: Path = ROOT) -> str:
+    """Landing 2: the operator surface is mounted in the SHIPPED serve(), and the
+    strategy order leg delivers through the SDK's one delivery seam.
+
+    "Implemented is not shipped" (adversarial-precheck rule 7): a mount function only
+    tests call would leave the documented routes at 501 in production.
+    """
+
+    block = contract_block(config)
+    surface = block["operator_surface"]
+    module = (root / surface["module"]).read_text(encoding="utf-8")
+    for operation in surface["operations"]:
+        if f'"{operation}"' not in module:
+            fail(f"{surface['module']} no longer registers `{operation}`")
+    if f"def {surface['mount']}(" not in module:
+        fail(f"{surface['module']} has no `{surface['mount']}`")
+    serve_src = (root / surface["serve_module"]).read_text(encoding="utf-8")
+    # Python source: serve() runs from `def serve(` to the next top-level def.
+    start = serve_src.find("\ndef serve(")
+    if start < 0:
+        fail(f"{surface['serve_module']} has no top-level serve()")
+    end = serve_src.find("\ndef ", start + 1)
+    serve_body = serve_src[start : end if end > 0 else None]
+    if f"{surface['serve_arm']}(runtime, env)" not in serve_body:
+        fail(
+            f"serve() does not call {surface['serve_arm']}: the live-designation routes "
+            "would be mountable in tests and 501 in production"
+        )
+    if surface["opt_in_knob"] not in serve_src:
+        fail(f"{surface['serve_module']} no longer reads {surface['opt_in_knob']}")
+
+    leg = block["strategy_order_leg"]
+    client = (root / leg["module"]).read_text(encoding="utf-8")
+    if f"class {leg['router']}" not in client:
+        fail(f"{leg['module']} has no `{leg['router']}`")
+    if f"{leg['delivery']}(" not in client:
+        fail(
+            f"{leg['router']} no longer delivers through `{leg['delivery']}`, the SDK's "
+            "one validated delivery seam"
+        )
+    if not (root / leg["latency_cli"]).is_file():
+        fail(f"{leg['latency_cli']} is missing")
+    return (
+        f"operator surface: {len(surface['operations'])} operations registered by "
+        f"{surface['mount']} and composed in serve() via {surface['serve_arm']}; strategy "
+        f"order leg {leg['router']} delivers through {leg['delivery']}"
+    )
+
+
 def check_cargo_test_smoke(config: dict) -> str:
     block = contract_block(config)
     crate = block["execution_crate"]["crate"]
@@ -501,6 +550,7 @@ def run_checks() -> list[str]:
     exec_src = execution_source(config)
     evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
     evidence.append(check_live_host(config))
+    evidence.append(check_operator_and_strategy_legs(config))
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
@@ -510,6 +560,7 @@ def assert_live_designation_static(config: dict, root: Path = ROOT) -> list[str]
     exec_src = execution_source(config, root)
     evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
     evidence.append(check_live_host(config, root))
+    evidence.append(check_operator_and_strategy_legs(config, root))
     return evidence
 
 

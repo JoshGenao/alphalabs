@@ -34,6 +34,7 @@ from live_designation_check import (  # noqa: E402
     check_designation_error,
     check_engine_ownership,
     check_live_host,
+    check_operator_and_strategy_legs,
     check_registry,
     check_route_order_guard,
     check_routing_decision,
@@ -352,16 +353,67 @@ class LiveHostTest(unittest.TestCase):
         self._caught("uses `FreshMarketDataFixture`")
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_eight_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 6 static + the live host + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 8)
+class OperatorAndStrategyLegsTest(unittest.TestCase):
+    """Landing 2: each guard in check_operator_and_strategy_legs catches its regression."""
 
-    def test_assert_live_designation_static_emits_seven_evidence_items(self) -> None:
+    def setUp(self) -> None:
+        self.config = load_config()
+        block = self.config["live_designation_contract"]
+        self.paths = {
+            "surface": block["operator_surface"]["module"],
+            "serve": block["operator_surface"]["serve_module"],
+            "client": block["strategy_order_leg"]["module"],
+            "latency": block["strategy_order_leg"]["latency_cli"],
+        }
+        self.root = Path(tempfile.mkdtemp(prefix="exe001-l2-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for rel in self.paths.values():
+            target = self.root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / rel, target)
+
+    def _mutate(self, key: str, old: str, new: str) -> None:
+        path = self.root / self.paths[key]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    def _caught(self, needle: str) -> None:
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_operator_and_strategy_legs(self.config, self.root)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_the_unmutated_copy_passes(self) -> None:
+        evidence = check_operator_and_strategy_legs(self.config, self.root)
+        self.assertIn("composed in serve()", evidence)
+
+    def test_a_dropped_operation_is_caught(self) -> None:
+        self._mutate("surface", '"live show"', '"live list"')
+        self._caught("`live show`")
+
+    def test_an_arm_serve_never_calls_is_caught(self) -> None:
+        self._mutate(
+            "serve",
+            "    _mount_live_designation_arm(runtime, env)\n",
+            "    pass\n",
+        )
+        self._caught("serve() does not call _mount_live_designation_arm")
+
+    def test_bypassing_the_sdk_delivery_seam_is_caught(self) -> None:
+        self._mutate("client", "deliver_order_event(", "on_order_event_direct(")
+        self._caught("deliver_order_event")
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_nine_evidence_items(self) -> None:
+        evidence = run_checks()
+        # 6 static + live host + operator/strategy legs + 1 cargo smoke.
+        self.assertEqual(len(evidence), 9)
+
+    def test_assert_live_designation_static_emits_eight_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_live_designation_static(config, ROOT)
-        self.assertEqual(len(evidence), 7)
+        self.assertEqual(len(evidence), 8)
 
 
 if __name__ == "__main__":

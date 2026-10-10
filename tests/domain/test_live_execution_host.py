@@ -38,6 +38,7 @@ pytestmark = [pytest.mark.domain, pytest.mark.safety]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOST_BIN = "live_execution_host"
 DESIGNATE_BIN = "exe001_live_designation_cli"
+LATENCY_BIN = "nfr_p1_ack_cli"
 MAGIC = "ATP-LIVE-HOST/1"
 
 LIVE = "live-a"
@@ -50,13 +51,29 @@ def binaries() -> dict[str, Path]:
     if cargo is None:
         pytest.skip("cargo not on PATH; cannot build the live execution host")
     build = subprocess.run(
-        [cargo, "build", "-p", "atp-orchestrator", "--bin", HOST_BIN, "--bin", DESIGNATE_BIN],
+        [
+            cargo,
+            "build",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            HOST_BIN,
+            "--bin",
+            DESIGNATE_BIN,
+            "-p",
+            "atp-types",
+            "--bin",
+            LATENCY_BIN,
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     assert build.returncode == 0, f"cargo build failed:\n{build.stderr}"
-    paths = {name: REPO_ROOT / "target" / "debug" / name for name in (HOST_BIN, DESIGNATE_BIN)}
+    paths = {
+        name: REPO_ROOT / "target" / "debug" / name
+        for name in (HOST_BIN, DESIGNATE_BIN, LATENCY_BIN)
+    }
     for name, path in paths.items():
         assert path.exists(), f"{name} was not built at {path}"
     return paths
@@ -299,3 +316,123 @@ def test_each_strategy_socket_is_private_to_its_own_directory(binaries, root, ho
         assert directory.stat().st_mode & 0o777 == 0o700, strategy
         assert sorted(p.name for p in directory.iterdir()) == ["order.sock"], strategy
         assert (directory / "order.sock").lstat().st_mode & 0o777 == 0o600, strategy
+
+
+# --------------------------------------------------------------------------- #
+# End to end from the Python Strategy API (landing 2)
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingStrategy:
+    def __init__(self) -> None:
+        self.events: list = []
+
+    def on_order_event(self, context, event) -> None:
+        self.events.append(event)
+
+
+def _router(root: Path, strategy_id: str):
+    from atp_strategy.api import AssetClass, StrategyConfig
+    from atp_strategy.live_client import LiveHostClient, LiveOrderRouter, socket_path
+    from atp_strategy.warmup import WarmupState
+
+    strategy = _RecordingStrategy()
+    client = LiveHostClient(socket_path(root / "s", strategy_id), reply_timeout_s=10)
+    router = LiveOrderRouter(
+        client=client,
+        strategy=strategy,
+        context=None,
+        config=StrategyConfig(strategy_id, AssetClass.EQUITY),
+        warmup_state=lambda: WarmupState.COMPLETE,
+    )
+    return router, strategy, client
+
+
+def _limit_order():
+    from atp_strategy.api import OrderRequest, OrderSide, OrderType
+
+    return OrderRequest("AAPL", 1, OrderSide.BUY, OrderType.LIMIT, limit_price=190.25)
+
+
+def _promote_through_the_operator_runtime(binaries, state: Path, strategy_id: str) -> dict:
+    """Designate through the SHIPPED REST handler, not the binary directly."""
+
+    from atp_orchestration import mount_live_designation
+    from atp_runtime import OperatorInterfaceRuntime
+
+    runtime = OperatorInterfaceRuntime()
+    mount_live_designation(runtime, state_path=state, binary=binaries[DESIGNATE_BIN])
+    unconfirmed = runtime.dispatch_rest("POST", f"/api/v1/strategies/{strategy_id}/promote-live")
+    assert unconfirmed[0] == 428, unconfirmed
+    assert not state.exists(), "an unconfirmed promote wrote the designation"
+    status, body = runtime.dispatch_rest(
+        "POST", f"/api/v1/strategies/{strategy_id}/promote-live?confirm=true"
+    )
+    assert status == 200, body
+    return body
+
+
+def test_python_strategies_one_live_five_paper_end_to_end(binaries, root, host_factory):
+    """The AC through the Strategy API: operator confirms, host routes, callbacks arrive."""
+
+    from atp_strategy.api import OrderEventType
+
+    promoted = _promote_through_the_operator_runtime(binaries, root / "designation", LIVE)
+    assert promoted["is_live"] is True and promoted["promoted_at"]
+    host = host_factory([LIVE, *PAPER])
+    routers = {sid: _router(root, sid) for sid in [LIVE, *PAPER]}
+    try:
+        for _ in range(3):
+            for router, _strategy, _client in routers.values():
+                router.order(_limit_order())
+        for router, _strategy, _client in routers.values():
+            assert router.deliver_pending() == 3
+
+        live_events = routers[LIVE][1].events
+        assert [e.event_type for e in live_events] == [OrderEventType.ACK] * 3
+        assert all(e.order_id.startswith("IB-") for e in live_events), live_events
+        for paper in PAPER:
+            events = routers[paper][1].events
+            assert [e.event_type for e in events] == [OrderEventType.REJECTED] * 3, paper
+            assert all(
+                e.reason.startswith("NON_LIVE_STRATEGY_SUBMISSION/NotDesignatedLiveStrategy")
+                for e in events
+            ), events
+        # The wire's own record: three live orders, zero paper orders.
+        assert host.wire() == [LIVE, LIVE, LIVE]
+    finally:
+        for _, _, client in routers.values():
+            client.close()
+
+
+def test_live_ack_latency_p95_is_under_one_second_on_the_host_clock(binaries, root, host_factory):
+    """NFR-P1, MVP form: strategy API invocation -> acknowledgement callback, p95.
+
+    Measured on the FIXTURE tier and labelled so by the verdict line: this proves the
+    strategy-side and host path. The IB leg (a real broker acknowledgement) is the
+    operator's live-ib run.
+    """
+
+    _promote_through_the_operator_runtime(binaries, root / "designation", LIVE)
+    host_factory([LIVE, PAPER[0]])
+    router, strategy, client = _router(root, LIVE)
+    try:
+        for _ in range(200):
+            router.order(_limit_order())
+            router.deliver_pending()
+    finally:
+        client.close()
+    samples = router.latency_samples_ns
+    assert len(samples) == 200 and len(strategy.events) == 200
+    verdict = subprocess.run(
+        [str(binaries[LATENCY_BIN]), "--tier", "FIXTURE"],
+        input="\n".join(str(sample) for sample in samples),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    lines = [line for line in verdict.stdout.splitlines() if line.startswith("nfr:")]
+    assert len(lines) == 1, verdict.stdout + verdict.stderr
+    assert "nfr:NFR-P1 clock:host-monotonic tier:FIXTURE samples:200" in lines[0]
+    assert lines[0].endswith("verdict:PASS"), lines[0]
+    assert verdict.returncode == 0

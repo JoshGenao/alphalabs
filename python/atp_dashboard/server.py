@@ -39,6 +39,7 @@ from atp_logs_service import LogEventPublisher, wire_logs
 from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback, rollback_is_served
 from atp_orchestration.hot_swap_execution import mount_hot_swap_execution
 from atp_orchestration.hot_swap_triggers import mount_hot_swap_triggers
+from atp_orchestration.live_designation import mount_live_designation
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
@@ -766,6 +767,37 @@ def _mount_hot_swap_execution_arm(
     )
 
 
+#: Opt-in for the SRS-EXE-001 live-designation routes. Its own knob, not the display
+#: knob it depends on: an arm's opt-in has to be about that arm (Hot-Swap review r21).
+LIVE_DESIGNATION_ROUTES_KNOB = "ATP_LIVE_DESIGNATION_ROUTES"
+
+
+def _mount_live_designation_arm(runtime: OperatorInterfaceRuntime, env: Mapping[str, str]) -> None:
+    """Register SRS-EXE-001's promote-live / ``live promote`` / ``live show`` when asked.
+
+    Opt-in on ``ATP_LIVE_DESIGNATION_ROUTES=1``. It then REQUIRES
+    ``ATP_HOT_SWAP_DESIGNATION_STATE``: the designation must be written to the same
+    snapshot the Hot-Swap moves and the live execution host re-reads on every order. A
+    second knob naming a second file would let the operator designate a strategy the
+    host never sees. Any other value of the opt-in knob is refused rather than read as
+    "off", so a typo cannot silently leave the routes at 501.
+    """
+
+    opt_in = env.get(LIVE_DESIGNATION_ROUTES_KNOB)
+    if not opt_in:
+        return
+    if opt_in != "1":
+        raise ValueError(f"{LIVE_DESIGNATION_ROUTES_KNOB} must be 1 or unset, got {opt_in!r}")
+    state_path = env.get("ATP_HOT_SWAP_DESIGNATION_STATE")
+    if not state_path:
+        raise ValueError(
+            f"{LIVE_DESIGNATION_ROUTES_KNOB}=1 but ATP_HOT_SWAP_DESIGNATION_STATE is not set: "
+            "the live-designation routes must write the one snapshot the Hot-Swap and the "
+            "live execution host read"
+        )
+    mount_live_designation(runtime, state_path=state_path)
+
+
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Run the dashboard until interrupted (blocking; SIGINT/SIGTERM shut down)."""
 
@@ -782,6 +814,8 @@ def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     # in tests (adversarial review r9). Composed without fixture safety inputs, so it
     # refuses with a 501 that NAMES its missing producers — see the arm's docstring.
     _mount_hot_swap_execution_arm(runtime, env)
+    # SRS-EXE-001's live-designation routes, opt-in (see the arm's docstring).
+    _mount_live_designation_arm(runtime, env)
     logs_publisher = _mount_logs_arm(runtime, env)
 
     # Startup is all-or-nothing. The publishers run on their own threads, so a

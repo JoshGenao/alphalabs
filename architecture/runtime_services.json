@@ -1599,13 +1599,33 @@
       ],
       "note": "The production call site of route_order. Per order: the in-process order mutex, then the SAME trigger_config_store::ExclusiveGuard over the designation snapshot that resv005_hot_swap_promote_cli holds for a swap, then a fresh read of that snapshot (nothing cached), then ExecutionEngine::route_order_durably (authority gate, SRS-EXE-009 write-ahead outbox, ERR-2/ERR-3 gates, broker). The guard is held until the broker call returns, so an order can never interleave with a swap moving the live slot. The strategy is identified by the socket the connection arrived on, never by the frame. The live IB tier refuses to start: every live order must pass the stale-data gate and no production freshness producer exists yet (SRS-MD-004)."
     },
+    "operator_surface": {
+      "module": "python/atp_orchestration/live_designation.py",
+      "mount": "mount_live_designation",
+      "operations": [
+        "POST /api/v1/strategies/{strategy_id}/promote-live",
+        "live promote",
+        "live show"
+      ],
+      "binary": "crates/atp-orchestrator/src/bin/exe001_live_designation_cli.rs",
+      "serve_arm": "_mount_live_designation_arm",
+      "serve_module": "python/atp_dashboard/server.py",
+      "opt_in_knob": "ATP_LIVE_DESIGNATION_ROUTES",
+      "note": "Writes the SAME snapshot the host re-reads and the Hot-Swap moves (ATP_HOT_SWAP_DESIGNATION_STATE). promoted_at is null when nothing moved: the snapshot records who is live, not when."
+    },
+    "strategy_order_leg": {
+      "module": "python/atp_strategy/live_client.py",
+      "router": "LiveOrderRouter",
+      "delivery": "deliver_order_event",
+      "latency_cli": "crates/atp-types/src/bin/nfr_p1_ack_cli.rs",
+      "note": "The order() leg a live StrategyContext delegates to: warm-up + asset-class guards, then the host, then ONE queued ACK or REJECTED event per order; a refused reply raises. Prices convert to minor units exactly or are refused. The whole live StrategyContext and the process hosting a user strategy in its container are other features' surfaces."
+    },
     "deferred": [
-      "Operator confirmation surface on the SRS-API-001 runtime: register handlers for POST /api/v1/strategies/{strategy_id}/promote-live and the `live promote <id> --confirm` / `live show` CLI commands that call exe001_live_designation_cli (which already requires a non-empty acknowledgement and refuses a second live strategy) \u2014 owner SRS-EXE-001 (second landing)",
       "Real IB order dispatch: the live execution host refuses its live IB tier until a production market-data freshness producer exists, because a fixture freshness probe on real orders would disable stale-data blocking \u2014 owner SRS-MD-004. The adapter's live-account gate (TcpIbGateway serves IbAccountKind::Paper only) lifts with that change. submit_live_order stays pub because the ERR-1/2/3 contract pins it; the host never calls it (live_host.forbidden_calls)",
       "Live-tier preconditions (Codex r3): the host calls the broker while holding the designation guard, by design, so a hung broker call would hold the live slot. Before the ib tier may start: (1) it must be wired only to a transport with a bounded per-operation deadline (TcpIbGateway::IB_OP_DEADLINE, 15 s, already exists); (2) a deadline expiry on order submission must be recorded as an UNKNOWN outcome, not REJECTED: today adapter_error_to_structured maps it to an ordinary structured error and route_order_durably then marks the intent REJECTED (no live order) although IB may have accepted it (broker-and-live rule 16) \u2014 owners SRS-EXE-009 (outbox outcome handling) and SRS-EXE-001 (the change that enables the ib tier). A host-layer timeout is deliberately not added: releasing the guard while a submit is in flight reopens the Hot-Swap race",
       "Per-strategy socket mount: the live host makes each strategy's socket private to its own 0700 directory (<socket_dir>/<id>/order.sock) and refuses a socket_dir open to group/other, but only the container runtime decides which directory a container receives. The concrete Docker StrategyContainerRuntime must bind-mount <socket_dir>/<id>/ into container <id> and nothing else; peer-credential checks (UnixStream::peer_cred) are not stable Rust. The runtime is listed as deferred in orchestrator_lifecycle_contract with owners SRS-ARCH-004 / SRS-ORCH-002, both already passes:true, so this gap has no open owner — operator decision",
       "Demotion: clearing the live slot with the liquidation sequence is the Hot-Swap demotion (SRS-RESV-004). exe001_live_designation_cli deliberately has no demote, so a strategy's open IB positions are never left with no strategy allowed to manage them \u2014 owner SRS-RESV-004",
-      "NFR-P1 / AC-15 live-order acknowledgement latency proof (<1,000 ms p95 from strategy API invocation to the strategy's acknowledgement callback, host monotonic clock for the MVP; PTP measurement is R2 SRS-PERF-001) needs the Python strategy order client \u2014 owner SRS-EXE-001 (second landing). SRS-EXE-001 stays passes:false until these land and the operator runs the live-ib verification."
+      "NFR-P1 / AC-15 on a real IB acknowledgement: the strategy-side path is measured (python atp_strategy.live_client.LiveOrderRouter -> live host -> on_order_event, p95 via nfr_p1_ack_cli, host monotonic clock, tier FIXTURE in tests/domain/test_live_execution_host.py). The same measurement with --tier LIVE_IB needs the live tier, so it is the operator's live-ib run after SRS-MD-004 \u2014 owner SRS-EXE-001 (operator verification). SRS-EXE-001 stays passes:false until that run."
     ]
   },
   "outbox_reconciliation_contract": {

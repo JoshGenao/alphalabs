@@ -376,12 +376,20 @@ COMMANDS: tuple[Command, ...] = (
             ),
             _CONFIRM,
         ),
+        # Real outcomes of the SRS-EXE-001 handler: an invalid strategy id or a second
+        # live strategy is a 400 (USAGE_ERROR; moving the live slot is a Hot-Swap), a
+        # designation binary that does not answer is a 504 (TIMEOUT), an unreadable
+        # snapshot or binary output is a 500 (INTERNAL_ERROR). There is no strategy
+        # registry to answer NOT_FOUND from, so it is not promised.
         exit_codes=(
             ExitCode.OK,
-            ExitCode.NOT_FOUND,
+            ExitCode.USAGE_ERROR,
             ExitCode.CONFIRMATION_REQUIRED,
+            ExitCode.TIMEOUT,
+            ExitCode.INTERNAL_ERROR,
         ),
         requires_confirmation=True,
+        served_by="SRS-EXE-001",
     ),
     Command(
         group=Group.LIVE,
@@ -389,6 +397,9 @@ COMMANDS: tuple[Command, ...] = (
         summary="Show which strategy currently holds the live IB designation.",
         srs_refs=("SRS-API-001", "SYS-2c"),
         arguments=(_JSON,),
+        # An unreadable snapshot is INTERNAL_ERROR, never "nothing is live".
+        exit_codes=(ExitCode.OK, ExitCode.TIMEOUT, ExitCode.INTERNAL_ERROR),
+        served_by="SRS-EXE-001",
     ),
     # ----- Hot-Swap  [SRS-RESV-003..006, SYS-49a..e]
     Command(
