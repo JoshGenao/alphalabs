@@ -230,6 +230,16 @@ def encode_submit(correlation_id: str, request: OrderRequest) -> str:
         raise LiveHostProtocolError(
             f"quantity must be an int, got {type(request.quantity).__name__}"
         )
+    # The same well-formedness the host's OrderSubmission::validate enforces, checked
+    # BEFORE sending: a host rejection of these would be reported back as a REJECTED
+    # event whose own payload is invalid (a negative remaining_quantity), and the
+    # strategy would never see it (Codex landing-2 r2).
+    if request.quantity <= 0:
+        raise LiveHostProtocolError(
+            f"quantity must be positive (direction is `side`), got {request.quantity}"
+        )
+    if not request.symbol.strip():
+        raise LiveHostProtocolError("symbol is blank")
     fields = [
         PROTOCOL_MAGIC,
         "submit",

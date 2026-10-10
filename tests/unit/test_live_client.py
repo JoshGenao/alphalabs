@@ -80,6 +80,9 @@ def test_a_limit_order_encodes_to_the_host_frame() -> None:
         OrderRequest("AA\tPL", 1, OrderSide.BUY, OrderType.MARKET),  # breaks the frame
         OrderRequest("", 1, OrderSide.BUY, OrderType.MARKET),
         OrderRequest("AAPL", True, OrderSide.BUY, OrderType.MARKET),  # bool is not an int
+        OrderRequest("AAPL", 0, OrderSide.BUY, OrderType.MARKET),
+        OrderRequest("AAPL", -5, OrderSide.SELL, OrderType.MARKET),  # direction is `side`
+        OrderRequest("   ", 1, OrderSide.BUY, OrderType.MARKET),
     ],
 )
 def test_orders_the_host_would_refuse_are_refused_before_sending(request_) -> None:
@@ -211,6 +214,25 @@ def test_the_client_order_id_is_used_as_the_correlation_id_when_given() -> None:
     router, client, _ = _router(LiveAck("mine-1", "IB-1", True, "FIXTURE"))
     router.order(OrderRequest("AAPL", 1, OrderSide.BUY, OrderType.MARKET, client_order_id="mine-1"))
     assert client.sent[0][0] == "mine-1"
+
+
+def test_a_malformed_quantity_raises_from_order_before_anything_is_sent() -> None:
+    # Sent anyway, the host would reject it and the REJECTED event would carry a negative
+    # remaining_quantity that the SDK's own payload guard refuses to deliver. The REAL
+    # client encodes before it connects, so a socket that does not exist proves the
+    # refusal happened first (the message is the quantity's, not the connection's).
+    missing = Path(tempfile.mkdtemp(prefix="lc-")) / "order.sock"
+    strategy = _Strategy()
+    router = LiveOrderRouter(
+        client=LiveHostClient(missing, reply_timeout_s=1),
+        strategy=strategy,
+        context=None,
+        config=StrategyConfig("live-a", AssetClass.EQUITY),
+        warmup_state=lambda: WarmupState.COMPLETE,
+    )
+    with pytest.raises(LiveHostProtocolError, match="quantity must be positive"):
+        router.order(OrderRequest("AAPL", -1, OrderSide.SELL, OrderType.MARKET))
+    assert router.deliver_pending() == 0 and strategy.events == []
 
 
 def test_warmup_and_asset_class_guards_run_before_anything_is_sent() -> None:
