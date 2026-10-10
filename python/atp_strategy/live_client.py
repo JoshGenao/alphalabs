@@ -278,7 +278,7 @@ def encode_submit(correlation_id: str, request: OrderRequest) -> str:
             raise LiveHostProtocolError(
                 f"{request.order_type.value} order does not take {name}; refusing to drop it"
             )
-        if wanted:
+        if wanted and price is not None:
             fields.append(f"{name}_minor={price_to_minor(name, price)}")
     frame = "\t".join(fields)
     if len(frame.encode()) > MAX_FRAME_BYTES:
