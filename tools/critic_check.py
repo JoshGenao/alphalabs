@@ -371,7 +371,12 @@ def check_safety_critical_paired(diff: DiffSlice, report: Report) -> None:
     # (safety-paths.md, and any future connectivity-/live-mode- playbook), so they match by
     # filename while carrying no behavior at all. Both carve-outs are DOCUMENTATION prefixes --
     # no source, test, or config path can reach them.
-    _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/")
+    #
+    # .harness/runs/ is the same shape again: per-feature evidence (review rounds, step
+    # output, EVIDENCE.md) named for the feature, so a feature whose id is itself a safety
+    # token (srs-exe-001) matched by its evidence path alone, while integrate refuses to run
+    # unless that evidence is committed. Evidence carries no behavior. (SRS-EXE-001, 2026-10-10)
+    _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/", ".harness/runs/")
     safety_files = [
         p
         for p in diff.files_changed
