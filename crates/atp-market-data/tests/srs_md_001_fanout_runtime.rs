@@ -462,6 +462,14 @@ fn srs_md_001_subscribe_requires_registered_queue() {
         f.runtime.subscribe(&sub("ghost", "AAPL")),
         Err(FanOutRuntimeError::SubscriberNotRegistered)
     );
+    // An empty id is permanently invalid, so it gets its own error rather
+    // than "not registered" (SRS-MD-005 precedence).
+    assert_eq!(
+        f.runtime.subscribe(&sub("  ", "AAPL")),
+        Err(FanOutRuntimeError::Registry(
+            SubscriptionRegistryError::EmptyStrategyId
+        ))
+    );
     assert!(f.feed.calls().is_empty());
 
     assert_eq!(
@@ -790,10 +798,10 @@ fn srs_md_001_concurrent_subscribers_share_one_line() {
 #[test]
 fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
     // Review r3: drop receivers on other threads WHILE ingest and unsubscribe
-    // run, so the departure-note path and the Disconnected path race for real.
-    // Overlap is MEASURED, not inferred: each dropper records whether the
-    // ingest loop was mid-flight at the moment it dropped.
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    // run. This is a STRESS test of the once-only release property; it does
+    // not prove a drop landed inside an ingest call (scheduling decides that).
+    // The deterministic overlap is pinned by
+    // srs_md_001_receiver_dropped_while_ingest_holds_the_lock_is_released_once.
 
     const DROPPERS: usize = 8;
     let f = fixture(100);
@@ -810,11 +818,8 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
     }
     assert_eq!(f.runtime.lines_in_use(), 4);
 
-    let ingesting = Arc::new(AtomicBool::new(true));
-    let overlapping_drops = Arc::new(AtomicU32::new(0));
     let ingest = {
         let runtime = Arc::clone(&f.runtime);
-        let ingesting = Arc::clone(&ingesting);
         thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut seq = 0;
@@ -829,7 +834,6 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
                     .unwrap()
                     .disconnected;
             }
-            ingesting.store(false, Ordering::SeqCst);
             disconnected
         })
     };
@@ -838,8 +842,6 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
         .enumerate()
         .map(|(n, receiver)| {
             let runtime = Arc::clone(&f.runtime);
-            let ingesting = Arc::clone(&ingesting);
-            let overlapping = Arc::clone(&overlapping_drops);
             thread::spawn(move || {
                 // Read a little, unsubscribe one symbol (racing ingest), then drop.
                 let _ = receiver.recv_timeout(Duration::from_millis(5));
@@ -847,9 +849,6 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
                     runtime
                         .unsubscribe(&id(&format!("s-{n}")), &key(symbols[n % 4]))
                         .unwrap();
-                }
-                if ingesting.load(Ordering::SeqCst) {
-                    overlapping.fetch_add(1, Ordering::SeqCst);
                 }
                 drop(receiver);
             })
@@ -860,10 +859,6 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
     }
     let disconnected = ingest.join().unwrap();
 
-    assert!(
-        overlapping_drops.load(Ordering::SeqCst) >= 1,
-        "no receiver was dropped while ingest was running - the race was not exercised"
-    );
     // Reaping happens inside whichever call comes first (an ingest, the
     // loop's own lines_in_use read, a dropper's unsubscribe), so ingest sees
     // only some of the departures. The property is "every subscriber is gone
@@ -895,6 +890,110 @@ fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
             "{symbol}"
         );
     }
+}
+
+/// Lag sink that, on its FIRST call, signals and then waits to be released.
+/// It is called under the runtime lock, so it holds an `ingest` call
+/// mid-flight for as long as the test needs.
+struct GatedLag {
+    started: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl SubscriberLagSink for GatedLag {
+    fn record(&self, _event: SubscriberLagEvent) {
+        if let Some(started) = self.started.lock().unwrap().take() {
+            started.send(()).unwrap();
+            // Bounded: a test bug fails here instead of hanging the suite.
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the test never released the gated lag sink");
+        }
+    }
+}
+
+#[test]
+fn srs_md_001_receiver_dropped_while_ingest_holds_the_lock_is_released_once() {
+    // Review r4: a DETERMINISTIC overlap. `slow` is first in fan-out order
+    // and full, so ingest calls the lag sink under the runtime lock; the sink
+    // holds the call there while another thread drops `victim`'s receiver.
+    // Both release paths then fire for ONE subscriber: the drop leaves a
+    // departure note AND the same ingest sees Disconnected on victim's send.
+    // The line must be released exactly once and the note found stale.
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let feed = Arc::new(FakeFeed::default());
+    let changes = Arc::new(ChangeSpy::default());
+    let runtime = Arc::new(FanOutRuntime::new(
+        100,
+        Shared(Arc::clone(&feed)),
+        Shared(Arc::new(FakeWindow::default())),
+        Shared(Arc::clone(&changes)),
+        GatedLag {
+            started: Mutex::new(Some(started_tx)),
+            release: Mutex::new(release_rx),
+        },
+    ));
+    let slow = runtime.register_subscriber(id("slow"), 1).unwrap();
+    let victim = runtime.register_subscriber(id("victim"), 4).unwrap();
+    runtime.subscribe(&sub("slow", "AAPL")).unwrap();
+    runtime.subscribe(&sub("victim", "AAPL")).unwrap();
+    // Tick 1 fills slow's one-slot queue.
+    runtime.ingest(tick("AAPL", 1), Instant::now()).unwrap();
+
+    let in_flight = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.ingest(tick("AAPL", 2), Instant::now()).unwrap())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("ingest never reached the lag sink");
+    // The ingest call is now parked INSIDE the runtime lock.
+    drop(victim);
+    release_tx.send(()).unwrap();
+    let report = in_flight.join().unwrap();
+    // FIRST call after the in-flight ingest (every call reaps, so any read
+    // before this would hide a non-stale note): the note must be stale.
+    assert_eq!(
+        runtime.reap_departed().unwrap(),
+        0,
+        "victim's departure note is stale: the in-flight ingest already released it"
+    );
+
+    assert_eq!(
+        report,
+        IngestReport {
+            delivered: 0,
+            dropped: 1,
+            disconnected: 1
+        },
+        "the in-flight ingest saw victim's send fail and deregistered it"
+    );
+    assert_eq!(runtime.dropped_count(&id("victim")), None);
+    assert_eq!(
+        runtime.subscriber_count(&key("AAPL")),
+        1,
+        "slow still holds AAPL"
+    );
+    assert_eq!(
+        feed.calls(),
+        vec![open("AAPL")],
+        "no close while slow holds it"
+    );
+    let removed = changes
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.change == SubscriptionChange::SubscriberRemoved)
+        .count();
+    assert_eq!(removed, 1, "victim released exactly once");
+
+    drop(slow);
+    assert_eq!(runtime.lines_in_use(), 0);
+    assert_eq!(feed.calls(), vec![open("AAPL"), close("AAPL")]);
 }
 
 // ------------------------------------------------------------------------- //

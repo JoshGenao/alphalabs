@@ -374,6 +374,9 @@ where
         let key = request
             .security_key()
             .map_err(SubscriptionRegistryError::from)?;
+        if request.strategy_id.as_str().trim().is_empty() {
+            return Err(SubscriptionRegistryError::EmptyStrategyId.into());
+        }
         let mut inner = self.lock()?;
         if !inner.queues.contains_key(&request.strategy_id) {
             return Err(FanOutRuntimeError::SubscriberNotRegistered);
@@ -561,14 +564,25 @@ where
     ) -> Vec<SubscriptionChange> {
         let mut changes = Vec::new();
         for key in keys {
-            // The id was validated at registration, so unsubscribe cannot
-            // fail here; a key the registry no longer holds is NotSubscribed.
-            if let Ok(change) = inner.registry.unsubscribe(strategy_id, key, &self.changes) {
-                if change == SubscriptionChange::Closed {
-                    self.feed.close(key);
-                }
-                changes.push(change);
+            // The registry refuses an unsubscribe only for an empty strategy
+            // id, and `register_subscriber` refuses those, so this cannot fail.
+            // If it ever does, the line would stay open and keep counting
+            // toward the IB line limit with nothing recording it. Panicking
+            // here poisons the runtime lock, which fails every later mutation
+            // closed - loud and safe, never a silent leak.
+            let change = match inner.registry.unsubscribe(strategy_id, key, &self.changes) {
+                Ok(change) => change,
+                Err(error) => panic!(
+                    "SRS-MD-001 invariant broken: releasing {} for {} failed ({error}); \
+                     refusing to continue with an unreleased upstream line",
+                    key.symbol(),
+                    strategy_id.as_str()
+                ),
+            };
+            if change == SubscriptionChange::Closed {
+                self.feed.close(key);
             }
+            changes.push(change);
         }
         changes
     }

@@ -555,15 +555,25 @@ class FanOutRuntimeTest(unittest.TestCase):
 
     def test_register_before_open_is_caught(self) -> None:
         # Moving the open after the registration would let a subscriber exist
-        # without an upstream line when the open fails.
-        moved = self._mutate(
-            "self.feed.open(&key).map_err(FanOutRuntimeError::Upstream)?;", ""
-        ).replace(
+        # without an upstream line when the open fails. Mutated inside the
+        # `subscribe` SPAN: `Ok(change) => change,` also appears elsewhere.
+        start = self.rt_src.index("pub fn subscribe(")
+        end = self.rt_src.index("pub fn unsubscribe(")
+        subscribe = self.rt_src[start:end]
+        for anchor in (
+            "self.feed.open(&key).map_err(FanOutRuntimeError::Upstream)?;",
             "Ok(change) => change,",
-            "Ok(change) => { self.feed.open(&key).ok(); change }",
-            1,
+        ):
+            self.assertEqual(subscribe.count(anchor), 1, anchor)
+        moved_fn = subscribe.replace(
+            "self.feed.open(&key).map_err(FanOutRuntimeError::Upstream)?;", ""
+        ).replace("Ok(change) => change,", "Ok(change) => { self.feed.open(&key).ok(); change }")
+        self.assertGreater(
+            moved_fn.index("self.feed.open(&key)"),
+            moved_fn.rindex(".subscribe(request, &self.window, &self.changes)"),
+            "the mutation must really move the open after the registration",
         )
-        self.assertNotIn("Ok(change) => change,", moved, "second edit must apply")
+        moved = self.rt_src.replace(subscribe, moved_fn)
         self._assert_caught(check_open_before_register, moved, "BEFORE registering")
 
     def test_missing_rollback_is_caught(self) -> None:

@@ -11,9 +11,11 @@ and pins the honest scope: the real IB feed + PTP-clock latency evidence is
 serialized, so ``feature_list.json`` keeps SRS-MD-001 ``passes:false``.
 
 The latency probe is a wall-clock test, so it is ``#[ignore]``-gated in Rust
-and run here explicitly with ``--ignored``. Its budget is 100 ms against a
-measured tail in the low hundreds of microseconds, so host load cannot plausibly
-flip it; a red here is a real regression, not a flake to re-run.
+and is NOT run by this suite (a debug-build timing assertion does not belong in
+the default gate). It runs through the evidence recorder instead:
+``python3 tools/evidence.py run SRS-MD-001 --step 2 -- cargo test -p
+atp-market-data --test srs_md_001_fanout_runtime -- --include-ignored``. This
+suite pins, statically, that it stays gated and honestly labelled.
 """
 
 from __future__ import annotations
@@ -100,6 +102,9 @@ def _assert_passed(test_name: str, *, ignored: bool = False) -> None:
         "srs_md_001_runtime_is_the_md_002_line_counter",
         # Thread safety: concurrent subscribers still share one upstream open.
         "srs_md_001_concurrent_subscribers_share_one_line",
+        # Deterministic overlap: a drop while ingest holds the lock fires both
+        # release paths for one subscriber; the line is released exactly once.
+        "srs_md_001_receiver_dropped_while_ingest_holds_the_lock_is_released_once",
         # Receivers dropped on other threads mid-ingest: each line closes once.
         "srs_md_001_receivers_dropped_during_ingest_release_every_line_once",
     ],
@@ -108,26 +113,27 @@ def test_fanout_runtime_post_condition(test_name: str) -> None:
     _assert_passed(test_name)
 
 
-def test_fixture_feed_latency_probe_is_within_budget_and_honestly_labelled() -> None:
-    # AC: <= 100 ms added fan-out latency. On the fixture feed the probe
-    # asserts p99.9 within budget and writes the percentiles it measured.
-    artifact = REPO_ROOT / "target" / "verification" / "srs_md_001_fanout_latency_probe.json"
-    artifact.unlink(missing_ok=True)  # the report must come from THIS run
-    _assert_passed("srs_md_001_fanout_latency_probe_on_fixture_feed", ignored=True)
-    report = json.loads(artifact.read_text(encoding="utf-8"))
-    latency = report["latency_ns"]
-    for key in ("p50", "p95", "p99", "p99_9", "max"):
-        assert isinstance(latency[key], int), key
-    assert latency["p50"] <= latency["p95"] <= latency["p99"] <= latency["p99_9"] <= latency["max"]
-    assert report["budget_ns"] == 100 * 1_000_000
-    assert latency["p99_9"] <= report["budget_ns"]
-    assert report["p99_9_within_budget"] is True
-    assert report["dropped"] == 0
-    assert report["samples"] == report["subscribers"] * report["ticks"]
-    # Scope honesty: the probe must not pass itself off as the AC's artifact.
-    assert "not an SRS-MD-001 verification artifact" in report["kind"]
-    assert "PTP not verified" in report["clock"]
-    assert "no IB" in report["feed"]
+def test_latency_probe_stays_gated_and_honestly_labelled() -> None:
+    # The probe is wall-clock: it must stay #[ignore]-gated so the default
+    # gate never runs a timing assertion, and its report must say it is NOT
+    # the AC's verification artifact (no IB feed, no PTP clock).
+    source = (REPO_ROOT / "crates" / "atp-market-data" / "tests" / f"{TEST_BINARY}.rs").read_text(
+        encoding="utf-8"
+    )
+    probe = "fn srs_md_001_fanout_latency_probe_on_fixture_feed()"
+    assert source.count(probe) == 1
+    head = source[: source.index(probe)].rstrip().splitlines()
+    assert head[-1].startswith("#[ignore"), "the wall-clock probe must stay #[ignore]-gated"
+    assert head[-2] == "#[test]"
+    body = source[source.index(probe) :]
+    for label in (
+        "not an SRS-MD-001 verification artifact",
+        "PTP not verified",
+        "fixture (in-process; no IB)",
+        "SUBSCRIPTION_FANOUT_LATENCY_MS",
+        "LatencyPercentiles::from_samples",
+    ):
+        assert label in body, label
 
 
 def test_scope_honesty_feature_stays_unflipped() -> None:
