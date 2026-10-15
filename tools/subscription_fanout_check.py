@@ -594,6 +594,47 @@ def check_close_on_last_leave(config: dict, rt_src: str) -> str:
     return "FanOutRuntime::unsubscribe closes the upstream line only on the last leave (Closed)"
 
 
+def check_departure_reaping(config: dict, rt_src: str) -> str:
+    """Every runtime decision is taken over reaped state.
+
+    A dropped receiver leaves a departure note. If the shared lock helper did
+    not reap those notes, a line held only by a dropped receiver on a security
+    that never ticks again would stay open and keep counting toward the IB line
+    limit. The generation comparison is what stops a stale note from tearing
+    down a re-registration of the same strategy id.
+    """
+    spec = contract_block(config)["runtime"]["departure_reaping"]
+    lock_body = _compact(_private_fn_block(rt_src, spec["method"]))
+    if _compact(spec["token"]) not in lock_body:
+        fail(
+            f"FanOutRuntime::{spec['method']} must reap departure notes "
+            f"(`{spec['token']}`) before returning the lock - otherwise a dropped "
+            "receiver's lines stay open until a tick that may never come"
+        )
+    if _compact(spec["generation_token"]) not in _compact(_private_fn_block(rt_src, "reap")):
+        fail(
+            "FanOutRuntime::reap must compare the note's generation with the live queue "
+            f"(`{spec['generation_token']}`) - a stale note must never tear down a "
+            "re-registration"
+        )
+    return (
+        "FanOutRuntime reaps dropped receivers inside its lock helper (every call sees "
+        "reaped state) and matches each note on registration generation, not name"
+    )
+
+
+def _private_fn_block(source: str, fn_name: str) -> str:
+    """Body of ``fn <fn_name>`` whether or not it is ``pub``."""
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\b[^{{;]*\{{", source)
+    if not match:
+        fail(f"Rust source is missing function `{fn_name}`")
+    depth, index = 1, match.end()
+    while index < len(source) and depth:
+        depth += {"{": 1, "}": -1}.get(source[index], 0)
+        index += 1
+    return source[match.end() : index - 1]
+
+
 def check_non_blocking_fanout(config: dict, rt_src: str) -> str:
     spec = contract_block(config)["runtime"]["non_blocking_fanout"]
     body = _compact(_fn_block(rt_src, spec["method"]))
@@ -670,6 +711,7 @@ _STATIC_CHECKS = (
     ("open_before_register", check_open_before_register, "runtime"),
     ("close_on_last_leave", check_close_on_last_leave, "runtime"),
     ("non_blocking_fanout", check_non_blocking_fanout, "runtime"),
+    ("departure_reaping", check_departure_reaping, "runtime"),
     ("runtime_vendor_isolation", check_vendor_isolation, "runtime"),
 )
 

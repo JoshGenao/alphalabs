@@ -89,6 +89,9 @@ def _assert_passed(test_name: str, *, ignored: bool = False) -> None:
         "srs_md_001_slow_reader_drops_only_its_own_ticks",
         # A gone receiver is deregistered and its sole-held lines closed.
         "srs_md_001_dropped_receiver_releases_its_lines",
+        "srs_md_001_dropped_receiver_on_an_idle_security_frees_its_line",
+        "srs_md_001_stale_departure_note_never_tears_down_a_re_registration",
+        "srs_md_001_reap_departed_counts_each_dropped_subscriber_once",
         "srs_md_001_deregister_releases_every_line",
         # The runtime is the live line counter for the SRS-MD-002 gate.
         "srs_md_001_runtime_is_the_md_002_line_counter",

@@ -592,6 +592,61 @@ fn srs_md_001_dropped_receiver_releases_its_lines() {
 }
 
 #[test]
+fn srs_md_001_dropped_receiver_on_an_idle_security_frees_its_line() {
+    // Review r1: a receiver dropped while its security never ticks again must
+    // not keep the line open (and counting toward the IB line limit) until a
+    // tick that may never come. The next runtime call of ANY kind reaps it.
+    let f = fixture(1);
+    let idle = f.runtime.register_subscriber(id("idle"), 4).unwrap();
+    f.runtime.subscribe(&sub("idle", "ILLQ")).unwrap();
+    drop(idle);
+
+    // No tick for ILLQ ever arrives. A read already reflects the release ...
+    assert_eq!(f.runtime.lines_in_use(), 0);
+    assert_eq!(f.feed.calls(), vec![open("ILLQ"), close("ILLQ")]);
+    assert_eq!(f.runtime.dropped_count(&id("idle")), None);
+    // ... so the single-line budget is free for the next strategy.
+    let _next = f.runtime.register_subscriber(id("next"), 4).unwrap();
+    f.runtime.subscribe(&sub("next", "MSFT")).unwrap();
+    assert_eq!(f.runtime.lines_in_use(), 1);
+    // The explicit sweep has nothing left to do.
+    assert_eq!(f.runtime.reap_departed().unwrap(), 0);
+}
+
+#[test]
+fn srs_md_001_stale_departure_note_never_tears_down_a_re_registration() {
+    // Identity, not name: a strategy that deregisters and registers again
+    // gets a NEW queue. Dropping its OLD receiver afterwards must not reap it.
+    let f = fixture(100);
+    let old = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
+    f.runtime.deregister_subscriber(&id("live-a")).unwrap();
+    let new = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
+    f.runtime.subscribe(&sub("live-a", "AAPL")).unwrap();
+    drop(old);
+
+    assert_eq!(f.runtime.reap_departed().unwrap(), 0, "the note is stale");
+    let report = f.runtime.ingest(tick("AAPL", 1), Instant::now()).unwrap();
+    assert_eq!(report.delivered, 1);
+    assert_eq!(report.disconnected, 0);
+    assert_eq!(new.try_recv().unwrap().tick.tick_seq, 1);
+    assert_eq!(f.feed.calls(), vec![open("AAPL")]);
+}
+
+#[test]
+fn srs_md_001_reap_departed_counts_each_dropped_subscriber_once() {
+    let f = fixture(100);
+    let a = f.runtime.register_subscriber(id("a"), 4).unwrap();
+    let b = f.runtime.register_subscriber(id("b"), 4).unwrap();
+    f.runtime.subscribe(&sub("a", "AAPL")).unwrap();
+    f.runtime.subscribe(&sub("b", "AAPL")).unwrap();
+    drop(a);
+    drop(b);
+    assert_eq!(f.runtime.reap_departed().unwrap(), 2);
+    assert_eq!(f.runtime.reap_departed().unwrap(), 0);
+    assert_eq!(f.feed.calls(), vec![open("AAPL"), close("AAPL")]);
+}
+
+#[test]
 fn srs_md_001_deregister_releases_every_line() {
     let f = fixture(100);
     let _a = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
@@ -715,7 +770,9 @@ fn srs_md_001_fanout_latency_probe_on_fixture_feed() {
                 assert!(delivery.tick.tick_seq > last_seq, "in-order delivery");
                 last_seq = delivery.tick.tick_seq;
             }
-            samples_ns
+            // Hand the receiver back: dropping it here would deregister the
+            // subscriber (by design) before its drop count is read below.
+            (samples_ns, receiver)
         }));
     }
     assert_eq!(f.runtime.lines_in_use(), symbols.len() as u32);
@@ -727,10 +784,9 @@ fn srs_md_001_fanout_latency_probe_on_fixture_feed() {
         assert_eq!(report.delivered as usize, SUBSCRIBERS);
     }
 
-    let samples: Vec<u64> = readers
-        .into_iter()
-        .flat_map(|r| r.join().unwrap())
-        .collect();
+    let (per_reader, receivers): (Vec<Vec<u64>>, Vec<SubscriberReceiver>) =
+        readers.into_iter().map(|r| r.join().unwrap()).unzip();
+    let samples: Vec<u64> = per_reader.into_iter().flatten().collect();
     let dropped: u64 = (0..SUBSCRIBERS)
         .map(|n| {
             f.runtime
@@ -781,6 +837,7 @@ fn srs_md_001_fanout_latency_probe_on_fixture_feed() {
 
     assert_eq!(samples.len(), SUBSCRIBERS * TICKS as usize);
     assert_eq!(dropped, 0, "the probe must not lose ticks");
+    drop(receivers);
     assert!(
         within_budget,
         "p99.9 fan-out latency {} ns exceeds the {budget_ns} ns budget",

@@ -33,6 +33,7 @@ from subscription_fanout_check import (  # noqa: E402
     check_change_sink_port,
     check_close_on_last_leave,
     check_dedup_invariant,
+    check_departure_reaping,
     check_input_validation,
     check_line_counter_impl,
     check_market_data_tick,
@@ -93,6 +94,7 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
             "consults the restart window before opening an upstream line",
             "closes the upstream line only on the last leave (Closed)",
             "delivers with non-blocking try_send",
+            "reaps dropped receivers inside its lock helper",
             "srs_md_001_fanout_runtime: PASS",
             "feature_list.json keeps SRS-MD-001 passes:false",
         ):
@@ -468,12 +470,12 @@ class VendorIsolationTest(_Fixture):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_twenty_one_items(self) -> None:
-        # 20 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 21)
+    def test_run_checks_emits_twenty_two_items(self) -> None:
+        # 21 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 22)
 
-    def test_static_evidence_is_twenty_items(self) -> None:
-        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 20)
+    def test_static_evidence_is_twenty_one_items(self) -> None:
+        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 21)
 
 
 # --------------------------------------------------------------------------- #
@@ -506,9 +508,24 @@ class FanOutRuntimeTest(unittest.TestCase):
             check_open_before_register,
             check_close_on_last_leave,
             check_non_blocking_fanout,
+            check_departure_reaping,
             check_vendor_isolation,
         ):
             check(self.config, self.rt_src)
+
+    def test_lock_without_reap_is_caught(self) -> None:
+        mutated = self._mutate(
+            "        let mut inner = self.lock_unreaped()?;\n        self.reap(&mut inner);\n"
+            "        Ok(inner)",
+            "        let inner = self.lock_unreaped()?;\n        Ok(inner)",
+        )
+        self._assert_caught(check_departure_reaping, mutated, "reap departure notes")
+
+    def test_reap_without_generation_match_is_caught(self) -> None:
+        mutated = self._mutate(
+            ".is_some_and(|queue| queue.generation == generation);", ".is_some();"
+        )
+        self._assert_caught(check_departure_reaping, mutated, "generation")
 
     def test_missing_upstream_close_is_caught(self) -> None:
         mutated = self._mutate("fn close(&self, key: &SecurityKey);", "")

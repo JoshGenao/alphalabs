@@ -67,6 +67,16 @@ use crate::{
 /// implementation must not block on the network: it should enqueue the
 /// request (the IB API is asynchronous - the request is written to the socket
 /// and data arrives later through `ingest`).
+///
+/// **No re-entry, one lock order.** Every port the runtime holds (this one,
+/// the [`RestartWindowGate`], the [`SubscriptionChangeSink`] and the
+/// [`SubscriberLagSink`]) is called with the runtime's non-reentrant lock
+/// held. An implementation must never call back into the runtime from inside
+/// a port method (that self-deadlocks), and any lock it takes inside a port
+/// method must never be held while calling INTO the runtime, for example a
+/// tick thread that holds the bridge's lock while calling
+/// [`FanOutRuntime::ingest`]. The order is always runtime lock first, then
+/// the port's own lock.
 pub trait UpstreamMarketDataFeed: Send + Sync {
     fn open(&self, key: &SecurityKey) -> Result<(), UpstreamFeedError>;
     fn close(&self, key: &SecurityKey);
@@ -118,7 +128,8 @@ pub struct SubscriberLagEvent {
 }
 
 /// Publication port for [`SubscriberLagEvent`]s. Called while the runtime
-/// lock is held, so it must not block.
+/// lock is held, so it must not block and must not call back into the
+/// runtime (see the lock-order rule on [`UpstreamMarketDataFeed`]).
 pub trait SubscriberLagSink: Send + Sync {
     fn record(&self, event: SubscriberLagEvent);
 }
@@ -181,13 +192,38 @@ pub struct IngestReport {
     pub disconnected: u32,
 }
 
+/// Departure notes left by dropped receivers: `(strategy, generation)`.
+/// A separate lock from the runtime's, taken only briefly and never while
+/// calling anything else, so a receiver can be dropped from any thread at any
+/// time without deadlocking against a runtime call in progress.
+type Departures = Arc<Mutex<Vec<(StrategyId, u64)>>>;
+
 /// The receiving end of one strategy container's delivery queue. Dropping it
-/// disconnects the subscriber: the next tick routed to it deregisters the
-/// strategy and releases every line it held alone.
+/// deregisters the subscriber and releases every line it held alone. The drop
+/// leaves a departure note that the very next runtime call acts on (any call,
+/// not only a tick for one of its securities), so a line on a security that
+/// never ticks again cannot stay open and keep counting toward the IB line
+/// limit. [`FanOutRuntime::reap_departed`] acts on the notes explicitly.
 #[derive(Debug)]
 pub struct SubscriberReceiver {
     strategy_id: StrategyId,
+    /// Which registration this receiver belongs to. A strategy that
+    /// re-registers gets a new generation, so a late note from its OLD
+    /// receiver can never tear down the new queue (identity, not name).
+    generation: u64,
+    departures: Departures,
     receiver: Receiver<Arc<FanOutDelivery>>,
+}
+
+impl Drop for SubscriberReceiver {
+    fn drop(&mut self) {
+        // A poisoned departures lock still holds a valid Vec (pushes cannot
+        // leave it half-written), so the note is recorded either way.
+        self.departures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((self.strategy_id.clone(), self.generation));
+    }
 }
 
 impl SubscriberReceiver {
@@ -211,6 +247,7 @@ impl SubscriberReceiver {
 #[derive(Debug)]
 struct SubscriberQueue {
     sender: SyncSender<Arc<FanOutDelivery>>,
+    generation: u64,
     /// Securities this subscriber holds, so deregistration can release them
     /// without reading the registry's private map.
     keys: BTreeSet<SecurityKey>,
@@ -222,12 +259,14 @@ struct SubscriberQueue {
 struct Inner {
     registry: ConsolidatedSubscriptionRegistry,
     queues: HashMap<StrategyId, SubscriberQueue>,
+    next_generation: u64,
 }
 
 /// SRS-MD-001 thread-safe fan-out runtime. Share it across threads with an
 /// `Arc`; every method takes `&self`.
 pub struct FanOutRuntime<F, W, C, L> {
     inner: Mutex<Inner>,
+    departures: Departures,
     feed: F,
     window: W,
     changes: C,
@@ -248,7 +287,9 @@ where
             inner: Mutex::new(Inner {
                 registry: ConsolidatedSubscriptionRegistry::new(line_limit),
                 queues: HashMap::new(),
+                next_generation: 0,
             }),
+            departures: Arc::new(Mutex::new(Vec::new())),
             feed,
             window,
             changes,
@@ -277,10 +318,13 @@ where
             return Err(FanOutRuntimeError::SubscriberAlreadyRegistered);
         }
         let (sender, receiver) = mpsc::sync_channel(capacity);
+        let generation = inner.next_generation;
+        inner.next_generation += 1;
         inner.queues.insert(
             strategy_id.clone(),
             SubscriberQueue {
                 sender,
+                generation,
                 keys: BTreeSet::new(),
                 dropped: 0,
                 lagging: false,
@@ -288,6 +332,8 @@ where
         );
         Ok(SubscriberReceiver {
             strategy_id,
+            generation,
+            departures: Arc::clone(&self.departures),
             receiver,
         })
     }
@@ -399,9 +445,13 @@ where
         tick: MarketDataTick,
         upstream_received_at: Instant,
     ) -> Result<IngestReport, FanOutRuntimeError> {
-        let mut inner = self.lock()?;
+        let mut inner = self.lock_unreaped()?;
+        let reaped = self.reap(&mut inner);
         let recipients = inner.registry.fan_out(&tick)?;
-        let mut report = IngestReport::default();
+        let mut report = IngestReport {
+            disconnected: reaped,
+            ..IngestReport::default()
+        };
         if recipients.is_empty() {
             return Ok(report);
         }
@@ -456,6 +506,16 @@ where
         Ok(report)
     }
 
+    /// Act on every departure note left by a dropped receiver: deregister the
+    /// subscriber and close the lines it held alone. Every other runtime call
+    /// already does this first; this is for a caller that wants it done on a
+    /// cadence even when nothing else is happening. Returns how many
+    /// subscribers were deregistered.
+    pub fn reap_departed(&self) -> Result<u32, FanOutRuntimeError> {
+        let mut inner = self.lock_unreaped()?;
+        Ok(self.reap(&mut inner))
+    }
+
     /// Number of distinct upstream lines currently open.
     pub fn lines_in_use(&self) -> u32 {
         self.read().registry.distinct_subscriptions()
@@ -499,16 +559,58 @@ where
         changes
     }
 
+    /// Deregister every subscriber whose receiver was dropped. A note whose
+    /// generation no longer matches the live queue belongs to an earlier
+    /// registration (deregistered, or replaced by a re-registration) and is
+    /// discarded.
+    fn reap(&self, inner: &mut Inner) -> u32 {
+        let notes = std::mem::take(
+            &mut *self
+                .departures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let mut reaped = 0;
+        for (strategy_id, generation) in notes {
+            let current = inner
+                .queues
+                .get(&strategy_id)
+                .is_some_and(|queue| queue.generation == generation);
+            if !current {
+                continue;
+            }
+            if let Some(queue) = inner.queues.remove(&strategy_id) {
+                self.release_all(inner, &strategy_id, &queue.keys);
+                reaped += 1;
+            }
+        }
+        reaped
+    }
+
+    /// The runtime lock, with departed subscribers already reaped, so no
+    /// decision is ever made over a line a dropped receiver still holds.
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, FanOutRuntimeError> {
+        let mut inner = self.lock_unreaped()?;
+        self.reap(&mut inner);
+        Ok(inner)
+    }
+
+    fn lock_unreaped(&self) -> Result<MutexGuard<'_, Inner>, FanOutRuntimeError> {
         self.inner.lock().map_err(|_| FanOutRuntimeError::Poisoned)
     }
 
     /// Read-only access survives poisoning: reporting a count cannot make
-    /// inconsistent state worse, and the operator still needs to see it.
+    /// inconsistent state worse, and the operator still needs to see it. A
+    /// healthy lock reaps first, so a count never includes a line held only
+    /// by a dropped receiver.
     fn read(&self) -> MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        match self.lock() {
+            Ok(inner) => inner,
+            Err(_) => self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        }
     }
 }
 
