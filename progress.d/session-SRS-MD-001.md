@@ -68,6 +68,8 @@ Recorded in `.harness/runs/SRS-MD-001/` (run via `tools/evidence.py run`):
 
 ## Critic verdicts
 
+Adversarial rounds: 5 (all WARN, no BLOCK; reviewer claude-fallback)
+
   deterministic: APPROVE - no findings on every commit and on origin/main..HEAD.
   judgment (tools/adversarial_review.py, claude-fallback - Codex output was
   unparseable every round): 5 rounds, all WARN, no BLOCK.
