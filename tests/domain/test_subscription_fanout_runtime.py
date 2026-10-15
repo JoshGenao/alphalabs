@@ -100,6 +100,8 @@ def _assert_passed(test_name: str, *, ignored: bool = False) -> None:
         "srs_md_001_runtime_is_the_md_002_line_counter",
         # Thread safety: concurrent subscribers still share one upstream open.
         "srs_md_001_concurrent_subscribers_share_one_line",
+        # Receivers dropped on other threads mid-ingest: each line closes once.
+        "srs_md_001_receivers_dropped_during_ingest_release_every_line_once",
     ],
 )
 def test_fanout_runtime_post_condition(test_name: str) -> None:

@@ -787,6 +787,116 @@ fn srs_md_001_concurrent_subscribers_share_one_line() {
     drop(receivers);
 }
 
+#[test]
+fn srs_md_001_receivers_dropped_during_ingest_release_every_line_once() {
+    // Review r3: drop receivers on other threads WHILE ingest and unsubscribe
+    // run, so the departure-note path and the Disconnected path race for real.
+    // Overlap is MEASURED, not inferred: each dropper records whether the
+    // ingest loop was mid-flight at the moment it dropped.
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const DROPPERS: usize = 8;
+    let f = fixture(100);
+    let symbols = ["AAPL", "MSFT", "SPY", "QQQ"];
+    let mut receivers = Vec::new();
+    for n in 0..DROPPERS {
+        let name = format!("s-{n}");
+        receivers.push(f.runtime.register_subscriber(id(&name), 2).unwrap());
+        // Each subscriber holds two symbols; every symbol has several holders.
+        f.runtime.subscribe(&sub(&name, symbols[n % 4])).unwrap();
+        f.runtime
+            .subscribe(&sub(&name, symbols[(n + 1) % 4]))
+            .unwrap();
+    }
+    assert_eq!(f.runtime.lines_in_use(), 4);
+
+    let ingesting = Arc::new(AtomicBool::new(true));
+    let overlapping_drops = Arc::new(AtomicU32::new(0));
+    let ingest = {
+        let runtime = Arc::clone(&f.runtime);
+        let ingesting = Arc::clone(&ingesting);
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut seq = 0;
+            let mut disconnected = 0;
+            // Run until every subscriber is gone (bounded: FAIL, never HANG).
+            while runtime.lines_in_use() > 0 {
+                assert!(Instant::now() < deadline, "ingest loop never drained");
+                seq += 1;
+                let symbol = ["AAPL", "MSFT", "SPY", "QQQ"][(seq % 4) as usize];
+                disconnected += runtime
+                    .ingest(tick(symbol, seq), Instant::now())
+                    .unwrap()
+                    .disconnected;
+            }
+            ingesting.store(false, Ordering::SeqCst);
+            disconnected
+        })
+    };
+    let droppers: Vec<_> = receivers
+        .into_iter()
+        .enumerate()
+        .map(|(n, receiver)| {
+            let runtime = Arc::clone(&f.runtime);
+            let ingesting = Arc::clone(&ingesting);
+            let overlapping = Arc::clone(&overlapping_drops);
+            thread::spawn(move || {
+                // Read a little, unsubscribe one symbol (racing ingest), then drop.
+                let _ = receiver.recv_timeout(Duration::from_millis(5));
+                if n % 2 == 0 {
+                    runtime
+                        .unsubscribe(&id(&format!("s-{n}")), &key(symbols[n % 4]))
+                        .unwrap();
+                }
+                if ingesting.load(Ordering::SeqCst) {
+                    overlapping.fetch_add(1, Ordering::SeqCst);
+                }
+                drop(receiver);
+            })
+        })
+        .collect();
+    for dropper in droppers {
+        dropper.join().unwrap();
+    }
+    let disconnected = ingest.join().unwrap();
+
+    assert!(
+        overlapping_drops.load(Ordering::SeqCst) >= 1,
+        "no receiver was dropped while ingest was running - the race was not exercised"
+    );
+    // Reaping happens inside whichever call comes first (an ingest, the
+    // loop's own lines_in_use read, a dropper's unsubscribe), so ingest sees
+    // only some of the departures. The property is "every subscriber is gone
+    // and every line closed exactly once", asserted directly below.
+    assert!(
+        disconnected as usize <= DROPPERS,
+        "no subscriber reaped twice"
+    );
+    for n in 0..DROPPERS {
+        assert_eq!(f.runtime.dropped_count(&id(&format!("s-{n}"))), None);
+    }
+    assert_eq!(f.runtime.lines_in_use(), 0);
+    assert_eq!(
+        f.runtime.reap_departed().unwrap(),
+        0,
+        "nothing reaped twice"
+    );
+    // Every symbol was opened once and closed exactly once.
+    let calls = f.feed.calls();
+    for symbol in symbols {
+        assert_eq!(
+            calls.iter().filter(|c| **c == open(symbol)).count(),
+            1,
+            "{symbol}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| **c == close(symbol)).count(),
+            1,
+            "{symbol}"
+        );
+    }
+}
+
 // ------------------------------------------------------------------------- //
 // Latency probe (fixture feed). Wall-clock, so `#[ignore]`-gated: run it with
 // `cargo test -p atp-market-data --test srs_md_001_fanout_runtime -- --ignored`.
