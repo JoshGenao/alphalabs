@@ -30,6 +30,13 @@ This script verifies the SDK-SURFACE contract declared in
   (e) the registry fails closed on empty symbol / strategy id
       (``fan_out`` and ``subscribe`` validate their inputs).
   (f) the core crate carries no vendor-SDK token.
+  (g) the thread-safe ``FanOutRuntime`` (``src/runtime.rs``, block
+      ``runtime``) declares the vendor-neutral ``UpstreamMarketDataFeed``
+      port, consults the SRS-MD-005 restart window BEFORE opening an upstream
+      line, opens it BEFORE registering the first subscriber (and closes it on
+      a refused registration), closes it when the last subscriber leaves, and
+      fans out with a NON-BLOCKING ``try_send`` (no blocking ``send`` /
+      ``recv`` in ``ingest``).
 
 The PASS line is ``SRS-MD-001 SDK-SURFACE PASS`` — it names the deferred
 downstream owners so the partial-pass status (feature_list.json keeps
@@ -105,6 +112,19 @@ def market_data_source(config: dict, root: Path = ROOT) -> str:
             fail(f"market-data source missing: {source_path.relative_to(root)}")
         text.append(_production_only(source_path.read_text(encoding="utf-8")))
     return "\n".join(text)
+
+
+def runtime_source(config: dict, root: Path = ROOT) -> str:
+    """The fan-out runtime module (``runtime.source``), production code only.
+
+    Kept separate from :func:`market_data_source`: the runtime is a CONSUMER of
+    the registry, and its own ``subscribe`` / ``unsubscribe`` must not be
+    confused with the registry's when a check reads a function body by name.
+    """
+    source_path = root / contract_block(config)["runtime"]["source"]
+    if not source_path.exists():
+        fail(f"fan-out runtime source missing: {source_path.relative_to(root)}")
+    return _production_only(source_path.read_text(encoding="utf-8"))
 
 
 def _production_only(source: str) -> str:
@@ -479,6 +499,118 @@ def check_vendor_isolation(config: dict, md_src: str) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Runtime checks (src/runtime.rs)
+# --------------------------------------------------------------------------- #
+
+
+def _check_trait(spec: dict, src: str) -> None:
+    body = _trait_body(src, spec["trait"])
+    missing = [m for m in spec["methods"] if not re.search(rf"\bfn\s+{re.escape(m)}\b", body)]
+    if missing:
+        fail(f"{spec['trait']} is missing method(s): {', '.join(missing)}")
+
+
+def check_runtime_ports(config: dict, rt_src: str) -> str:
+    runtime = contract_block(config)["runtime"]
+    for key in ("upstream_port", "lag_port"):
+        _check_trait(runtime[key], rt_src)
+    _check_struct(runtime["lag_event"], rt_src, "SubscriberLagEvent")
+    upstream = runtime["upstream_port"]
+    return (
+        f"atp-market-data runtime declares the vendor-neutral {upstream['trait']} port "
+        f"({', '.join(upstream['methods'])}) and the {runtime['lag_port']['trait']} port "
+        f"for {runtime['lag_event']['struct']}"
+    )
+
+
+def check_runtime_struct(config: dict, rt_src: str) -> str:
+    runtime = contract_block(config)["runtime"]
+    spec = runtime["runtime_struct"]
+    for method in spec["methods"]:
+        _fn_block(rt_src, method)
+    _impl_block(
+        rt_src,
+        rf"impl<[^>]*>\s+{re.escape(spec['line_counter_impl_trait'])}\s+for\s+"
+        rf"{re.escape(spec['struct'])}<[^>]*>[^{{]*\{{",
+        f"impl {spec['line_counter_impl_trait']} for {spec['struct']}",
+    )
+    errors = runtime["error_enum"]
+    body = _enum_body(rt_src, errors["enum"])
+    missing = [v for v in errors["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
+    if missing:
+        fail(f"{errors['enum']} is missing variant(s): {', '.join(missing)}")
+    return (
+        f"{spec['struct']} exposes {len(spec['methods'])} methods, is the live "
+        f"{spec['line_counter_impl_trait']} for the SRS-MD-002 gate, and fails closed via "
+        f"{errors['enum']} ({len(errors['variants'])} variants)"
+    )
+
+
+def check_open_before_register(config: dict, rt_src: str) -> str:
+    spec = contract_block(config)["runtime"]["open_before_register"]
+    body = _compact(_fn_block(rt_src, spec["method"]))
+    gate_at = body.find(_compact(spec["gate_token"]))
+    open_at = body.find(_compact(spec["open_token"]))
+    # The LAST registry subscribe is the first-subscriber registration; an
+    # earlier one is the join-an-existing-line path, which sends nothing.
+    register_at = body.rfind(_compact(spec["register_token"]))
+    rollback_at = body.rfind(_compact(spec["rollback_token"]))
+    if open_at < 0:
+        fail(
+            f"FanOutRuntime::{spec['method']} never opens the upstream line (`{spec['open_token']}`)"
+        )
+    if gate_at < 0 or gate_at > open_at:
+        fail(
+            f"FanOutRuntime::{spec['method']} must consult the restart window "
+            f"(`{spec['gate_token']}`) BEFORE opening an upstream line - opening a line is "
+            "itself a market-data request, which SYS-75(a) suspends"
+        )
+    if register_at < 0 or open_at > register_at:
+        fail(
+            f"FanOutRuntime::{spec['method']} must open the upstream line BEFORE registering "
+            "the first subscriber - a subscriber must never exist without an upstream line"
+        )
+    if rollback_at < register_at:
+        fail(
+            f"FanOutRuntime::{spec['method']} must close the upstream line "
+            f"(`{spec['rollback_token']}`) when registration fails after the open"
+        )
+    return (
+        "FanOutRuntime::subscribe consults the restart window before opening an upstream "
+        "line, opens it before registering the first subscriber, and closes it if "
+        "registration is refused (no subscriber without a line, no request in the window)"
+    )
+
+
+def check_close_on_last_leave(config: dict, rt_src: str) -> str:
+    spec = contract_block(config)["runtime"]["close_on_last_leave"]
+    body = _compact(_fn_block(rt_src, spec["method"]))
+    if _compact(f"=={spec['token']}") not in body or "self.feed.close(" not in body:
+        fail(
+            f"FanOutRuntime::{spec['method']} must close the upstream line exactly when the "
+            f"registry reports {spec['token']}"
+        )
+    return "FanOutRuntime::unsubscribe closes the upstream line only on the last leave (Closed)"
+
+
+def check_non_blocking_fanout(config: dict, rt_src: str) -> str:
+    spec = contract_block(config)["runtime"]["non_blocking_fanout"]
+    body = _compact(_fn_block(rt_src, spec["method"]))
+    if spec["required_token"] not in body:
+        fail(f"FanOutRuntime::{spec['method']} must deliver with `{spec['required_token']}`")
+    blocking = [t for t in spec["forbidden_tokens"] if t in body]
+    if blocking:
+        fail(
+            f"FanOutRuntime::{spec['method']} uses blocking call(s) {', '.join(blocking)} - one "
+            "slow subscriber would delay every other subscriber"
+        )
+    return (
+        "FanOutRuntime::ingest delivers with non-blocking try_send (drop + mark lagging on a "
+        "full queue; no blocking send/recv)"
+    )
+
+
 def check_cargo_test_smoke(config: dict) -> str:
     block = contract_block(config)
     crate = block["market_data_crate"]["crate"]
@@ -495,18 +627,22 @@ def check_cargo_test_smoke(config: dict) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    runtime_test = block["runtime"]["rust_integration_test"]
+    for test in (integration, runtime_test):
+        integ = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if integ.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test} failed:\n{integ.stdout}\n{integ.stderr}")
     return (
-        f"cargo test -p {crate} --lib + {integration}: PASS "
-        "(dedup, fan-out isolation, lifecycle, change events, line-counter seam verified)"
+        f"cargo test -p {crate} --lib + {integration} + {runtime_test}: PASS "
+        "(dedup, fan-out isolation, lifecycle, change events, line-counter seam, gated "
+        "upstream open/close, drop + lag policy verified; the wall-clock latency probe is "
+        "#[ignore]-gated and not run here)"
     )
 
 
@@ -529,6 +665,12 @@ _STATIC_CHECKS = (
     ("atomic_admission", check_atomic_admission, "market_data"),
     ("input_validation", check_input_validation, "market_data"),
     ("vendor_isolation", check_vendor_isolation, "market_data"),
+    ("runtime_ports", check_runtime_ports, "runtime"),
+    ("runtime_struct", check_runtime_struct, "runtime"),
+    ("open_before_register", check_open_before_register, "runtime"),
+    ("close_on_last_leave", check_close_on_last_leave, "runtime"),
+    ("non_blocking_fanout", check_non_blocking_fanout, "runtime"),
+    ("runtime_vendor_isolation", check_vendor_isolation, "runtime"),
 )
 
 _DEFERRED_OWNERS = (
@@ -540,11 +682,14 @@ _DEFERRED_OWNERS = (
 
 def assert_subscription_fanout_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable without cargo (used by the L3 contract test)."""
-    types_src = types_source(config, root)
-    md_src = market_data_source(config, root)
+    sources = {
+        "types": types_source(config, root),
+        "market_data": market_data_source(config, root),
+        "runtime": runtime_source(config, root),
+    }
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
-        evidence.append(check(config, types_src if scope == "types" else md_src))
+        evidence.append(check(config, sources[scope]))
     return evidence
 
 
@@ -571,7 +716,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "- deferred to: "
         + ", ".join(_DEFERRED_OWNERS)
-        + " (real IB feed + async fan-out transport + <=100 ms latency NFR); "
+        + " (IB feed bridge + cross-container transport + real-feed PTP-clock latency "
+        "evidence); "
         "feature_list.json keeps SRS-MD-001 passes:false"
     )
     return 0

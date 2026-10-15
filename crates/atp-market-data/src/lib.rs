@@ -18,6 +18,16 @@ pub use subscriptions::{
     ConsolidatedSubscriptionRegistry, SubscriptionChangeSink, SubscriptionRegistryError,
 };
 
+/// SRS-MD-001 — the thread-safe fan-out runtime: drives one upstream line per
+/// security through a vendor-neutral port and delivers ticks to each
+/// subscriber's own bounded queue. Goes through the registry's gated public
+/// API only.
+pub mod runtime;
+pub use runtime::{
+    FanOutDelivery, FanOutRuntime, FanOutRuntimeError, IngestReport, SubscriberLagEvent,
+    SubscriberLagSink, SubscriberReceiver, UpstreamFeedError, UpstreamMarketDataFeed,
+};
+
 use atp_types::{
     HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataAdmission,
     MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,

@@ -4708,7 +4708,7 @@
     }
   },
   "subscription_fanout_contract": {
-    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The consolidated set is keyed on a canonical SecurityKey (normalized symbol + AssetClass) so case/whitespace variants share one line; admission is ATOMIC — subscribe enforces the configured line ceiling in the same mutable borrow that performs the insert (no probe-then-mutate race) and returns SubscriptionRegistryError::LineLimitReached when a new line would exceed the cap. SecurityKey fails closed on AssetClass::Option (SecurityKeyError::OptionContractIdentityRequired -> SubscriptionRegistryError::OptionContractUnsupported): a real option contract needs underlying + expiration + strike + right, which is deferred to SRS-DATA-004 / SRS-EXE-004, so the manager rejects option subscriptions rather than conflating distinct contracts on one underlying. SubscriptionChangeEvent carries asset_class so the line-usage stream stays unambiguous. The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
+    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The consolidated set is keyed on a canonical SecurityKey (normalized symbol + AssetClass) so case/whitespace variants share one line; admission is ATOMIC — subscribe enforces the configured line ceiling in the same mutable borrow that performs the insert (no probe-then-mutate race) and returns SubscriptionRegistryError::LineLimitReached when a new line would exceed the cap. SecurityKey fails closed on AssetClass::Option (SecurityKeyError::OptionContractIdentityRequired -> SubscriptionRegistryError::OptionContractUnsupported): a real option contract needs underlying + expiration + strike + right, which is deferred to SRS-DATA-004 / SRS-EXE-004, so the manager rejects option subscriptions rather than conflating distinct contracts on one underlying. SubscriptionChangeEvent carries asset_class so the line-usage stream stays unambiguous. The thread-safe runtime (gated upstream open/close, bounded per-subscriber delivery, drop + lag policy) is in runtime{}. The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the IB feed bridge and the real-feed PTP-clock latency evidence are serialized / deferred (see deferred[]).",
     "requirement": "SRS-MD-001",
     "srs_refs": ["SRS-MD-001"],
     "syrs_refs": ["SYS-70"],
@@ -4791,16 +4791,98 @@
       "subscribe_method": "subscribe",
       "subscribe_validates_strategy_token": "validate_strategy_id("
     },
+    "runtime": {
+      "description": "SRS-MD-001 runtime half: FanOutRuntime (crates/atp-market-data/src/runtime.rs) wraps the single-threaded registry behind one Mutex and reaches it ONLY through the registry's gated public API (it cannot name the private subscriber map, so the SRS-MD-005 admission_sites closure is unchanged). Opening an upstream line is itself a market-data request, so the first subscriber's request consults RestartWindowGate::admission() BEFORE the vendor-neutral UpstreamMarketDataFeed::open; then the limit probe; then open; then the registry's own gated subscribe. A failed open registers and publishes nothing; a registry refusal after the open (the window closed in between) closes the line again. The last subscriber leaving closes the line (never gated: releasing is always safe). Each strategy container owns one bounded std::sync::mpsc::sync_channel; ingest wraps a tick once in an Arc<FanOutDelivery> and offers it with a NON-BLOCKING try_send, so a slow reader never delays others (operator decision: drop + mark lagging - a full queue drops the tick for that subscriber only, counts it, and publishes one SubscriberLagEvent per lagging episode). A disconnected receiver is deregistered and its sole-held lines are closed. A poisoned lock fails every mutation closed and makes the SRS-MD-002 probe report ExceededLimit. The fixture-feed latency PROBE (#[ignore]-gated wall-clock test) writes target/verification/srs_md_001_fanout_latency_probe.json using SRS-PERF-001's nearest-rank LatencyPercentiles; it is explicitly NOT an SRS-MD-001 verification artifact (no IB feed, no PTP clock).",
+      "source": "crates/atp-market-data/src/runtime.rs",
+      "upstream_port": {
+        "trait": "UpstreamMarketDataFeed",
+        "methods": [
+          "open",
+          "close"
+        ]
+      },
+      "lag_port": {
+        "trait": "SubscriberLagSink",
+        "methods": [
+          "record"
+        ]
+      },
+      "lag_event": {
+        "struct": "SubscriberLagEvent",
+        "required_fields": [
+          "strategy_id",
+          "symbol",
+          "asset_class",
+          "tick_seq",
+          "dropped_total"
+        ],
+        "forbidden_fields": [
+          "broker",
+          "ib_session_id",
+          "vendor",
+          "provider"
+        ]
+      },
+      "runtime_struct": {
+        "struct": "FanOutRuntime",
+        "methods": [
+          "new",
+          "register_subscriber",
+          "deregister_subscriber",
+          "subscribe",
+          "unsubscribe",
+          "ingest",
+          "lines_in_use",
+          "subscriber_count",
+          "dropped_count",
+          "is_lagging"
+        ],
+        "line_counter_impl_trait": "SubscriptionLineCounter"
+      },
+      "error_enum": {
+        "enum": "FanOutRuntimeError",
+        "variants": [
+          "Registry",
+          "Upstream",
+          "SubscriberNotRegistered",
+          "SubscriberAlreadyRegistered",
+          "ZeroCapacity",
+          "Poisoned"
+        ]
+      },
+      "open_before_register": {
+        "method": "subscribe",
+        "gate_token": "self.window.admission()",
+        "open_token": "self.feed.open(&key)",
+        "register_token": ".subscribe(request, &self.window, &self.changes)",
+        "rollback_token": "self.feed.close(&key)"
+      },
+      "non_blocking_fanout": {
+        "method": "ingest",
+        "required_token": ".try_send(",
+        "forbidden_tokens": [
+          ".send(",
+          ".recv("
+        ]
+      },
+      "close_on_last_leave": {
+        "method": "unsubscribe",
+        "token": "SubscriptionChange::Closed"
+      },
+      "rust_integration_test": "srs_md_001_fanout_runtime",
+      "latency_probe_test": "srs_md_001_fanout_latency_probe_on_fixture_feed",
+      "latency_probe_artifact": "target/verification/srs_md_001_fanout_latency_probe.json"
+    },
     "rust_integration_test": "srs_md_001_subscription_fanout",
     "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],
     "deferred": [
       {
         "feature": "SRS-MD-001-runtime",
-        "what": "The real IB upstream binding (reqMktData / cancelMktData driven by the registry's Opened / Closed transitions), live tick ingestion, the async fan-out transport that delivers MarketDataTicks to subscriber containers, and thread-safe concurrency. ConsolidatedSubscriptionRegistry is single-threaded and models the structural dedup + fan-out + line-accounting only; the runtime that wraps it flips SRS-MD-001 passes:true together with SRS-PERF-001."
+        "what": "What is LEFT of the runtime after FanOutRuntime landed (see runtime{}): (1) the composition-layer bridge (atp-orchestrator, beside live_market_data's IbLiveTickSource) that implements UpstreamMarketDataFeed over the IB adapter - MarketDataAdapter exposes subscribe_market_data only, so the bridge also needs a cancel call and a tick stream that calls FanOutRuntime::ingest with the upstream receive Instant; (2) re-opening every still-held line after an IB Gateway reconnect (the scheduled restart drops all upstream subscriptions); (3) the cross-container transport from a SubscriberReceiver into each strategy's Docker container (Strategy Orchestrator); (4) the operator-run live verification against a real IB feed. SERIALIZED: passes stays false until that evidence is recorded."
       },
       {
         "feature": "SRS-PERF-001",
-        "what": "The <=100 ms fan-out latency acceptance criterion measured against a PTP-disciplined host clock with p50/p95/p99/p99.9 reporting. The structural fan-out contract lives here; the latency measurement harness is the deferred performance half (same pattern as SRS-SDK-004's deferred p95 callback latency)."
+        "what": "The <=100 ms fan-out latency acceptance criterion measured against the REAL IB feed on a PTP-disciplined host, reported as an SRS-PERF-001 LatencyVerificationArtifact (p50/p95/p99/p99.9 + max clock offset). The runtime's fixture-feed probe (runtime.latency_probe_test, #[ignore]-gated) measures only the in-process transport with an undisciplined monotonic clock, so it is a probe, not this artifact."
       },
       {
         "feature": "SRS-DATA-004 / SRS-EXE-004 (option contract identity)",

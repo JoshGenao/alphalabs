@@ -31,13 +31,18 @@ from subscription_fanout_check import (  # noqa: E402
     check_asset_class_enum,
     check_atomic_admission,
     check_change_sink_port,
+    check_close_on_last_leave,
     check_dedup_invariant,
     check_input_validation,
     check_line_counter_impl,
     check_market_data_tick,
+    check_non_blocking_fanout,
+    check_open_before_register,
     check_registry_error_enum,
     check_registry_key_type,
     check_registry_struct,
+    check_runtime_ports,
+    check_runtime_struct,
     check_security_key,
     check_subscription_change_enum,
     check_subscription_change_event,
@@ -45,6 +50,7 @@ from subscription_fanout_check import (  # noqa: E402
     load_config,
     market_data_source,
     run_checks,
+    runtime_source,
     types_source,
 )
 
@@ -82,6 +88,12 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
             "the probe-then-mutate race",
             "fail closed via .security_key()? (SecurityKeyError -> SubscriptionRegistryError on empty symbol / option)",
             "free of all 5 forbidden vendor SDK tokens",
+            "vendor-neutral UpstreamMarketDataFeed port (open, close)",
+            "is the live SubscriptionLineCounter for the SRS-MD-002 gate",
+            "consults the restart window before opening an upstream line",
+            "closes the upstream line only on the last leave (Closed)",
+            "delivers with non-blocking try_send",
+            "srs_md_001_fanout_runtime: PASS",
             "feature_list.json keeps SRS-MD-001 passes:false",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
@@ -456,12 +468,113 @@ class VendorIsolationTest(_Fixture):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_fifteen_items(self) -> None:
-        # 14 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 15)
+    def test_run_checks_emits_twenty_one_items(self) -> None:
+        # 20 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 21)
 
-    def test_static_evidence_is_fourteen_items(self) -> None:
-        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 14)
+    def test_static_evidence_is_twenty_items(self) -> None:
+        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 20)
+
+
+# --------------------------------------------------------------------------- #
+# SRS-MD-001 runtime (src/runtime.rs)
+# --------------------------------------------------------------------------- #
+
+
+class FanOutRuntimeTest(unittest.TestCase):
+    """Each runtime check must catch the regression it names when the Rust
+    source is mutated in memory. Every anchor is asserted to apply first, so a
+    mutation that silently no-ops cannot pass for a working guard."""
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.rt_src = runtime_source(self.config)
+
+    def _mutate(self, old: str, new: str) -> str:
+        self.assertEqual(self.rt_src.count(old), 1, f"anchor must be unique: {old!r}")
+        return self.rt_src.replace(old, new)
+
+    def _assert_caught(self, check, mutated: str, needle: str) -> None:
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check(self.config, mutated)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_runtime_checks_pass_on_real_source(self) -> None:
+        for check in (
+            check_runtime_ports,
+            check_runtime_struct,
+            check_open_before_register,
+            check_close_on_last_leave,
+            check_non_blocking_fanout,
+            check_vendor_isolation,
+        ):
+            check(self.config, self.rt_src)
+
+    def test_missing_upstream_close_is_caught(self) -> None:
+        mutated = self._mutate("fn close(&self, key: &SecurityKey);", "")
+        self._assert_caught(check_runtime_ports, mutated, "close")
+
+    def test_dropped_lag_event_field_is_caught(self) -> None:
+        mutated = self._mutate("pub dropped_total: u64,", "")
+        self._assert_caught(check_runtime_ports, mutated, "dropped_total")
+
+    def test_removed_line_counter_impl_is_caught(self) -> None:
+        mutated = self._mutate(
+            "SubscriptionLineCounter for FanOutRuntime<F, W, C, L>",
+            "Other for FanOutRuntime<F, W, C, L>",
+        )
+        self._assert_caught(check_runtime_struct, mutated, "SubscriptionLineCounter")
+
+    def test_dropped_poisoned_variant_is_caught(self) -> None:
+        mutated = self._mutate("    Poisoned,\n", "")
+        self._assert_caught(check_runtime_struct, mutated, "Poisoned")
+
+    def test_open_without_window_check_is_caught(self) -> None:
+        # Opening a line is itself a market-data request: SYS-75(a) suspends it.
+        mutated = self._mutate(
+            "match self.window.admission() {", "match MarketDataAdmission::Admitted {"
+        )
+        self._assert_caught(check_open_before_register, mutated, "restart window")
+
+    def test_register_before_open_is_caught(self) -> None:
+        # Moving the open after the registration would let a subscriber exist
+        # without an upstream line when the open fails.
+        moved = self._mutate(
+            "self.feed.open(&key).map_err(FanOutRuntimeError::Upstream)?;", ""
+        ).replace(
+            "Ok(change) => change,",
+            "Ok(change) => { self.feed.open(&key).ok(); change }",
+            1,
+        )
+        self.assertNotIn("Ok(change) => change,", moved, "second edit must apply")
+        self._assert_caught(check_open_before_register, moved, "BEFORE registering")
+
+    def test_missing_rollback_is_caught(self) -> None:
+        start = self.rt_src.index("pub fn subscribe(")
+        end = self.rt_src.index("pub fn unsubscribe(")
+        subscribe = self.rt_src[start:end]
+        self.assertEqual(subscribe.count("self.feed.close(&key);"), 1)
+        mutated = self.rt_src.replace(subscribe, subscribe.replace("self.feed.close(&key);", ""))
+        self._assert_caught(check_open_before_register, mutated, "registration fails")
+
+    def test_close_without_closed_guard_is_caught(self) -> None:
+        mutated = self._mutate(
+            "if change == SubscriptionChange::Closed {\n            self.feed.close(key);",
+            "if true {\n            self.feed.close(key);",
+        )
+        self._assert_caught(check_close_on_last_leave, mutated, "Closed")
+
+    def test_blocking_send_is_caught(self) -> None:
+        mutated = self._mutate(
+            "match queue.sender.try_send(Arc::clone(&delivery)) {",
+            "let _ = queue.sender.send(Arc::clone(&delivery));\n"
+            "            match queue.sender.try_send(Arc::clone(&delivery)) {",
+        )
+        self._assert_caught(check_non_blocking_fanout, mutated, ".send(")
+
+    def test_vendor_token_in_runtime_is_caught(self) -> None:
+        mutated = self.rt_src + '\nfn wraps() { let _ = "ibapi"; }\n'
+        self._assert_caught(check_vendor_isolation, mutated, "ibapi")
 
 
 if __name__ == "__main__":
