@@ -31,7 +31,8 @@ use atp_market_data::{
 use atp_types::{
     AssetClass, LatencyPercentiles, MarketDataAdmission, MarketDataTick, OrderErrorCategory,
     Percentile, SecurityKey, StrategyId, SubscriptionChange, SubscriptionChangeEvent,
-    SubscriptionLimitEvent, SubscriptionRequest, SUBSCRIPTION_FANOUT_LATENCY_MS,
+    SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    SUBSCRIPTION_FANOUT_LATENCY_MS,
 };
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -56,11 +57,13 @@ enum FeedCall {
     Close(String),
 }
 
-/// Fake upstream feed: records every call; can be told to refuse a symbol.
+/// Fake upstream feed: records every call; can be told to refuse a symbol,
+/// or to PANIC on one (to poison the runtime lock it is called under).
 #[derive(Default)]
 struct FakeFeed {
     calls: Mutex<Vec<FeedCall>>,
     refuse: Mutex<BTreeSet<String>>,
+    panic_on: Mutex<BTreeSet<String>>,
 }
 
 impl FakeFeed {
@@ -70,10 +73,16 @@ impl FakeFeed {
     fn refuse(&self, symbol: &str) {
         self.refuse.lock().unwrap().insert(symbol.to_string());
     }
+    fn panic_on(&self, symbol: &str) {
+        self.panic_on.lock().unwrap().insert(symbol.to_string());
+    }
 }
 
 impl UpstreamMarketDataFeed for Shared<FakeFeed> {
     fn open(&self, key: &SecurityKey) -> Result<(), UpstreamFeedError> {
+        if self.panic_on.lock().unwrap().contains(key.symbol()) {
+            panic!("fixture panics opening {}", key.symbol());
+        }
         if self.refuse.lock().unwrap().contains(key.symbol()) {
             return Err(UpstreamFeedError {
                 reason: format!("fixture refuses {}", key.symbol()),
@@ -644,6 +653,55 @@ fn srs_md_001_reap_departed_counts_each_dropped_subscriber_once() {
     assert_eq!(f.runtime.reap_departed().unwrap(), 2);
     assert_eq!(f.runtime.reap_departed().unwrap(), 0);
     assert_eq!(f.feed.calls(), vec![open("AAPL"), close("AAPL")]);
+}
+
+#[test]
+fn srs_md_001_poisoned_lock_fails_every_mutation_closed() {
+    // A port that panics under the runtime lock poisons it. From then on the
+    // state may be inconsistent: every mutation refuses with Poisoned, the
+    // SRS-MD-002 probe refuses capacity, and reads still report but never
+    // reap (reaping mutates).
+    let f = fixture(100);
+    let gone = f.runtime.register_subscriber(id("gone"), 4).unwrap();
+    let _live = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
+    f.runtime.subscribe(&sub("gone", "AAPL")).unwrap();
+    f.feed.panic_on("BOOM");
+    let runtime = Arc::clone(&f.runtime);
+    let crashed = thread::spawn(move || runtime.subscribe(&sub("live-a", "BOOM"))).join();
+    assert!(crashed.is_err(), "the port panic must propagate");
+
+    drop(gone);
+    assert_eq!(
+        f.runtime.subscribe(&sub("live-a", "MSFT")),
+        Err(FanOutRuntimeError::Poisoned)
+    );
+    assert_eq!(
+        f.runtime.unsubscribe(&id("live-a"), &key("AAPL")),
+        Err(FanOutRuntimeError::Poisoned)
+    );
+    assert_eq!(
+        f.runtime.ingest(tick("AAPL", 1), Instant::now()),
+        Err(FanOutRuntimeError::Poisoned)
+    );
+    assert_eq!(
+        f.runtime.register_subscriber(id("new"), 4).unwrap_err(),
+        FanOutRuntimeError::Poisoned
+    );
+    assert_eq!(
+        f.runtime.deregister_subscriber(&id("live-a")),
+        Err(FanOutRuntimeError::Poisoned)
+    );
+    assert_eq!(f.runtime.reap_departed(), Err(FanOutRuntimeError::Poisoned));
+    assert_eq!(
+        f.runtime.try_acquire(&sub("live-a", "MSFT")),
+        SubscriptionLimitState::ExceededLimit,
+        "a poisoned runtime must not report capacity"
+    );
+    // Reads still answer, without reaping: AAPL's line is still counted and
+    // no close was sent for the dropped receiver.
+    assert_eq!(f.runtime.lines_in_use(), 1);
+    assert_eq!(f.runtime.subscriber_count(&key("AAPL")), 1);
+    assert_eq!(f.feed.calls(), vec![open("AAPL")]);
 }
 
 #[test]

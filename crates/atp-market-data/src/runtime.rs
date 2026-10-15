@@ -77,6 +77,15 @@ use crate::{
 /// tick thread that holds the bridge's lock while calling
 /// [`FanOutRuntime::ingest`]. The order is always runtime lock first, then
 /// the port's own lock.
+///
+/// **`close` is infallible by contract, and the bridge owns delivering it.**
+/// The runtime stops counting a line the moment its last subscriber leaves.
+/// That is only true of the real gateway if the cancel arrives: IB's cancel has
+/// no acknowledgement on a live connection, and a lost connection has already
+/// dropped every line on the gateway side. So an implementation that cannot
+/// hand a cancel to the connection right now must queue it and deliver it
+/// before it sends any later `open` on that connection, so the gateway never
+/// holds more lines than the runtime counts.
 pub trait UpstreamMarketDataFeed: Send + Sync {
     fn open(&self, key: &SecurityKey) -> Result<(), UpstreamFeedError>;
     fn close(&self, key: &SecurityKey);
@@ -517,6 +526,11 @@ where
     }
 
     /// Number of distinct upstream lines currently open.
+    ///
+    /// Like every read here, this reaps dropped receivers first on a healthy
+    /// lock, so it can CLOSE upstream lines (and publish their change events):
+    /// a count must never include a line only a dropped receiver holds. On a
+    /// poisoned lock it reports without reaping, because reaping mutates.
     pub fn lines_in_use(&self) -> u32 {
         self.read().registry.distinct_subscriptions()
     }

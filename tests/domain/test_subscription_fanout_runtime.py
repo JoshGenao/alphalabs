@@ -92,6 +92,9 @@ def _assert_passed(test_name: str, *, ignored: bool = False) -> None:
         "srs_md_001_dropped_receiver_on_an_idle_security_frees_its_line",
         "srs_md_001_stale_departure_note_never_tears_down_a_re_registration",
         "srs_md_001_reap_departed_counts_each_dropped_subscriber_once",
+        # A panic under the lock poisons it: every mutation refuses, the
+        # SRS-MD-002 probe refuses capacity, reads report without reaping.
+        "srs_md_001_poisoned_lock_fails_every_mutation_closed",
         "srs_md_001_deregister_releases_every_line",
         # The runtime is the live line counter for the SRS-MD-002 gate.
         "srs_md_001_runtime_is_the_md_002_line_counter",
