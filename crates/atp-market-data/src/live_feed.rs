@@ -9,6 +9,9 @@
 //! (the IB implementation lives in the composition layer, over the
 //! `ib-live-transport` transport).
 //!
+//! [`LiveFeedLoop`]: crate::live_feed::LiveFeedLoop
+//! [`LiveTickSource`]: crate::live_feed::LiveTickSource
+//!
 //! Three properties carry the whole design:
 //!
 //! * **Only evidence counts.** A tick observation requires a tick the gateway
