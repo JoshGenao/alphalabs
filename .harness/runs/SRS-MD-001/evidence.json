@@ -1,0 +1,65 @@
+{
+  "created": "2026-10-15T03:03:37+00:00",
+  "critic": {
+    "deterministic": {
+      "head": "0ccac2f3cc9da1f0c41afc303bd385592e89302b",
+      "ts": "2026-10-15T03:23:58+00:00",
+      "verdict": "approve"
+    },
+    "judgment": {
+      "head": "0ccac2f3cc9da1f0c41afc303bd385592e89302b",
+      "reviewer": "claude-fallback",
+      "rounds": 5,
+      "ts": "2026-10-15T03:23:58+00:00",
+      "verdict": "warn"
+    }
+  },
+  "feature": "SRS-MD-001",
+  "gates": {
+    "mutation_verify": {
+      "status": "pass",
+      "ts": "2026-10-15T03:23:58+00:00"
+    },
+    "run_ci_locally": {
+      "status": "pass",
+      "ts": "2026-10-15T03:23:58+00:00"
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "./init.sh"
+      ],
+      "command": "./init.sh",
+      "executed": true,
+      "exit_code": 0,
+      "head": "0ccac2f3cc9da1f0c41afc303bd385592e89302b",
+      "n": 1,
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-001/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
+      "status": "pass",
+      "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "steps_digest": "cc1f5956330914cc",
+      "ts": "2026-10-15T03:23:56+00:00"
+    },
+    {
+      "argv": [
+        "pytest",
+        "tests/domain/test_subscription_fanout_runtime.py",
+        "tests/domain/test_subscription_fanout_dedup.py",
+        "tests/test_subscription_fanout_contract.py",
+        "-q"
+      ],
+      "command": "pytest tests/domain/test_subscription_fanout_runtime.py tests/domain/test_subscription_fanout_dedup.py tests/test_subscription_fanout_contract.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "0ccac2f3cc9da1f0c41afc303bd385592e89302b",
+      "n": 2,
+      "observed": "........................................................................ [ 79%]\n...................                                                      [100%]\n91 passed in 1.45s",
+      "status": "pass",
+      "step_text": "Step 2: Exercise SRS-MD-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "steps_digest": "cc1f5956330914cc",
+      "ts": "2026-10-15T03:23:58+00:00"
+    }
+  ],
+  "updated": "2026-10-15T03:23:58+00:00"
+}
