@@ -14,8 +14,12 @@
 //!     [`FanOutRuntime::ingest`] wraps a tick once in an `Arc` and offers it
 //!     to every subscriber with a NON-BLOCKING `try_send`, so one slow reader
 //!     can never delay the others (operator decision: drop + mark lagging).
-//!   * Thread safety: all state sits behind one `Mutex`; the lock is held only
-//!     for routing and non-blocking sends.
+//!   * Thread safety: all state sits behind one `Mutex`. The lock is held for
+//!     routing, the non-blocking sends, AND every port call (`feed.open` /
+//!     `feed.close`, the window gate, the change and lag sinks), so those
+//!     ports must not block and must never call back into the runtime (see
+//!     [`UpstreamMarketDataFeed`] for the lock-order rule). No call blocks on
+//!     a subscriber.
 //!
 //! Fail-closed rules:
 //!   * Opening an upstream line IS a market-data request, so SRS-MD-005's
