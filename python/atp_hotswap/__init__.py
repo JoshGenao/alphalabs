@@ -229,12 +229,13 @@ class CliHotSwapTriggerSource:
     # HotSwapStatusSource
     # ------------------------------------------------------------------ #
 
-    def trigger_config(self) -> dict[str, object] | None:
+    def trigger_config(self) -> dict[str, object]:
         """The persisted automatic-trigger enabled-state (``SRS-RESV-003``).
 
-        ``None`` when nothing has ever been configured (no file) — the pane may then state
-        the all-disabled default truthfully. Raises :class:`HotSwapStatusUnavailable` when
-        the configuration exists but cannot be read.
+        Never ``None``, unlike the protocol allows: a configuration that was never set
+        returns the all-disabled default with ``config_source="default"`` (see below).
+        Raises :class:`HotSwapStatusUnavailable` when the configuration exists but cannot
+        be read.
         """
 
         completed = self._invoke(["config", "--state", self._state_path])

@@ -2796,7 +2796,7 @@ def test_ui_5_success_is_confirmed_by_the_durable_live_strategy(hot_swap_dashboa
             _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live="old-live"))
             _route_post_then_flip_status(
                 page,
-                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED","cooldown_window":"STARTED"}',
                 live="cand-A",  # the swap made cand-A live
                 candidate=None,
             )
@@ -2824,7 +2824,7 @@ def test_ui_5_a_promotion_to_a_different_live_strategy_is_a_mismatch(
             _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live="old-live"))
             _route_post_then_flip_status(
                 page,
-                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED","cooldown_window":"STARTED"}',
                 live="other-B",  # a DIFFERENT strategy went live
                 candidate=None,
             )
@@ -2863,7 +2863,7 @@ def test_ui_5_a_stale_post_swap_snapshot_keeps_the_control_inert(hot_swap_dashbo
                 lambda route: route.fulfill(
                     status=200,
                     content_type="application/json",
-                    body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                    body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED","cooldown_window":"STARTED"}',
                 ),
             )
             page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
@@ -2902,7 +2902,7 @@ def test_ui_5_is_inert_after_a_swap_until_status_reread(hot_swap_dashboard: str)
             )
             _route_post_then_flip_status(
                 page,
-                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED","cooldown_window":"STARTED"}',
                 live="cand-A",
                 candidate=None,  # promoted -> no longer a candidate
                 cooldown_active=True,
@@ -2938,7 +2938,7 @@ def test_ui_5_an_out_of_order_status_poll_cannot_resurrect_a_stale_candidate(
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
-                body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED","cooldown_window":"STARTED"}',
             ),
         )
         payload_a = json.dumps(_hot_swap_payload(candidate="cand-A"))

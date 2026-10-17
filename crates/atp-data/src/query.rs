@@ -107,7 +107,7 @@ impl UnifiedHistoricalQuery {
             && key.resolution == self.resolution
             && key.event_ts >= self.start_ts
             && key.event_ts <= self.end_ts
-            && self.kind.map_or(true, |kind| kind == key.kind)
+            && self.kind.is_none_or(|kind| kind == key.kind)
     }
 }
 

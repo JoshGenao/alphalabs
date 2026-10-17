@@ -1,6 +1,6 @@
 """SRS-DATA-007 CLOSE — the consolidating four-consumer contract test.
 
-SRS-DATA-007 (docs/SRS.md line 177; SyRS SYS-27 / SYS-53; StRS SN-1.28 / SN-3.03 / BG-5):
+SRS-DATA-007 (docs/SRS.md, SRS-DATA-007 row; SyRS SYS-27 / SYS-53; StRS SN-1.28 / SN-3.03 / BG-5):
 "The software shall provide a unified historical data access interface." Acceptance criterion:
 "**Strategy code, backtests, factor jobs, and notebooks query by symbol, date range, and resolution
 WITHOUT specifying the original source provider.**" Verification method (SRS): **Contract test**.
@@ -15,7 +15,7 @@ concrete query surfaces and asserts each reads the *provider-neutral* unified pa
 rests on — so no one consumer surface can be removed/renamed without re-examining the close.
 
 Scope boundary (the reason this closes while SRS-RES-002 stays open): the SRS specifies the Jupyter
-notebook **HOST** runtime *separately* as SRS-RES-002 (docs/SRS.md line 209, verification "Test,
+notebook **HOST** runtime *separately* as SRS-RES-002 (docs/SRS.md, SRS-RES-002 row, verification "Test,
 demonstration" — kernel / indicators / plotting / no-live-order isolation). DATA-007 is the data-access
 *interface* (verified by a contract test); a notebook *querying* that interface is plain Python importing
 the same binding every consumer uses. The notebook DATA ACCESS is wired and tested here; the Jupyter

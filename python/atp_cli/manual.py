@@ -62,7 +62,7 @@ def _argument_dict(argument: Argument) -> dict[str, Any]:
     return payload
 
 
-def _served_description(owner: str) -> str:
+def _served_description(owner: str, entrypoint: str) -> str:
     """The implemented counterpart of :data:`_PLACEHOLDER_DESCRIPTION`.
 
     The manual is what an operator reads before running a command. Telling them a
@@ -72,9 +72,11 @@ def _served_description(owner: str) -> str:
     """
 
     return (
-        f"Implemented by {owner}. The arguments and exit codes above are the ones "
-        f"the live command honours. A deployment that has not composed {owner}'s "
-        "handler exits non-zero with a structured error naming it as the owner."
+        f"Implemented by {owner}; run it through `{entrypoint}`, which composes the "
+        f"handler (`python -m atp_cli` is the contract surface and exits NOT_IMPLEMENTED). "
+        f"The arguments and exit codes above are the ones the live command honours. A "
+        f"deployment that has not composed {owner}'s handler exits non-zero with a "
+        "structured error naming it as the owner."
     )
 
 
@@ -82,7 +84,9 @@ def _command_dict(command: Command) -> dict[str, Any]:
     description_parts = [
         command.summary,
         f"SRS trace: {', '.join(command.srs_refs)}.",
-        _served_description(command.served_by) if command.served_by else _PLACEHOLDER_DESCRIPTION,
+        _served_description(command.served_by, command.served_entrypoint)
+        if command.served_by
+        else _PLACEHOLDER_DESCRIPTION,
     ]
     if command.requires_confirmation:
         description_parts.append("Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).")

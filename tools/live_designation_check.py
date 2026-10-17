@@ -332,6 +332,167 @@ def check_route_order_guard(config: dict, exec_src: str) -> str:
     )
 
 
+def _arm_block(source: str, arm: str) -> str:
+    """Return the text of the match arm starting at ``arm`` up to the next arm.
+
+    The binary's tier arms are ``"fixture" => { ... }`` and ``"ib" => { ... }``;
+    the arm ends at the next ``" =>`` or ``other =>`` at a shallower nesting, which
+    for this flat match is simply the next arm marker.
+    """
+    start = source.find(arm)
+    if start < 0:
+        fail(f"live host binary has no `{arm}` arm")
+    rest = source[start + len(arm) :]
+    ends = [index for index in (rest.find('" =>'), rest.find("other =>")) if index >= 0]
+    return rest[: min(ends)] if ends else rest
+
+
+def check_live_host(config: dict, root: Path = ROOT) -> str:
+    """The production call site: lock, fresh read, durable route, socket identity.
+
+    Pins the four properties the live execution host adds on top of route_order:
+    the swap guard is held (named binding) across a FRESH designation read and the
+    durable route, in that order; the host never calls the non-durable or
+    caller-trusting entry points; one module owns the snapshot format; and the
+    strategy identity comes from the socket, never the frame. Also pins that the
+    live IB tier refuses rather than wiring a fixture freshness probe.
+    """
+    spec = contract_block(config)["live_host"]
+    module = (root / spec["module"]).read_text(encoding="utf-8")
+    try:
+        submit = _fn_block(module, spec["submit_fn"])
+    except AssertionError as error:
+        fail(str(error))
+    # Scan code, not prose: a comment naming a call ("not `acquire_creating`") must
+    # neither satisfy nor trip the ordering check.
+    submit = re.sub(r"//[^\n]*", "", submit)
+    if "route_order_durably" not in submit:
+        fail(f"stripping comments from `{spec['submit_fn']}` removed its code; check the stripper")
+
+    positions = []
+    for call in spec["ordered_calls"]:
+        index = submit.find(call)
+        if index < 0:
+            fail(f"live host `{spec['submit_fn']}` never makes `{call}`")
+        positions.append(index)
+    if positions != sorted(positions):
+        fail(
+            f"live host `{spec['submit_fn']}` makes {spec['ordered_calls']} out of order: the "
+            "designation must be read under the swap guard, and routed while it is still held"
+        )
+    for call in spec["forbidden_calls"]:
+        if call in submit:
+            fail(f"live host `{spec['submit_fn']}` calls `{call}`, bypassing the durable route")
+
+    owners = []
+    for path in sorted((root / "crates").rglob("*.rs")):
+        text = path.read_text(encoding="utf-8")
+        for name in spec["designation_store_fns"]:
+            if re.search(rf"\bfn\s+{name}\s*\(", text):
+                owners.append((name, str(path.relative_to(root))))
+    strays = [owner for owner in owners if owner[1] != spec["designation_store"]]
+    if strays:
+        fail(
+            f"the designation snapshot is read or written outside {spec['designation_store']}: "
+            f"{strays} - two copies of the format can drift"
+        )
+    if {name for name, _ in owners} != set(spec["designation_store_fns"]):
+        fail(f"{spec['designation_store']} no longer defines {spec['designation_store_fns']}")
+
+    server = (root / spec["server_module"]).read_text(encoding="utf-8")
+    if spec["socket_identity"] not in server:
+        fail(
+            "the socket server no longer derives each connection's strategy from the socket "
+            f"it was bound for (`{spec['socket_identity']}`)"
+        )
+    for token in spec["socket_hardening"]:
+        if token not in server:
+            fail(
+                f"the socket server no longer makes `{token}`: each strategy's socket must "
+                "be private to its own directory under a socket_dir closed to other users"
+            )
+    protocol = (root / spec["protocol_module"]).read_text(encoding="utf-8")
+    keys = re.search(r"const SUBMIT_KEYS: \[&str; \d+\] = \[(.*?)\];", protocol, re.S)
+    if keys is None:
+        fail("the protocol module has no SUBMIT_KEYS allow-list")
+    for forbidden in spec["protocol_forbidden_keys"]:
+        if f'"{forbidden}"' in keys.group(1):
+            fail(f"a submit frame may carry `{forbidden}`; the socket is the only identity")
+
+    binary = (root / spec["binary"]).read_text(encoding="utf-8")
+    live_arm = _arm_block(binary, spec["live_tier_arm"])
+    if spec["live_tier_refusal_owner"] not in live_arm:
+        fail(f"the live IB tier arm no longer names its blocker {spec['live_tier_refusal_owner']}")
+    for token in spec["live_tier_forbidden"]:
+        if token in live_arm:
+            fail(f"the live IB tier arm uses `{token}`; it must refuse to start")
+
+    return (
+        f"live host `{spec['submit_fn']}` holds the swap guard across a fresh designation read "
+        "and route_order_durably (never submit_live_order / route_order); one module owns the "
+        "snapshot format; identity comes from the socket; the live IB tier refuses "
+        f"(owner {spec['live_tier_refusal_owner']})"
+    )
+
+
+def check_operator_and_strategy_legs(config: dict, root: Path = ROOT) -> str:
+    """Landing 2: the operator surface is mounted in the SHIPPED serve(), and the
+    strategy order leg delivers through the SDK's one delivery seam.
+
+    "Implemented is not shipped" (adversarial-precheck rule 7): a mount function only
+    tests call would leave the documented routes at 501 in production.
+    """
+
+    block = contract_block(config)
+    surface = block["operator_surface"]
+    module = (root / surface["module"]).read_text(encoding="utf-8")
+    for operation in surface["operations"]:
+        if f'"{operation}"' not in module:
+            fail(f"{surface['module']} no longer registers `{operation}`")
+    if f"def {surface['mount']}(" not in module:
+        fail(f"{surface['module']} has no `{surface['mount']}`")
+    serve_src = (root / surface["serve_module"]).read_text(encoding="utf-8")
+    # Python source: serve() runs from `def serve(` to the next top-level def.
+    start = serve_src.find("\ndef serve(")
+    if start < 0:
+        fail(f"{surface['serve_module']} has no top-level serve()")
+    end = serve_src.find("\ndef ", start + 1)
+    serve_body = serve_src[start : end if end > 0 else None]
+    if f"{surface['serve_arm']}(runtime, env)" not in serve_body:
+        fail(
+            f"serve() does not call {surface['serve_arm']}: the live-designation routes "
+            "would be mountable in tests and 501 in production"
+        )
+    if surface["opt_in_knob"] not in serve_src:
+        fail(f"{surface['serve_module']} no longer reads {surface['opt_in_knob']}")
+    cli_main = root / surface["cli_entrypoint"]
+    if not cli_main.is_file() or f"{surface['mount']}(runtime" not in cli_main.read_text(
+        encoding="utf-8"
+    ):
+        fail(
+            f"{surface['cli_entrypoint']} does not compose {surface['mount']}: `live promote` "
+            "and `live show` would answer 501 from every shipped CLI"
+        )
+
+    leg = block["strategy_order_leg"]
+    client = (root / leg["module"]).read_text(encoding="utf-8")
+    if f"class {leg['router']}" not in client:
+        fail(f"{leg['module']} has no `{leg['router']}`")
+    if f"{leg['delivery']}(" not in client:
+        fail(
+            f"{leg['router']} no longer delivers through `{leg['delivery']}`, the SDK's "
+            "one validated delivery seam"
+        )
+    if not (root / leg["latency_cli"]).is_file():
+        fail(f"{leg['latency_cli']} is missing")
+    return (
+        f"operator surface: {len(surface['operations'])} operations registered by "
+        f"{surface['mount']} and composed in serve() via {surface['serve_arm']} and in "
+        f"{surface['cli_entrypoint']}; strategy "
+        f"order leg {leg['router']} delivers through {leg['delivery']}"
+    )
+
+
 def check_cargo_test_smoke(config: dict) -> str:
     block = contract_block(config)
     crate = block["execution_crate"]["crate"]
@@ -359,9 +520,22 @@ def check_cargo_test_smoke(config: dict) -> str:
             f"cargo test -p {crate} --test srs_exe_001_live_designation failed:\n"
             f"{integ.stdout}\n{integ.stderr}"
         )
+    host = subprocess.run(
+        [cargo, "test", "-p", "atp-orchestrator", "--test", "srs_exe_001_live_host", "--quiet"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if host.returncode != 0:
+        fail(
+            "cargo test -p atp-orchestrator --test srs_exe_001_live_host failed:\n"
+            f"{host.stdout}\n{host.stderr}"
+        )
     return (
-        f"cargo test -p {crate} --lib + srs_exe_001_live_designation: PASS "
-        "(authority invariants + only-the-designated-strategy-routes verified)"
+        f"cargo test -p {crate} --lib + srs_exe_001_live_designation + "
+        "atp-orchestrator srs_exe_001_live_host: PASS (authority invariants + only the "
+        "designated strategy reaches the broker through the live host)"
     )
 
 
@@ -384,6 +558,8 @@ def run_checks() -> list[str]:
     config = load_config()
     exec_src = execution_source(config)
     evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence.append(check_live_host(config))
+    evidence.append(check_operator_and_strategy_legs(config))
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
@@ -391,7 +567,10 @@ def run_checks() -> list[str]:
 def assert_live_designation_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     exec_src = execution_source(config, root)
-    return [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence = [check(config, exec_src) for _, check in _STATIC_CHECKS]
+    evidence.append(check_live_host(config, root))
+    evidence.append(check_operator_and_strategy_legs(config, root))
+    return evidence
 
 
 def main(argv: list[str] | None = None) -> int:

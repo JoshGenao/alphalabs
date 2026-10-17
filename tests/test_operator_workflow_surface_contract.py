@@ -243,27 +243,14 @@ class OperatorWorkflowSurfaceMutationTest(unittest.TestCase):
 
     def test_mutation_live_promote_drops_confirmation(self) -> None:
         def mutate(rig: _MutationRig) -> None:
-            # Find the `live promote` CLI Command and flip requires_confirmation.
+            # Find the `live promote` CLI Command (the only one served by SRS-EXE-001
+            # with confirmation) and flip requires_confirmation.
             rig.replace_in(
                 "python/atp_cli/commands.py",
-                "summary=(\n            "
-                '"Designate a strategy as the single live IB strategy. Enforces "\n            '
-                '"the one-live-strategy invariant; requires --confirm."\n        ),\n        '
-                'srs_refs=("SRS-API-001", "SYS-2c", "SYS-2d"),\n        arguments=(\n            '
-                'Argument(\n                name="strategy_id",\n                '
-                'summary="Strategy to promote to the live IB account.",\n                '
-                "required=True,\n            ),\n            _CONFIRM,\n        ),\n        "
-                "exit_codes=(\n            ExitCode.OK,\n            ExitCode.NOT_FOUND,\n            "
-                "ExitCode.CONFIRMATION_REQUIRED,\n        ),\n        requires_confirmation=True,",
-                "summary=(\n            "
-                '"Designate a strategy as the single live IB strategy. Enforces "\n            '
-                '"the one-live-strategy invariant; requires --confirm."\n        ),\n        '
-                'srs_refs=("SRS-API-001", "SYS-2c", "SYS-2d"),\n        arguments=(\n            '
-                'Argument(\n                name="strategy_id",\n                '
-                'summary="Strategy to promote to the live IB account.",\n                '
-                "required=True,\n            ),\n            _CONFIRM,\n        ),\n        "
-                "exit_codes=(\n            ExitCode.OK,\n            ExitCode.NOT_FOUND,\n            "
-                "ExitCode.CONFIRMATION_REQUIRED,\n        ),\n        requires_confirmation=False,",
+                "            ExitCode.INTERNAL_ERROR,\n        ),\n        "
+                'requires_confirmation=True,\n        served_by="SRS-EXE-001",',
+                "            ExitCode.INTERNAL_ERROR,\n        ),\n        "
+                'requires_confirmation=False,\n        served_by="SRS-EXE-001",',
             )
 
         self._assert_fail(self._run_mutation(mutate), "requires_confirmation")

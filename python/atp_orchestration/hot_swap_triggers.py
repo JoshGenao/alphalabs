@@ -52,6 +52,8 @@ Fail-closed rules this layer must preserve
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from atp_hotswap import (
@@ -97,7 +99,9 @@ _PUT_TRIGGER_FIELDS = frozenset(
 )
 
 
-def _invoke_or_fail(source: CliHotSwapTriggerSource, args: list[str], *, what: str):
+def _invoke_or_fail(
+    source: CliHotSwapTriggerSource, args: list[str], *, what: str
+) -> subprocess.CompletedProcess[str]:
     """Run the trigger binary, mapping an unreachable one to a structured error.
 
     The client raises :class:`HotSwapStatusUnavailable` when the subprocess times out or
@@ -523,7 +527,7 @@ def _rest_config_body(config: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _optional_bool(body: dict[str, object], key: str) -> bool | None:
+def _optional_bool(body: Mapping[str, object], key: str) -> bool | None:
     """Read an optional boolean request field, refusing a coerced one.
 
     ``"true"``/``1`` are NOT booleans here. A caller that meant to arm an automatic Hot-Swap

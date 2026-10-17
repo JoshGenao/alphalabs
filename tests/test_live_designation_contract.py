@@ -14,8 +14,10 @@ dropped authority/delegate call).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -31,6 +33,8 @@ from live_designation_check import (  # noqa: E402
     check_confirmation_token,
     check_designation_error,
     check_engine_ownership,
+    check_live_host,
+    check_operator_and_strategy_legs,
     check_registry,
     check_route_order_guard,
     check_routing_decision,
@@ -70,6 +74,8 @@ class LiveDesignationScriptTest(unittest.TestCase):
             "OrderErrorCategory::NonLiveStrategySubmission",
             "consults none of 6 forbidden ports",
             "srs_exe_001_live_designation",
+            "holds the swap guard across a fresh designation read",
+            "srs_exe_001_live_host",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -260,16 +266,159 @@ class RouteOrderGuardTest(unittest.TestCase):
         self.assertIn("self.submit_live_order", str(ctx.exception))
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_seven_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 6 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 7)
+class LiveHostTest(unittest.TestCase):
+    """The live execution host: each guard in check_live_host catches its regression."""
 
-    def test_assert_live_designation_static_emits_six_evidence_items(self) -> None:
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.spec = self.config["live_designation_contract"]["live_host"]
+        self.root = Path(tempfile.mkdtemp(prefix="exe001-contract-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for key in ("module", "server_module", "protocol_module", "binary", "designation_store"):
+            target = self.root / self.spec[key]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / self.spec[key], target)
+
+    def _mutate(self, key: str, old: str, new: str) -> None:
+        path = self.root / self.spec[key]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(old, text, f"mutation anchor missing from {key}")
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    def _caught(self, needle: str) -> None:
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_live_host(self.config, self.root)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_the_unmutated_copy_passes(self) -> None:
+        self.assertIn("holds the swap guard", check_live_host(self.config, self.root))
+
+    def test_reading_the_designation_before_the_guard_is_caught(self) -> None:
+        # A read before the guard can be stale by the time the order reaches the
+        # broker: a Hot-Swap may have moved the live slot in between.
+        self._mutate(
+            "module",
+            "        // A poisoned mutex means",
+            "        let _early = load_designation(&self.designation_path);\n"
+            "        // A poisoned mutex means",
+        )
+        self._caught("out of order")
+
+    def test_calling_the_caller_trusting_entry_point_is_caught(self) -> None:
+        self._mutate(
+            "module",
+            "        let result = engine.route_order_durably(",
+            "        let _ = engine.submit_live_order;\n        let result = engine.route_order_durably(",
+        )
+        self._caught("calls `submit_live_order`")
+
+    def test_a_private_copy_of_the_snapshot_format_is_caught(self) -> None:
+        stray = self.root / "crates/atp-orchestrator/src/bin/stray.rs"
+        stray.write_text("fn load_designation(path: &Path) {}\n", encoding="utf-8")
+        self._caught("outside crates/atp-orchestrator/src/live_designation_store.rs")
+
+    def test_identity_from_anything_but_the_socket_is_caught(self) -> None:
+        self._mutate(
+            "server_module",
+            "StrategyId::new(id.as_str())",
+            "StrategyId::new(strategies[0].as_str())",
+        )
+        self._caught("derives each connection's strategy")
+
+    def test_an_open_socket_directory_check_removed_is_caught(self) -> None:
+        self._mutate("server_module", "mode & 0o077 != 0", "mode & 0o000 != 0")
+        self._caught("mode & 0o077 != 0")
+
+    def test_a_shared_strategy_directory_is_caught(self) -> None:
+        self._mutate(
+            "server_module",
+            "fs::Permissions::from_mode(0o700)",
+            "fs::Permissions::from_mode(0o755)",
+        )
+        self._caught("from_mode(0o700)")
+
+    def test_a_strategy_id_field_in_the_frame_is_caught(self) -> None:
+        self._mutate(
+            "protocol_module", '"correlation_id",\n', '"correlation_id",\n    "strategy_id",\n'
+        )
+        self._caught("may carry `strategy_id`")
+
+    def test_a_live_tier_that_starts_with_a_fixture_freshness_probe_is_caught(self) -> None:
+        self._mutate(
+            "binary",
+            '            if flags.fixture_wire_ledger.is_some() {\n                return Err("`--fixture-wire-ledger` is fixture-tier only".to_string());',
+            "            let _probe = FreshMarketDataFixture;\n"
+            '            if flags.fixture_wire_ledger.is_some() {\n                return Err("`--fixture-wire-ledger` is fixture-tier only".to_string());',
+        )
+        self._caught("uses `FreshMarketDataFixture`")
+
+
+class OperatorAndStrategyLegsTest(unittest.TestCase):
+    """Landing 2: each guard in check_operator_and_strategy_legs catches its regression."""
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        block = self.config["live_designation_contract"]
+        self.paths = {
+            "surface": block["operator_surface"]["module"],
+            "serve": block["operator_surface"]["serve_module"],
+            "client": block["strategy_order_leg"]["module"],
+            "latency": block["strategy_order_leg"]["latency_cli"],
+            "cli": block["operator_surface"]["cli_entrypoint"],
+        }
+        self.root = Path(tempfile.mkdtemp(prefix="exe001-l2-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for rel in self.paths.values():
+            target = self.root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / rel, target)
+
+    def _mutate(self, key: str, old: str, new: str) -> None:
+        path = self.root / self.paths[key]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    def _caught(self, needle: str) -> None:
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_operator_and_strategy_legs(self.config, self.root)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_the_unmutated_copy_passes(self) -> None:
+        evidence = check_operator_and_strategy_legs(self.config, self.root)
+        self.assertIn("composed in serve()", evidence)
+
+    def test_a_dropped_operation_is_caught(self) -> None:
+        self._mutate("surface", '"live show"', '"live list"')
+        self._caught("`live show`")
+
+    def test_an_arm_serve_never_calls_is_caught(self) -> None:
+        self._mutate(
+            "serve",
+            "    _mount_live_designation_arm(runtime, env)\n",
+            "    pass\n",
+        )
+        self._caught("serve() does not call _mount_live_designation_arm")
+
+    def test_a_cli_entrypoint_that_does_not_compose_the_handlers_is_caught(self) -> None:
+        self._mutate("cli", "    mount_live_designation(runtime, state_path=state)\n", "")
+        self._caught("would answer 501")
+
+    def test_bypassing_the_sdk_delivery_seam_is_caught(self) -> None:
+        self._mutate("client", "deliver_order_event(", "on_order_event_direct(")
+        self._caught("deliver_order_event")
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_nine_evidence_items(self) -> None:
+        evidence = run_checks()
+        # 6 static + live host + operator/strategy legs + 1 cargo smoke.
+        self.assertEqual(len(evidence), 9)
+
+    def test_assert_live_designation_static_emits_eight_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_live_designation_static(config, ROOT)
-        self.assertEqual(len(evidence), 6)
+        self.assertEqual(len(evidence), 8)
 
 
 if __name__ == "__main__":

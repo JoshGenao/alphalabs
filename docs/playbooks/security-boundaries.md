@@ -179,3 +179,14 @@ as PASS. A compose text-check must handle all of these or refuse:
   without the repo config rather than running a different version. When your local
   reproduction is CLEANER than CI on the same commit, suspect that CI is not loading what
   you think it is. `(2026-09-03)`
+
+## Unix-socket identity
+
+- **If the socket is the identity, its reachability is the security boundary.** The live
+  execution host treats whoever connects to a strategy's socket as that strategy. Enforce
+  what the process can: refuse a socket directory open to group/other, give each strategy
+  its OWN `0700` directory holding only its `0600` socket, and refuse a symlink there. Mount
+  the directory, not the socket file (a file bind mount pins the inode across a restart).
+  Which directory a container receives is the container runtime's job; `peer_cred` is not
+  stable Rust, so say so rather than claim more. `(EXE-001 r1)`
+

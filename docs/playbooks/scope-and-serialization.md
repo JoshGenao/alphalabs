@@ -196,3 +196,17 @@ WHERE the findings land, not how many there are. `(SRS-MD-005 r12)`
     tests. After the close it named a DONE feature as the thing being awaited, visible to
     the operator on the dashboard itself. Find the feature that genuinely owes the surface
     (here UI-1, whose own pane it is) and move the value there. `(NOTIF-001)`
+26. **Defer scope with a release tag, never by deleting or parking.** When the board
+    deadlocks on work nobody needs yet, tag it `R2` in `docs/SRS.md` §3.1 and in the
+    feature's `"release"` in `feature_list.json`. The scheduler skips R2 features AND
+    ignores every edge onto them, so one deferred keystone frees everything behind it;
+    `needs_clarification` or `external_blocker` would park the feature but keep its
+    dependents blocked. A missing or unknown tag fails closed (not offered, still
+    blocking, still counted against "done"), and `tests/unit/test_release_scope_contract.py`
+    fails if the SRS and the feature list disagree. The 2026-10-08 MVP cut took the board
+    from DEADLOCK (0 ready) to PROGRESSING by deferring 9 features, one of them
+    SRS-PERF-001, which alone blocked SRS-EXE-001 and SRS-MD-001. `(MVP scope, 2026-10-08)`
+27. **A second way to write an edge needs the same guard.** Ignoring R2 edges in
+    `compute()` was not enough: `block --on <R2 id>` would record an edge the scheduler
+    then ignores, so the feature returns to the frontier and the agent churns. `block`
+    refuses it, all-or-nothing, like a cycle. `(MVP scope, 2026-10-08)`

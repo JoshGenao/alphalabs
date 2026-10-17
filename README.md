@@ -13,7 +13,7 @@ Most of the work here is done by AI coding agents, coordinated by a scheduler in
 | You are | Read |
 |---|---|
 | **An AI agent** | [`AGENTS.md`](AGENTS.md) — navigation, architecture, the parallel-agent protocol. `CLAUDE.md` is loaded automatically. |
-| **A human, new to the project** | [`docs/StRS_v0.7.md`](docs/StRS_v0.7.md) — the stakeholder vision and why this exists. |
+| **A human, new to the project** | [`docs/StRS_v0.8.md`](docs/StRS_v0.8.md) — the stakeholder vision and why this exists. |
 | **Looking for the requirements** | [`docs/README.md`](docs/README.md) — the StRS → SyRS → SRS → `feature_list.json` chain. |
 | **Wondering what's done** | `python3 tools/agent_pool.py status` |
 

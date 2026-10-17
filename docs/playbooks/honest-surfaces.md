@@ -262,3 +262,14 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
   first pinned only a 5x separation, so it could not fail for the ratio the prose argued.
   If a ratio is load-bearing enough to state, state the numbers beside it and assert the
   ratio you actually claim. `(SRS-MD-005 r25)`
+- **A served CLI command must name the program that composes it.** `python -m atp_cli`
+  is the contract stub (exits NOT_IMPLEMENTED) and `python -m atp_runtime` is a bare
+  runtime; neither composes a domain handler. Set `Command.served_entrypoint` with
+  `served_by` (enforced in `__post_init__`), give the composed entrypoint a subprocess
+  test, and declare USAGE_ERROR: every composed entrypoint refuses missing config
+  with it before dispatch. `(EXE-001 L2 r1, r3, r5)`
+- **Tell a subprocess's outcomes apart by exit code, never by stderr text.** One code
+  for "refused input" and "the state file is corrupt" makes the handler guess, and it
+  guessed "operator error" for a broken live-slot record. Give each outcome its own
+  code (refused / state error / already-live / published-not-synced). `(EXE-001 L2 r4)`
+

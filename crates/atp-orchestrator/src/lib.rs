@@ -47,6 +47,11 @@ pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
 /// SRS-MD-003 — composition of the IB transport with the live freshness feed
 /// loop (operator-gated `ib-live-transport`).
+// SRS-EXE-001: the ONE durable single-live designation snapshot every live-slot
+// reader and writer shares (Hot-Swap CLI, operator designation CLI, live host).
+pub mod live_designation_store;
+// SRS-EXE-001: the live execution host - the production call site of route_order.
+pub mod live_host;
 pub mod live_market_data;
 pub mod order_routing_wiring;
 /// SRS-MD-005 — the scheduled IB Gateway restart-window connectivity producer:

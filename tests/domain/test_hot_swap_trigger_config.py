@@ -1043,3 +1043,25 @@ def test_contradictory_proof_lines_never_evidence_a_fired_trigger(tmp_path: Path
     fired = _cli("manual", "--demoting", "alpha", "--candidate", "beta", "--log", str(log))
     assert fired.returncode == 0, fired.stderr
     assert parse_trigger_cli_output(fired.stdout)["manual-logged"] == "true"
+
+
+def test_a_never_configured_source_returns_the_disabled_default_never_none(
+    tmp_path: Path,
+) -> None:
+    # CliHotSwapTriggerSource.trigger_config is typed `-> dict[str, object]` (narrowed
+    # from the protocol's `| None`): the REST GET handler passes its result straight to
+    # `_rest_config_body`, so a None would surface as an unstructured 500 rather than the
+    # honest "nothing configured, automatic triggers off" answer. This pins the
+    # never-configured case through the REAL binary: a payload, marked as the default,
+    # with every automatic trigger off.
+    from atp_hotswap import CliHotSwapTriggerSource
+
+    state = tmp_path / "never-written.json"
+    config = CliHotSwapTriggerSource(state, binary=_trigger_cli()).trigger_config()
+
+    assert config is not None
+    assert config["config_source"] == "default"
+    assert config["any_enabled"] is False
+    for kind in ("drawdown_demotion", "top_ranked_promotion", "highest_momentum_promotion"):
+        assert config[kind] == {"enabled": False}, (kind, config)
+    assert not state.exists(), "reading the configuration must not create it"

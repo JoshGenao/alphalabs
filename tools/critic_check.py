@@ -263,6 +263,10 @@ SAFETY_PATH_RE = re.compile(
     r"|/factor_job\.rs|factor[_-]?job[_-]?check|factor[_-]?job[_-]?contract"
     r"|srs[_-]?fac[_-]?001"
     r"|/designation\.rs|live[_-]?designation|srs[_-]?exe[_-]?001"
+    # SRS-EXE-001: the live execution host is the production call site of route_order -
+    # the one process whose orders reach IB. Neither its module (live_host/) nor its
+    # binary (live_execution_host) matched any token above. 0 tracked-path collisions.
+    r"|live[_-]?host|live[_-]?execution[_-]?host"
     r"|/order_lifecycle\.rs|order[_-]?lifecycle|srs[_-]?exe[_-]?008"
     r"|/order_event\.rs|order[_-]?event[_-]?dispatch|srs[_-]?sdk[_-]?004"
     r"|/order_type\.rs|order[_-]?type|srs[_-]?exe[_-]?003"
@@ -367,7 +371,12 @@ def check_safety_critical_paired(diff: DiffSlice, report: Report) -> None:
     # (safety-paths.md, and any future connectivity-/live-mode- playbook), so they match by
     # filename while carrying no behavior at all. Both carve-outs are DOCUMENTATION prefixes --
     # no source, test, or config path can reach them.
-    _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/")
+    #
+    # .harness/runs/ is the same shape again: per-feature evidence (review rounds, step
+    # output, EVIDENCE.md) named for the feature, so a feature whose id is itself a safety
+    # token (srs-exe-001) matched by its evidence path alone, while integrate refuses to run
+    # unless that evidence is committed. Evidence carries no behavior. (SRS-EXE-001, 2026-10-10)
+    _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/", ".harness/runs/")
     safety_files = [
         p
         for p in diff.files_changed

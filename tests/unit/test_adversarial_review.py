@@ -248,11 +248,121 @@ def test_claude_findings_still_yield_their_rule_id():
         ("medium", False),
         ("low", False),
         ("info", False),
-        ("", False),
+        # is_blocking now DECIDES the verdict (it used to feed only the ledger), so
+        # an unreadable severity must fail closed rather than read as "not severe".
+        ("", True),
+        ("severe", True),
     ],
 )
 def test_both_severity_vocabularies_are_understood(sev, blocking):
     assert ar.is_blocking({"rule": "x", "severity": sev}) is blocking
+
+
+# --- the severity policy: category decides, and the tool computes the verdict ---
+@pytest.mark.parametrize("cat", sorted(ar.BLOCKING_CATEGORIES))
+def test_a_high_finding_in_a_blocking_category_blocks(cat):
+    assert ar.is_blocking({"title": f"[{cat}] x", "severity": "high"}) is True
+    assert ar.is_blocking({"category": cat, "severity": "block"}) is True
+
+
+@pytest.mark.parametrize("cat", sorted(ar.WARN_CATEGORIES))
+def test_a_high_finding_in_a_warn_category_does_not_block(cat):
+    assert ar.is_blocking({"title": f"[{cat}] x", "severity": "high"}) is False
+    assert ar.is_blocking({"category": cat, "severity": "block"}) is False
+
+
+@pytest.mark.parametrize(
+    "finding",
+    [
+        pytest.param({"title": "no prefix", "severity": "high"}, id="untagged"),
+        pytest.param({"title": "[made-up] x", "severity": "high"}, id="unknown-prefix"),
+        pytest.param({"category": "made-up", "severity": "block"}, id="unknown-field"),
+        pytest.param({"title": "x [contract-drift]", "severity": "high"}, id="prefix-not-first"),
+        pytest.param("a bare string", id="malformed"),
+    ],
+)
+def test_an_unreadable_category_fails_closed(finding):
+    assert ar.is_blocking(finding) is True
+
+
+def test_the_explicit_category_field_wins_over_the_title():
+    f = {"category": "contract-drift", "title": "[runtime] x", "severity": "high"}
+    assert ar.finding_category(f) == "contract-drift" and ar.is_blocking(f) is False
+
+
+def test_a_low_finding_in_a_blocking_category_warns():
+    assert ar.is_blocking({"title": "[data-loss] x", "severity": "medium"}) is False
+
+
+def test_drift_only_needs_attention_is_a_warn_not_a_block():
+    """The LOG-001 r29/r33 shape: a real but documentation-only finding rated high."""
+    got = ar.normalize_verdict(
+        {
+            "verdict": "needs-attention",
+            "findings": [
+                {
+                    "title": "[contract-drift] Contract still defers built surface",
+                    "severity": "high",
+                }
+            ],
+        },
+        "codex",
+    )
+    assert got["verdict"] == "warn"
+
+
+def test_one_blocking_finding_among_warnings_blocks():
+    got = ar.normalize_verdict(
+        {
+            "verdict": "needs-attention",
+            "findings": [
+                {"title": "[contract-drift] stale docstring", "severity": "high"},
+                {"title": "[data-loss] missing store reads as empty", "severity": "high"},
+            ],
+        },
+        "codex",
+    )
+    assert got["verdict"] == "block"
+
+
+def test_the_reviewers_verdict_word_does_not_override_its_findings():
+    # The SRS-MD-003 shape: BLOCK with no blocking finding → warn.
+    word_block = {"verdict": "block", "findings": [{"category": "hygiene", "severity": "block"}]}
+    assert ar.normalize_verdict(word_block, "claude-fallback")["verdict"] == "warn"
+    # And the reverse: an "approve" that lists a blocking defect still blocks.
+    word_ok = {"verdict": "approve", "findings": [{"category": "runtime", "severity": "block"}]}
+    assert ar.normalize_verdict(word_ok, "claude-fallback")["verdict"] == "block"
+
+
+def test_round_record_reports_categories():
+    rec = ar.round_record(
+        {
+            "verdict": "warn",
+            "reviewer": "codex",
+            "findings": [{"title": "[contract-drift] a", "severity": "high"}, {"title": "b"}],
+        }
+    )
+    assert rec["categories"] == ["?", "contract-drift"]
+
+
+# --- an uninstalled Codex is an outage, not an unparseable verdict ------------
+def test_a_missing_codex_cli_is_recorded_as_such(tmp_path, monkeypatch):
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-MISSING")
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ar,
+        "run_codex",
+        lambda base: (1, "Codex CLI is not installed or is missing required runtime support."),
+    )
+    seen = []
+    monkeypatch.setattr(ar, "_claude", lambda base, note, paths=None: seen.append(note) or {})
+    ar.review("origin/main")
+    assert seen and "not installed" in seen[0]
+    rec = json.loads(
+        (tmp_path / ".harness/runs/F-MISSING/review.jsonl").read_text().splitlines()[-1]
+    )
+    assert rec["kind"] == "attempt" and "not installed" in rec["reviewer_note"]
 
 
 def test_a_finding_with_no_identifying_key_is_not_silently_dropped():

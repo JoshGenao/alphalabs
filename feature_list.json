@@ -4,6 +4,7 @@
     "category": "architecture",
     "srs_ref": "SRS-5.1 SRS-ARCH-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that implement core ATP runtime services in Rust and user-authored strategy interfaces in Python.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -21,6 +22,7 @@
     "category": "architecture",
     "srs_ref": "SRS-5.1 SRS-ARCH-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that enforce the dependency direction Types/Models -> Data Layer -> Strategy Engine -> Execution/Simulation -> Adapters.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -38,6 +40,7 @@
     "category": "architecture",
     "srs_ref": "SRS-5.1 SRS-ARCH-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that isolate vendor integrations behind adapter interfaces.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -55,6 +58,7 @@
     "category": "architecture",
     "srs_ref": "SRS-5.1 SRS-ARCH-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that deploy as a Docker Compose stack on the Phase 1 Proxmox Ubuntu VM target.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -72,6 +76,7 @@
     "category": "architecture",
     "srs_ref": "SRS-5.1 SRS-ARCH-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a configuration system for credentials, storage paths, IB account settings, market-data line limits, resource limits, and notification channels.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -89,6 +94,7 @@
     "category": "orchestration",
     "srs_ref": "SRS-5.2 SRS-ORCH-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that run each strategy instance in an isolated Docker container managed only by the Strategy Orchestrator.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -106,6 +112,7 @@
     "category": "orchestration",
     "srs_ref": "SRS-5.2 SRS-ORCH-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that enforce configurable resource profiles for live and paper strategy containers.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -123,6 +130,7 @@
     "category": "orchestration",
     "srs_ref": "SRS-5.2 SRS-ORCH-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that enforce workload priority when the configured host memory safety margin would be breached.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -140,6 +148,7 @@
     "category": "orchestration",
     "srs_ref": "SRS-5.2 SRS-ORCH-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that record and expose the deployed code version for each strategy instance.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -157,6 +166,7 @@
     "category": "orchestration",
     "srs_ref": "SRS-5.2 SRS-ORCH-005",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that support rollback to the previous deployed strategy version.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -174,6 +184,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a Python Strategy API that is identical for live IB execution and internal paper simulation, where internal paper simulation consumes live market data and produces simulated fills using fictional capital (per SYS-82 through SYS-87).",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -191,6 +202,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that expose trading-calendar-aware scheduling primitives through the Python Strategy API.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -208,6 +220,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that expose strategy subscriptions for equity and option market data while enforcing one tradable asset class per strategy instance.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -225,6 +238,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that deliver order event callbacks to Python strategy code.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -241,6 +255,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a warm-up mechanism before live, paper, and backtest execution.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -258,6 +273,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that expose built-in technical indicators through wrappers around pandas-ta and TA-Lib.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -275,6 +291,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-007",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that expose time-based bar consolidation and resampling through the Strategy API.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -291,6 +308,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-008",
     "priority": "P3",
+    "release": "R2",
     "description": "Verify that expose non-standard bar generation through the Strategy API.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -307,6 +325,7 @@
     "category": "strategy_api",
     "srs_ref": "SRS-5.2 SRS-SDK-009",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that document the Python Strategy API for strategy authors.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -324,11 +343,12 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that route orders to IB only for the designated live strategy.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-EXE-001 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Live designation requires explicit user confirmation; with one live strategy and at least 30 paper strategies running, only the live strategy can submit to IB; all other IB-bound attempts are rejected with a structured error; live order acknowledgement is less than 1,000 ms p95 from strategy API invocation to strategy acknowledgement callback under the reference baseline, excluding IB-to-exchange network round trip.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, with \"at least 30 paper strategies\" read as \"5 paper strategies\", and the 1,000 ms p95 acknowledgement measured with the host monotonic clock. Out of MVP scope (R2): 30-paper load; PTP measurement.",
       "Step 4: Record objective evidence from integration test, structural test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -340,6 +360,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that route all non-live strategy orders to the internal simulation engine.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -356,6 +377,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support market, limit, stop, and stop-limit orders for equities and options in live and paper modes.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -372,6 +394,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support multi-leg options orders as composite transactions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -388,6 +411,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that persist live strategy state needed for restart recovery and shall re-execute the warm-up mechanism on restart.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -404,6 +428,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that implement the initial brokerage adapter for headless IB Gateway.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -421,6 +446,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-007",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that manage IB TWS API version compatibility for the brokerage adapter.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -438,6 +464,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-008",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that implement an order lifecycle state machine with documented states and transitions, and shall use a strategy-supplied client correlation ID as the idempotency key for live and paper order submissions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -454,6 +481,7 @@
     "category": "execution",
     "srs_ref": "SRS-5.3 SRS-EXE-009",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that durably commit live order intents before submission to IB and shall use the durable record to reconcile broker state on restart.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -470,6 +498,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that consolidate duplicate real-time market data subscriptions across active strategies.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -486,6 +515,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that enforce the configured IB market-data line limit.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -502,6 +532,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that monitor market data and broker heartbeat freshness continuously.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -518,6 +549,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that block live and simulated order submission when required market data is stale.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -534,6 +566,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that handle the scheduled IB Gateway daily restart as planned maintenance.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -550,6 +583,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that execute a startup readiness check before enabling live trading.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -567,6 +601,7 @@
     "category": "market_data",
     "srs_ref": "SRS-5.4 SRS-MD-007",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that market-data subscription manager detect sequence gaps in IB tick streams and reflect gap state in heartbeat/staleness.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -583,11 +618,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that ingest daily OHLCV data for all US equities from Databento on a scheduled nightly basis.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: A nightly job retrieves 8,000+ securities, writes validated data to SSD, syncs to NAS, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): A nightly job retrieves daily OHLCV bars from Databento for every watchlist symbol and the benchmark (default SPY), writes validated data to the SSD, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day. Out of MVP scope (R2): 8,000+ securities; NAS sync.",
       "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -599,6 +635,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that ingest minute-bar OHLCV data from IB for a configurable watchlist.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -615,11 +652,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support initial bulk backfill from Databento.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Backfill retrieves the maximum available history offered by the bulk vendor at deployment, with floors of >= 15 years daily and >= 6 months minute, otherwise the deployment shall record a deviation note; daily and minute data are stored through the same validation and catalog path as incremental ingestion.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Backfill retrieves the maximum available Databento daily and minute history for the watchlist symbols and the benchmark, with floors of ≥ 15 years daily and ≥ 6 months minute for each symbol that has that much history; a symbol with less records a deviation note. A symbol added to the watchlist later is backfilled the same way. Data is stored through the same validation and catalog path as incremental ingestion. Out of MVP scope (R2): Full-universe backfill.",
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -631,11 +669,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that capture live option-chain snapshots from IB during the configured near-close window.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Snapshot records include underlying, expiration, strike, right, bid, ask, last, volume, open interest, and implied volatility; expired contracts remain queryable after expiration; projected capture request counts are validated against IB pacing limits and over-budget captures are refused at scheduling time with an operator alert.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, limited to option chains whose underlying is on the watchlist, stored on the SSD. Out of MVP scope (R2): Underlyings beyond the watchlist; NAS.",
       "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -647,6 +686,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-005",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that ingest Sharadar fundamental data on a scheduled basis.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -663,6 +703,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that import historical options data from Databento DBN and Parquet.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -679,6 +720,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-007",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a unified historical data access interface.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -696,6 +738,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-008",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that implement SSD-primary and NAS-archival tiered storage.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -713,6 +756,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-009",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that transparently fall back to NAS for cold historical reads.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -729,6 +773,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-010",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that evict SSD cache data according to the configured storage policy.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -745,6 +790,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-011",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that adjust historical price data for corporate actions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -762,6 +808,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-012",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support raw, split-adjusted, fully adjusted, and total-return normalization modes per security subscription.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -778,6 +825,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-013",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that validate ingested market and options records before writing to primary storage.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -794,6 +842,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-014",
     "priority": "P2",
+    "release": "R2",
     "description": "Verify that detect configured anomalous data conditions during ingestion.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -810,6 +859,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-015",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that support schema evolution for stored data entities.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -827,6 +877,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-016",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that make ingestion jobs idempotent.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -844,6 +895,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-017",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support concurrent reads during ingestion writes.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -861,6 +913,7 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-018",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that provide scheduled backup and validated recovery support for NAS-stored data.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -878,11 +931,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-019",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that adjust or cancel live resting orders affected by corporate actions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-019 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: When a split or reverse split affects a security with resting live orders, order quantities and limit or stop prices are adjusted; when adjustment is not possible, including delisting cases, affected orders are canceled and the operator is notified through strategy callback and notification subsystem.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Detect and halt, live. When corporate-action data marks a split, reverse split, dividend, delisting, merger, or symbol change effective today on a security in which the live strategy has a resting order or an open position: (1) the strategy's resting orders in that security are cancelled before the regular session opens; (2) new orders in that security are rejected with structured error CORPORATE_ACTION_HALT until the operator clears the halt through the dashboard, CLI, or REST API; (3) the operator is notified through the strategy callback, the dashboard, and the notification subsystem. Out of MVP scope (R2): Automatic adjustment of resting order quantities and prices.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -894,11 +948,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-020",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that adjust live positions affected by corporate actions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-020 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Live position quantities and average cost basis are adjusted for splits, reverse splits, and dividends; mergers and symbol changes remap positions to successor securities; delistings mark positions as delisted and notify the operator.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Live position quantity and cost basis are never adjusted by the software. When the operator clears a halt, the live position in that security is re-read from the IB account, and any difference from stored state is shown on the dashboard. Out of MVP scope (R2): Automatic adjustment and successor remapping of live positions.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -910,11 +965,12 @@
     "category": "data",
     "srs_ref": "SRS-5.5 SRS-DATA-021",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that apply corporate actions to paper strategy virtual positions and orders.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-021 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Paper strategy virtual positions and average cost are adjusted for splits, dividends, and mergers; virtual orders for delisted securities are canceled using the same corporate-action data source as live trading and backtesting.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Detect and halt, paper. On the SRS-DATA-019 trigger, for each paper strategy holding or ordering the security: its virtual resting orders in the security are cancelled; its virtual position is closed at the prior session's closing price and recorded as a corporate-action close; new virtual orders in the security are rejected with CORPORATE_ACTION_HALT until the halt is cleared. One clear action per security covers the live strategy and all paper strategies. Out of MVP scope (R2): Automatic adjustment of virtual positions and orders.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -926,6 +982,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that backtest Python strategies against stored data and user-uploaded Parquet data over configurable date ranges.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -942,6 +999,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that apply configurable commission, slippage, and spread-impact models to backtests.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -960,6 +1018,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that use the same transaction-cost model family for internal simulation and backtesting unless configured otherwise.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -978,6 +1037,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that compute required backtest and paper/live performance metrics.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -994,6 +1054,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that compare strategy performance against a user-selected benchmark defaulting to SPY.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1011,6 +1072,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that produce factor analysis and tear-sheet outputs.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1029,6 +1091,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-007",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that support grid search and multidimensional parameter sweeps for backtests.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1045,6 +1108,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-008",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that support walk-forward analysis.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1061,6 +1125,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-009",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that persist completed backtest results.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1078,6 +1143,7 @@
     "category": "backtesting",
     "srs_ref": "SRS-5.6 SRS-BT-010",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that produce deterministic backtest results for identical inputs.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1096,6 +1162,7 @@
     "category": "factor_pipeline",
     "srs_ref": "SRS-5.6 SRS-FAC-001",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that compute scheduled factors across the full US equity universe.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1112,6 +1179,7 @@
     "category": "research",
     "srs_ref": "SRS-5.6 SRS-RES-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that embed the Jupyter research environment in the dashboard workflow.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1129,6 +1197,7 @@
     "category": "research",
     "srs_ref": "SRS-5.6 SRS-RES-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide Jupyter access to historical data, indicators, and plotting.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1146,6 +1215,7 @@
     "category": "research",
     "srs_ref": "SRS-5.6 SRS-RES-003",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that provide primary dashboard navigation to the embedded Jupyter research environment.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1163,6 +1233,7 @@
     "category": "simulation",
     "srs_ref": "SRS-5.7 SRS-SIM-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that simulate paper strategy orders locally without routing to any brokerage.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1181,6 +1252,7 @@
     "category": "simulation",
     "srs_ref": "SRS-5.7 SRS-SIM-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that simulate fills using live market data and configurable fill models.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1199,6 +1271,7 @@
     "category": "simulation",
     "srs_ref": "SRS-5.7 SRS-SIM-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that maintain an independent virtual position ledger for each paper strategy.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1217,6 +1290,7 @@
     "category": "simulation",
     "srs_ref": "SRS-5.7 SRS-SIM-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that persist paper strategy simulation state.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1233,11 +1307,12 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that maintain at least 30 concurrent paper strategies in the Strategy Reservoir for the release baseline.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-RESV-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: One live strategy and 30 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): One live strategy and 5 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements. Out of MVP scope (R2): 30 paper strategies.",
       "Step 4: Record objective evidence from system test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1249,6 +1324,7 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-002",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that rank Reservoir strategies over a shared configurable evaluation window.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1265,6 +1341,7 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that support manual and configurable automatic Hot-Swap triggers.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1282,6 +1359,7 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that execute Hot-Swap demotion before promotion.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1298,6 +1376,7 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-005",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that promote a selected paper strategy to live execution only after successful demotion.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1314,6 +1393,7 @@
     "category": "reservoir",
     "srs_ref": "SRS-5.6 SRS-RESV-006",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that enforce Hot-Swap cool-down behavior.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1330,6 +1410,7 @@
     "category": "dashboard",
     "srs_ref": "SRS-5.8 SRS-UI-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a web dashboard showing live performance, system health, latency, and benchmark-relative metrics.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1347,6 +1428,7 @@
     "category": "dashboard",
     "srs_ref": "SRS-5.8 SRS-UI-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that display active strategy inventory in the dashboard.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1363,11 +1445,12 @@
     "category": "dashboard",
     "srs_ref": "SRS-5.8 SRS-UI-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that display account-level IB status and Reservoir overview in the dashboard.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-UI-003 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, paper strategy rankings, and momentum scores.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, and each paper strategy's simulated P&L, Sharpe ratio, and Sortino ratio since it started. Out of MVP scope (R2): Paper strategy rankings and momentum scores.",
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1379,6 +1462,7 @@
     "category": "dashboard",
     "srs_ref": "SRS-5.8 SRS-UI-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that display backtest result history and details in the dashboard.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1396,6 +1480,7 @@
     "category": "logging",
     "srs_ref": "SRS-5.8 SRS-LOG-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that separate persistent system logs from user strategy logs.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1412,11 +1497,12 @@
     "category": "interfaces",
     "srs_ref": "SRS-5.8 SRS-API-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that expose dashboard, CLI, and REST/WebSocket interfaces for operator workflows.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-API-001 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Live designation, strategy management, kill switch, Hot-Swap, Reservoir ranking, backtests, system status, and logs are available through documented API paths or CLI commands.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, without Reservoir ranking. Out of MVP scope (R2): Reservoir ranking paths.",
       "Step 4: Record objective evidence from contract test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1428,6 +1514,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-5.8 SRS-ERR-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that return structured errors for failed order submissions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1446,6 +1533,7 @@
     "category": "notifications",
     "srs_ref": "SRS-5.8 SRS-NOTIF-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that notify the operator through email and push notification for IB connectivity loss and critical failures.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1462,6 +1550,7 @@
     "category": "safety",
     "srs_ref": "SRS-5.9 SRS-SAFE-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that provide a kill switch from dashboard, CLI, and REST API that follows the QuantConnect Liquidate sequence: cancel all resting IB orders for the live strategy, submit market liquidation orders to close every open live-strategy position in the opposite direction of the held quantity, halt all paper simulation engines, and disconnect from IB Gateway.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1478,6 +1567,7 @@
     "category": "safety",
     "srs_ref": "SRS-5.9 SRS-SAFE-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that handle unfilled kill-switch liquidation orders according to the SyRS timeout behavior.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1494,6 +1584,7 @@
     "category": "safety",
     "srs_ref": "SRS-5.9 SRS-SAFE-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that block live order submission when IB Gateway is unreachable.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1510,6 +1601,7 @@
     "category": "reliability",
     "srs_ref": "SRS-5.9 SRS-REL-001",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that support the SyRS market-hours availability objective.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1527,6 +1619,7 @@
     "category": "reliability",
     "srs_ref": "SRS-5.9 SRS-REL-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that restore a full system restart to trade-ready state within the SyRS recovery target.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1544,6 +1637,7 @@
     "category": "security",
     "srs_ref": "SRS-5.9 SRS-SEC-001",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that encrypt brokerage and notification credentials at rest and prevent plaintext credential logging.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1560,6 +1654,7 @@
     "category": "security",
     "srs_ref": "SRS-5.9 SRS-SEC-002",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that by default, the dashboard/API service shall bind only to RFC 1918 or loopback addresses. The service exposes no process-level publicly-routable bind mode; publicly routable exposure is provided only through operator-managed configuration external to the service (an authenticated reverse proxy) with documented external authentication.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1577,6 +1672,7 @@
     "category": "security",
     "srs_ref": "SRS-5.9 SRS-SEC-003",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that run strategy containers with least-privilege permissions.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1594,6 +1690,7 @@
     "category": "security",
     "srs_ref": "SRS-5.9 SRS-SEC-004",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that isolate Jupyter from live trading credentials and execution APIs.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1611,6 +1708,7 @@
     "category": "performance",
     "srs_ref": "SRS-5.10 SRS-PERF-001",
     "priority": "P1",
+    "release": "R2",
     "description": "Verify that measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50, p95, p99, and p99.9 percentiles in verification artifacts.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
@@ -1628,11 +1726,12 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-1",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that dashboard provide a primary operations view for live strategy, account health, Reservoir ranking, system health, and critical alerts.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
       "Step 2: Navigate through the dashboard workflow for UI-1 and perform the user action or inspection described by the requirement.",
-      "Step 3: Verify acceptance criteria: User can inspect live strategy status, IB account equity, buying power, margin, Reservoir rankings, heartbeat state, and active critical alerts without SSH access.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, with \"Reservoir rankings\" read as the paper strategy list from SRS-UI-003. Out of MVP scope (R2): Reservoir rankings.",
       "Step 4: Confirm the UI behavior traces to SRS-UI-001, SRS-UI-002, SRS-UI-003 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
@@ -1644,6 +1743,7 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-2",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that dashboard provide a strategy management view.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
@@ -1660,6 +1760,7 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-3",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that dashboard provide backtest controls and result history.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
@@ -1676,6 +1777,7 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-4",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that dashboard provide a kill-switch control with confirmation and status feedback.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
@@ -1692,11 +1794,12 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-5",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that dashboard provide Hot-Swap controls and status.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
       "Step 2: Navigate through the dashboard workflow for UI-5 and perform the user action or inspection described by the requirement.",
-      "Step 3: Verify acceptance criteria: User can trigger manual promotion, inspect demotion-pending state, view cool-down expiry, and see automatic-trigger configuration.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): User can trigger manual promotion, inspect demotion-pending state, and view cool-down expiry. Out of MVP scope (R2): Automatic-trigger configuration.",
       "Step 4: Confirm the UI behavior traces to SRS-RESV-003 through SRS-RESV-006 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
@@ -1708,6 +1811,7 @@
     "category": "ui_requirements",
     "srs_ref": "SRS-6 UI-6",
     "priority": "P2",
+    "release": "MVP",
     "description": "Verify that dashboard provide embedded Jupyter navigation.",
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
@@ -1725,6 +1829,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-1",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that Python Strategy API exposes Scheduling, subscriptions, historical data, order submission, cancellation, callbacks, indicators, warm-up, logging, state access, and author documentation.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1742,6 +1847,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-2",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that REST API exposes Strategy lifecycle, live designation, kill switch, Hot-Swap, backtest launch, backtest query, Reservoir ranking, watchlist configuration, system status, logs, alerts.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1759,6 +1865,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-3",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that WebSocket API exposes Live dashboard updates for P&L, metrics, account status, heartbeat, logs, alerts, Reservoir ranking, and strategy state.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1776,6 +1883,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-4",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that CLI exposes Kill switch, strategy management, live designation, Hot-Swap, readiness status, and basic administration.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1793,6 +1901,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-5",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that Brokerage adapter interface exposes Order submission, cancellation, account status, positions, market data, historical data, and versioned adapter capability discovery.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1810,6 +1919,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-6",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that Data provider interface exposes Bulk equity download, historical backfill, incremental update, fundamentals ingestion, options import, and user Parquet import.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1827,6 +1937,7 @@
     "category": "api_requirements",
     "srs_ref": "SRS-7 API-7",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that Unified historical data interface exposes Query by symbol, date range, resolution, asset class, normalization mode, and data source-neutral result shape.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
@@ -1844,6 +1955,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-1",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Order submitted by a non-live strategy to live execution path with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1861,6 +1973,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-2",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles IB Gateway unreachable with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1878,6 +1991,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-3",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Market data stale with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1895,6 +2009,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-4",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Market-data line limit exceeded with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1912,6 +2027,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-5",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Ingestion record validation failure with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1929,6 +2045,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-6",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles IB pacing budget exceeded by configured ingestion job with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1946,6 +2063,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-7",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Hot-Swap demotion liquidation timeout with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1962,6 +2080,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-8",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Kill-switch liquidation timeout with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
@@ -1978,6 +2097,7 @@
     "category": "error_handling",
     "srs_ref": "SRS-8 ERR-9",
     "priority": "P1",
+    "release": "MVP",
     "description": "Verify that the system handles Missing or invalid startup configuration with the required error behavior.",
     "steps": [
       "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",

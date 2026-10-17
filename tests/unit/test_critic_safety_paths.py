@@ -76,3 +76,24 @@ def test_documentation_carve_outs_still_apply():
     """A note or playbook NAMED for a safety subject carries no behavior to test."""
     assert _blocks(["docs/playbooks/safety-paths.md"]) == []
     assert _blocks(["progress.d/session-SRS-SAFE-001.md"]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "crates/atp-orchestrator/src/live_host/mod.rs",
+        "crates/atp-orchestrator/src/live_host/server.rs",
+        "crates/atp-orchestrator/src/bin/live_execution_host.rs",
+    ],
+)
+def test_live_execution_host_paths_are_safety_paths(path):
+    """SRS-EXE-001: the process that routes real orders to IB is a safety path."""
+    assert c.SAFETY_PATH_RE.search(path), f"{path} must be a safety path"
+
+
+def test_feature_evidence_is_exempt_but_same_token_source_is_not():
+    """SRS-EXE-001's own id is a safety token, so its evidence path matched by name alone."""
+    assert _blocks([".harness/runs/SRS-EXE-001/review.jsonl"]) == []
+    # The same token on a source path (no "test" in it) still demands a domain test.
+    blocks = _blocks(["crates/atp-execution/src/srs_exe_001_example.rs"])
+    assert blocks and blocks[0].rule == "safety:paired-test-required"

@@ -243,8 +243,27 @@ ROUTES: tuple[Route, ...] = (
         summary="Designate a strategy as the single live strategy (requires confirmation).",
         srs_refs=("SRS-API-001", "SYS-2c", "SYS-2d"),
         request_fields=("confirm",),
-        response_fields=("strategy_id", "is_live", "promoted_at"),
+        response_fields=("strategy_id", "is_live", "promoted_at", "warning"),
+        # `promoted_at` is null when the strategy was already live: the durable
+        # snapshot records WHO is live, not when, and inventing a time for a promotion
+        # this request did not perform would be a fabricated audit fact. `warning` is
+        # null unless the designation was published but not fsynced (the live slot HAS
+        # moved; only crash-durability is uncertain), which is still a 200 because a
+        # non-2xx would invite a retry of something that happened.
+        field_types=(
+            ("strategy_id", "string"),
+            ("is_live", "boolean"),
+            ("promoted_at", "string|null"),
+            ("warning", "string|null"),
+        ),
+        # The handler refuses any body key besides `confirm` (UNKNOWN_REQUEST_FIELD).
+        strict_request_body=True,
         requires_confirmation=True,
+        # SRS-EXE-001 ships the handler (atp_orchestration.mount_live_designation),
+        # which writes the durable designation snapshot the live execution host
+        # re-reads on every order. Composition is opt-in, so a bare runtime still
+        # answers the structured 501.
+        served_by="SRS-EXE-001",
     ),
     # ----- Kill switch  [SRS-SAFE-001, SYS-44a, SYS-44b, NFR-P3]
     Route(

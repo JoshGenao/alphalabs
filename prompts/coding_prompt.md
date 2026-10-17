@@ -109,8 +109,8 @@ broken, fix that first (it is in-scope for your branch) before building anything
 
 ```bash
 cat docs/SRS.md         # cross-reference your feature's "srs_ref" — the HOW
-cat docs/SyRS_v0.7.md   # scope: what's in / out (check before adding any dependency)
-cat docs/StRS_v0.7.md   # stakeholder WHY
+cat docs/SyRS_v0.8.md   # scope: what's in / out (check before adding any dependency)
+cat docs/StRS_v0.8.md   # stakeholder WHY
 ```
 
 Read the architecture/data-systems references under `~/.codex/skills/` (e.g.
@@ -127,6 +127,14 @@ discover mid-build that you need an *unbuilt* prerequisite. Handle that in Step 
 
 If your feature is `needs_clarification:true`, STOP: record why in the session
 note, `python3 tools/agent_pool.py release "$ATP_FEATURE_ID"`, and end.
+
+**Build the active release only.** Every feature carries a `release` tag
+(`MVP` or `R2`; `docs/SRS.md` §3.1). The scheduler only hands out `MVP` work.
+If your Step 3 reads "Verify MVP acceptance criteria (docs/SRS.md §3.1)", those
+criteria are the target, and the "Out of MVP scope (R2)" part is not yours to
+build. If your feature needs a piece of an `R2` feature, build that piece as part
+of your feature: MVP work never waits on R2 work, and `block --on` refuses the
+edge (SyRS §1.1 rule 5).
 
 ---
 
@@ -146,6 +154,18 @@ operator to approve it** (ExitPlanMode). The plan must state:
   solo) vs `serialized` (needs IB/integration/live/e2e). Be honest up front.
 - **Dependencies** — if you already know you'll need an unbuilt feature `Y`, say so;
   you'll `block --on Y` after approval (Step 5).
+- **Who owns what the AC names** — list every system, source, or event the
+  acceptance criteria require, and the feature that produces each. Any producer
+  that is not `passes:true` is a dependency: name it and `block --on` it, even if
+  your own code would "work" without it. SRS-LOG-001's AC named eight log sources;
+  five had no producer, nobody listed them, and 38 review rounds hardened a surface
+  that could not close.
+- **Size and surfaces** — your estimated diff in lines (code + tests), and which
+  operator surfaces you will touch (REST, CLI, WebSocket, dashboard). Build the
+  smallest surface the AC names: "viewable from the dashboard" is one pane, not a
+  REST route plus a CLI command plus a live channel. **Above ~1,500 lines or more
+  than two surfaces, propose a split** into features that each close on their own.
+  Review rounds track diff size: LOG-001's 38 rounds were over 8,643 lines.
 
 Only after the operator approves does implementation begin. Two follow-ups:
 
@@ -167,7 +187,7 @@ Write the code. As you work:
 - Follow the architecture in `AGENTS.md`; respect SRS module boundaries and the
   one-way dependency direction (lower layers never import dashboard/orchestrator).
 - Keep broker/data-vendor logic behind adapter interfaces; no vendor SDK in core.
-- No new dependency without confirming scope in `docs/SyRS_v0.7.md`.
+- No new dependency without confirming scope in `docs/SyRS_v0.8.md`.
 - Keep changes atomic + focused; no unrelated refactors.
 - **Never hand-edit `feature_list.json` or `progress.txt`** on your branch — the
   flip happens only in Step 7.1 via the locked `integrate`. Your only status
@@ -183,6 +203,7 @@ agent could claim and no human could close (`docs/verification-queue.md`).
 | another **feature** that isn't built | `agent_pool.py block --on <ids>` |
 | a **real-world resource no feature owns** — an account you have not bought, hardware you do not have, calendar time that has not elapsed | an `"external_blocker"` on the feature in `feature_list.json` |
 | nothing; the work is done and only evidence is missing | neither — finish the record and close it |
+| a feature tagged `R2` (deferred) | neither — build the piece you need inside your feature; `block --on` refuses the edge |
 
 **Never use `block --on` for the second kind.** A dependency edge asserts that some
 feature owns the blocker; if none does, the edge never clears and the feature is
@@ -422,6 +443,16 @@ python3 tools/evidence.py critic "$ATP_FEATURE_ID" --layer judgment \
 Commit/integrate **only when both passes are `approve`** (a `warn` needs a one-line
 written override; any `block` halts you — exit code 1).
 
+**What blocks is computed, not asserted.** Every finding carries a category
+(`prompts/critic_prompt.md` "Severity policy"). Only `runtime`, `safety`,
+`data-loss`, `security`, `concurrency`, and `meta` findings at high severity block;
+`contract-drift`, `test-gap`, and `hygiene` warn. The dispatcher derives the verdict
+from the findings, never from the reviewer's verdict word, and an untagged finding
+blocks. Fix every warning in ONE batch before integrating; you do not need another
+full round for a batch of warn-only fixes, because the deterministic contract checks
+re-verify drift. Never re-tag a finding to dodge a block: the category describes the
+defect, and a stale contract over WRONG code is `runtime`, not `contract-drift`.
+
 ### Handling a BLOCK — fix the CLASS, not the instance
 
 A finding is not resolved when the named line is fixed. Before you re-run the review:
@@ -443,6 +474,16 @@ failure — retry it; never `--base`-shrink the diff), and an empty-summary
 If the loop will not converge because each round names the next *deferred*
 dependency, stop honestly — `docs/playbooks/scope-and-serialization.md` has the stop
 signals and the honest-close procedure. Never fake an APPROVE.
+
+**The round budget stops you if you do not stop yourself.** After 8 BLOCK rounds on
+one feature (`ATP_REVIEW_ROUND_BUDGET`), the next `adversarial_review.py` call does
+not review: it exits **3** with an escalation report built from your round ledger:
+the recurring blocking classes, the last three rounds, and the diff size. On exit 3:
+copy the report into your session note, name the option you recommend (split, close
+serialized, or continue), and **stop for the operator**. Only the operator runs
+`tools/adversarial_review.py --authorize-continue "<why>"`; running it yourself is
+the same as faking an APPROVE. Exit 3 is not a failure of your work. It is the point
+where continuing alone costs more than asking.
 
 ---
 

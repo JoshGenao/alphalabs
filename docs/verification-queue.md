@@ -70,6 +70,7 @@ into `tools/feature_deps.json`, which is why `status` flags them `⚠ no dep edg
 | SRS-RESV-004 | 16 | `SRS-LOG-001`, `SRS-EXE-006`†, `SRS-NOTIF-001`, `SRS-RESV-005` | **Also class D** — `SRS-LOG-001` is itself blocked on `SRS-RESV-004`. † `SRS-ARCH-005` and `SRS-EXE-006` already pass. |
 | SRS-UI-002 | 3 | `SRS-BT-004` | Five deferred field producers were named; `SRS-ORCH-001`, `SRS-ORCH-004`, `SRS-ARCH-004`, `SRS-SIM-003` **all already pass**. Only the P&L feed (`SRS-BT-004` → `SRS-MD-001`) is left. |
 | SRS-SAFE-002 | 1 | `SRS-NOTIF-001`, `SRS-API-001` | `SRS-EXE-006` passes, but its `IbConnectionControl` binding needs an operator-gated paper-account re-run (`ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py`) — a solo session cannot lawfully implement it. |
+| SRS-EXE-001 | 31 | `SRS-MD-004` (after its own landing 2) | Landing 1 of 2 integrated: the live execution host (`live_execution_host`) and `exe001_live_designation_cli`, proven 1 live + 5 paper on the fixture tier. Landing 2 (Python order client, ack callback, promote-live handlers, monotonic p95) is still this feature's own work. The `ib` tier refuses to start until a real stale-data producer exists (`SRS-MD-004`); the adapter live-account gate lifts then, with an SRS-EXE-006 paper re-run in the same live window. |
 | SRS-SIM-004 | 0 | `SRS-EXE-002` | Mechanism is done and disk-backed. Needs the 60 s timer + a real container restart wired through the ORCH/EXE-002 lifecycle. **Do not rebuild it.** |
 
 ### Class C — blocked on a real-world resource no feature owns

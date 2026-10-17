@@ -119,6 +119,7 @@
   ],
   "SRS-EXE-001": [
     "SRS-EXE-006",
+    "SRS-MD-004",
     "SRS-PERF-001"
   ],
   "SRS-EXE-002": [

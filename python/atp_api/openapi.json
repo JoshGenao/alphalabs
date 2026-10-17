@@ -1019,7 +1019,7 @@
     },
     "/api/v1/strategies/{strategy_id}/promote-live": {
       "post": {
-        "description": "Designate a strategy as the single live strategy (requires confirmation). SRS trace: SRS-API-001, SYS-2c, SYS-2d. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "description": "Designate a strategy as the single live strategy (requires confirmation). SRS trace: SRS-API-001, SYS-2c, SYS-2d. Implemented by SRS-EXE-001. The request and response schemas above are the ones the live handler enforces, not placeholders. A deployment that has not composed SRS-EXE-001's handler returns 501 naming it as the owner. Requires UI-4 confirmation; pass ``confirm`` query param.",
         "operationId": "post_api_v1_strategies_strategy_id_promote-live",
         "parameters": [
           {
@@ -1044,7 +1044,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
+                "additionalProperties": false,
                 "properties": {},
                 "type": "object"
               }
@@ -1060,13 +1060,22 @@
                   "additionalProperties": true,
                   "properties": {
                     "is_live": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "promoted_at": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "strategy_id": {
                       "type": "string"
+                    },
+                    "warning": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "type": "object"

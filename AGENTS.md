@@ -15,7 +15,9 @@ Read it first. Follow the links. Do not guess.
    (~170k tokens); it would consume the context window you need for the work.
    Query it instead: `python3 tools/progress_query.py --feature <id>`.
 5. `git log --oneline -20` - understand recent changes
-6. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
+6. `python3 tools/agent_pool.py status` - remaining work in the active release.
+   Every feature carries `"release": "MVP"` or `"R2"` (`docs/SRS.md` §3.1); the
+   scheduler offers MVP only, so do not count `"passes": false` lines by hand.
 
 See `prompts/coding_prompt.md` for the full per-session workflow.
 
@@ -92,8 +94,8 @@ back to `main`. No file, branch, or port collisions.
 |----------|------|---------|
 | Always-on rules | `CLAUDE.md` | Auto-loaded in every worktree: the rules whose violation is expensive and silent |
 | Playbooks | `docs/playbooks/` | Distilled lessons from prior sessions, routed by `INDEX.md`; read the matching ones, add to them |
-| Stakeholder requirements | `docs/StRS_v0.7.md` | Why we're building this |
-| System requirements | `docs/SyRS_v0.7.md` | What the system must do |
+| Stakeholder requirements | `docs/StRS_v0.8.md` | Why we're building this |
+| System requirements | `docs/SyRS_v0.8.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
 | Feature list | `feature_list.json` | Source of truth for all work |
 | Session log | `progress.txt` | Canonical handoff log (folded in at merge) |

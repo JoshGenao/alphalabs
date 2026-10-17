@@ -197,6 +197,19 @@ class Command:
     #: costs them a tool they already have; set this in the change that binds the
     #: handler, exactly as :attr:`atp_api.routes.Route.served_by` is set for REST.
     served_by: str = ""
+    #: The program that COMPOSES the served handler (e.g. ``python -m atp_logs_service``).
+    #: Required whenever :attr:`served_by` is set. ``python -m atp_cli`` is the contract
+    #: surface and ``python -m atp_runtime`` a bare runtime; neither composes domain
+    #: handlers, so a manual that says "implemented" without naming the program that
+    #: runs it sends an operator to an entrypoint that exits NOT_IMPLEMENTED.
+    served_entrypoint: str = ""
+
+    def __post_init__(self) -> None:
+        if bool(self.served_by) != bool(self.served_entrypoint):
+            raise ValueError(
+                f"{self.group.value} {self.name}: served_by and served_entrypoint must be set "
+                "together (an implemented command must name the program that runs it)"
+            )
 
     @property
     def invocation(self) -> str:
@@ -376,12 +389,21 @@ COMMANDS: tuple[Command, ...] = (
             ),
             _CONFIRM,
         ),
+        # Real outcomes of the SRS-EXE-001 handler: an invalid strategy id or a second
+        # live strategy is a 400 (USAGE_ERROR; moving the live slot is a Hot-Swap), a
+        # designation binary that does not answer is a 504 (TIMEOUT), an unreadable
+        # snapshot or binary output is a 500 (INTERNAL_ERROR). There is no strategy
+        # registry to answer NOT_FOUND from, so it is not promised.
         exit_codes=(
             ExitCode.OK,
-            ExitCode.NOT_FOUND,
+            ExitCode.USAGE_ERROR,
             ExitCode.CONFIRMATION_REQUIRED,
+            ExitCode.TIMEOUT,
+            ExitCode.INTERNAL_ERROR,
         ),
         requires_confirmation=True,
+        served_by="SRS-EXE-001",
+        served_entrypoint="python -m atp_orchestration",
     ),
     Command(
         group=Group.LIVE,
@@ -389,6 +411,17 @@ COMMANDS: tuple[Command, ...] = (
         summary="Show which strategy currently holds the live IB designation.",
         srs_refs=("SRS-API-001", "SYS-2c"),
         arguments=(_JSON,),
+        # An unreadable snapshot is INTERNAL_ERROR, never "nothing is live". The composed
+        # entrypoint exits USAGE_ERROR before dispatch when the shared snapshot knob
+        # (ATP_HOT_SWAP_DESIGNATION_STATE) is unset.
+        exit_codes=(
+            ExitCode.OK,
+            ExitCode.USAGE_ERROR,
+            ExitCode.TIMEOUT,
+            ExitCode.INTERNAL_ERROR,
+        ),
+        served_by="SRS-EXE-001",
+        served_entrypoint="python -m atp_orchestration",
     ),
     # ----- Hot-Swap  [SRS-RESV-003..006, SYS-49a..e]
     Command(
@@ -463,6 +496,7 @@ COMMANDS: tuple[Command, ...] = (
         ),
         srs_refs=("SRS-LOG-001", "SYS-38", "SYS-61"),
         served_by="SRS-LOG-001",
+        served_entrypoint="python -m atp_logs_service",
         # This command HAS a live handler, so its outcomes are real: a rejected
         # parameter is a 400 the dispatcher maps to USAGE_ERROR, and a missing,
         # corrupt, or rotation-racing audit store is a 500 mapped to

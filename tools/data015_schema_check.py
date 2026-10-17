@@ -65,6 +65,23 @@ NON_ENTITY_WRITERS: dict[str, str] = {
         "assumes. A backup that invented its own header would be a new persisted entity and would "
         "belong in the registry instead."
     ),
+    "crates/atp-orchestrator/src/live_host/mod.rs": (
+        "SRS-EXE-001 live execution host: `OpenOptions` creates `<outbox>/host.lock`, an EMPTY file "
+        "that exists only to carry an OS lock (one writer per outbox). No bytes are written to it "
+        "and nothing reads it back. The outbox the host does persist goes through "
+        "`OrderOutbox::persist`, the registered SRS-EXE-009 writer in atp-execution."
+    ),
+    "crates/atp-orchestrator/src/live_host/server.rs": (
+        "SRS-EXE-001 live execution host: `OpenOptions` creates `<socket_dir>/host.lock`, an EMPTY "
+        "file that exists only to carry an OS lock (one host per socket directory). No bytes are "
+        "written to it and nothing reads it back."
+    ),
+    "crates/atp-orchestrator/src/bin/live_execution_host.rs": (
+        "SRS-EXE-001 `--fixture-wire-ledger`: fixture tier only, appends one line per order that "
+        "reached the in-process test gateway so a test can observe the wire from outside the host. "
+        "No runtime component reads it, and the live tier refuses the flag. It is test "
+        "observability, not durable platform state."
+    ),
 }
 
 

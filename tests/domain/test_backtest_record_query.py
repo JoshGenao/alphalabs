@@ -114,6 +114,33 @@ def test_persists_and_queries_completed_backtest() -> None:
     )
 
 
+def test_an_unset_query_axis_matches_every_record() -> None:
+    # An operator's unfiltered query must return the WHOLE history: an unset axis that
+    # matched nothing would silently hide every stored backtest. Pinned here because the
+    # predicate's spelling changed (`map_or(true, ..)` -> `is_none_or`) when the workspace
+    # minimum Rust version moved to 1.89 for SRS-EXE-001.
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run Rust unit test")
+    result = subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-simulation",
+            "--lib",
+            "backtest_store::tests::combined_query_ands_axes",
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    _assert_one_passed(result, "SRS-BT-009 unset query axes match every record")
+
+
 def test_serialize_restore_round_trips() -> None:
     # The store round-trips deterministically (preserving metrics + benchmark comparison), so
     # a persisted history reproduces exactly.

@@ -11,7 +11,7 @@ is COMPLETE and closes to passes:true at integration (close_feature.py --verifie
 crate's ``srs_data_007_store_bar_source`` test), the FACTOR-JOB consumer reads the store via
 ``atp_factor_pipeline::store_inputs`` + ``run_scheduled_factor_job_over_store``, and strategy + notebook read
 via this binding. The Jupyter notebook HOST runtime (kernel / plotting / no-live-order isolation) is the
-SEPARATE SRS-RES-002 feature (docs/SRS.md line 209), not a DATA-007 consumer gap.
+SEPARATE SRS-RES-002 feature (docs/SRS.md, SRS-RES-002 row), not a DATA-007 consumer gap.
 
 It also pins the safety property the adversarial review demanded. The binding's default
 ``NormalizationMode.SPLIT_ADJUSTED`` (the HistoricalData Protocol default) is served ONLY through the

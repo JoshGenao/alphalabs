@@ -619,23 +619,22 @@ pub struct RecordQuery {
 
 impl RecordQuery {
     fn matches(&self, record: &BacktestRecord) -> bool {
-        // MSRV 1.75: `Option::is_none_or` (1.82) is unavailable, so use `map_or(true, ..)` —
-        // an unset axis matches every record.
+        // `is_none_or`: an unset axis matches every record.
         self.strategy_id
             .as_ref()
-            .map_or(true, |s| record.request.strategy_id == *s)
+            .is_none_or(|s| record.request.strategy_id == *s)
             && self
                 .run_window
                 .as_ref()
-                .map_or(true, |w| windows_overlap(record.request.range, *w))
+                .is_none_or(|w| windows_overlap(record.request.range, *w))
             && self
                 .completed_within
                 .as_ref()
-                .map_or(true, |w| w.contains(record.completed_at_ts))
+                .is_none_or(|w| w.contains(record.completed_at_ts))
             && self
                 .parameter_set
                 .as_ref()
-                .map_or(true, |p| record.parameters == *p)
+                .is_none_or(|p| record.parameters == *p)
     }
 }
 
