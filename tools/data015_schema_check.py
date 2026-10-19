@@ -278,6 +278,30 @@ def _persists(path: Path, source: str) -> bool:
     return bool(re.search(r"open\([^)]*['\"][wxa]", source))
 
 
+_TEST_MODULE_RE = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{")
+
+
+def strip_rust_test_modules(source: str) -> str:
+    """``source`` without its ``#[cfg(test)] mod <name> { ... }`` blocks (brace-matched).
+
+    A ``#[cfg(test)]`` on anything other than a module is left in place: such an item is scanned
+    like production code, which can only over-report a write surface, never hide one.
+    """
+    out: list[str] = []
+    index = 0
+    for match in _TEST_MODULE_RE.finditer(source):
+        if match.start() < index:
+            continue
+        out.append(source[index : match.start()])
+        depth, cursor = 1, match.end()
+        while cursor < len(source) and depth:
+            depth += {"{": 1, "}": -1}.get(source[cursor], 0)
+            cursor += 1
+        index = cursor
+    out.append(source[index:])
+    return "".join(out)
+
+
 def scan_write_surfaces() -> list[str]:
     """Every repo-relative source file that durably persists bytes."""
 
@@ -296,11 +320,11 @@ def scan_write_surfaces() -> list[str]:
                 continue
             source = path.read_text(encoding="utf-8", errors="replace")
             if path.suffix == ".rs":
-                # Strip the inline `#[cfg(test)]` module so a test-only fs::write does not read as a
-                # shipped persistence surface.
-                cut = source.find("#[cfg(test)]")
-                if cut >= 0:
-                    source = source[:cut]
+                # Strip the inline `#[cfg(test)] mod` blocks so a test-only fs::write does not read
+                # as a shipped persistence surface. Only the test MODULE is removed: truncating at
+                # the first `#[cfg(test)]` also discarded every production line after a test-only
+                # item, hiding the quarantine run writer below a test-only accessor (DATA-013 r5).
+                source = strip_rust_test_modules(source)
             if _persists(path, source):
                 found.append(relative)
     return found

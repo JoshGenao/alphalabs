@@ -369,6 +369,19 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         posture: EvolutionPosture::Pinned,
         legacy_unversioned: false,
     },
+    SchemaDescriptor {
+        entity_id: "quarantine-run",
+        owner_srs: "SRS-DATA-013",
+        writer_path: "crates/atp-data/src/quarantine_store.rs",
+        marker: "RUN_SCHEMA_VERSION",
+        magic: Some("ATP-QUARANTINE-RUN"),
+        current_version: 1,
+        min_supported_version: 1,
+        // Carried its magic and version from its first byte; the reader accepts exactly this
+        // version and reports any other run as unreadable in place.
+        posture: EvolutionPosture::Pinned,
+        legacy_unversioned: false,
+    },
 ];
 
 /// A structural defect in [`PERSISTED_ENTITIES`] itself.

@@ -295,3 +295,38 @@ def test_marker_lookup_does_not_confuse_similar_constant_names() -> None:
     assert module._declared_constant(source, "MIN_SUPPORTED_SCHEMA_VERSION") == 1
     assert module._declared_constant(source, "SCHEMA_VERSION_V1") == 1
     assert module._declared_constant(source, "NOT_PRESENT") is None
+
+
+def test_a_write_below_a_test_only_item_is_still_scanned() -> None:
+    check = _checker()
+    # DATA-013 r5: truncating at the first `#[cfg(test)]` hid the quarantine run writer, which sits
+    # below a test-only accessor. Only the test MODULE may be removed.
+    source = (
+        "impl Handle {\n"
+        "    #[cfg(test)]\n"
+        "    fn run(&self) -> &Run { &self.run }\n"
+        "    fn publish(&self) { let _ = fs::File::create(&self.path); }\n"
+        "}\n"
+    )
+    assert "File::create" in check.strip_rust_test_modules(source)
+
+
+def test_a_write_inside_a_test_module_is_still_ignored() -> None:
+    check = _checker()
+    source = (
+        "fn production() {}\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        '    fn helper() { if true { std::fs::write("x", b"y").unwrap(); } }\n'
+        "}\n"
+        "fn after() {}\n"
+    )
+    stripped = check.strip_rust_test_modules(source)
+    assert "fs::write" not in stripped
+    assert "fn after()" in stripped, "code after the test module is kept"
+
+
+def test_the_scan_sees_the_quarantine_run_writer_on_the_real_tree() -> None:
+    # The r5 case end to end: the quarantine store writes below a test-only accessor, and the scan
+    # over the real tree must still find it (or its registration is unverified).
+    assert "crates/atp-data/src/quarantine_store.rs" in _checker().scan_write_surfaces()

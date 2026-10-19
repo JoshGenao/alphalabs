@@ -515,3 +515,73 @@ fn a_primary_save_failure_after_a_conflict_keeps_the_conflict_recorded() {
     );
     assert!(!ssd.join(STORE_FILENAME).exists());
 }
+
+#[test]
+fn an_archived_key_conflict_is_caught_on_both_paths() {
+    // Review r5: after archive_cold moves a record off SSD, a changed re-ingest of its key was
+    // screened against SSD only and written. The tier now screens a readable NAS archive too.
+    const DAY: i64 = 86_400;
+    for path in ["tiered", "quarantining"] {
+        let (ssd, nas) = tier_dirs(&format!("archived_{path}"));
+        let tier = tier(&ssd, &nas);
+        let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+        DataLayer
+            .ingest_market_records_tiered(
+                &tier,
+                original.clone(),
+                &Sys77RecordValidator::new(),
+                &QuarantineSummarySink::new(),
+                OBSERVED_AT,
+            )
+            .expect("seed");
+        assert!(tier.archive_cold(TS + 500 * DAY).unwrap().archived >= 1);
+        let primary = MarketDataStore::load_from_path(&ssd).unwrap();
+        assert!(
+            primary.get(original[0].key()).is_none(),
+            "{path}: archived off SSD"
+        );
+
+        let conflicting = restated(&original[0]);
+        let validator = Sys77RecordValidator::new();
+        let sink = QuarantineSummarySink::new();
+        let quarantined = if path == "tiered" {
+            let err = DataLayer
+                .ingest_market_records_tiered(
+                    &tier,
+                    vec![conflicting.clone()],
+                    &validator,
+                    &sink,
+                    OBSERVED_AT,
+                )
+                .expect_err("tiered: refused");
+            assert!(matches!(err, MarketIngestError::Tier(_)), "got {err:?}");
+            PrimaryWrite::Refused
+        } else {
+            // The quarantining path's own unlocked pre-pass catches this before the tier does;
+            // whichever check fires, the end state must be the same.
+            let outcome = DataLayer
+                .ingest_market_records_quarantining(
+                    &tier,
+                    vec![conflicting.clone()],
+                    &validator,
+                    &sink,
+                    OBSERVED_AT,
+                )
+                .expect("quarantining: continues");
+            assert_eq!(outcome.written, 0);
+            PrimaryWrite::Written { records: 0 }
+        };
+        let latest = QuarantineStore::beside(&ssd).read_latest(1).unwrap();
+        let RunRead::Readable(run) = &latest.runs[0] else {
+            panic!("{path}: expected a readable run")
+        };
+        assert_eq!(run.primary, quarantined, "{path}");
+        assert_eq!(run.count(QuarantineReason::DuplicateRecord), 1, "{path}");
+        assert_eq!(run.entries[0].record, conflicting, "{path}: payload kept");
+        let primary = MarketDataStore::load_from_path(&ssd).unwrap();
+        assert!(
+            primary.get(conflicting.key()).is_none(),
+            "{path}: the divergent value never reached the SSD primary"
+        );
+    }
+}

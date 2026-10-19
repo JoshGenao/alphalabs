@@ -515,7 +515,8 @@ impl TieredStore {
     /// snapshot (the atomic-publish file), so it needs no SSD lock and cannot deadlock against it.
     ///
     /// **Conflicts are decided under the lock** (SRS-DATA-013). A record whose key is already in
-    /// the SSD primary — or earlier in this batch — with different content is set aside, never
+    /// the SSD primary, in a readable NAS archive, or earlier in this batch with different content
+    /// is set aside, never
     /// upserted, and returned in [`ScreenedIngest::conflicts`] so the caller can quarantine its
     /// payload. Under [`OnConflict::RefuseBatch`] any conflict refuses the whole batch and nothing
     /// is written; under [`OnConflict::SetAside`] the rest of the batch is written.
@@ -545,12 +546,26 @@ impl TieredStore {
             let _lock = StoreLock::acquire(&self.config.ssd_dir).map_err(TierError::Ssd)?;
             let mut ssd =
                 MarketDataStore::load_from_path(&self.config.ssd_dir).map_err(TierError::Ssd)?;
+            // Archived records count too: a key moved off SSD by archive_cold is still stored, on
+            // NAS. A reachable NAS whose store reads is screened here, under the SSD lock and
+            // before any save. An unmounted NAS cannot be screened (the documented bound until the
+            // SRS-DATA-018 expected-key catalog), and neither can an unreadable one: SRS-DATA-008
+            // keeps the SSD write going through a NAS fault, and the NAS push below reports it as
+            // a Failed sync (the operator CLIs exit non-zero on it).
+            let archived = match self.nas_access() {
+                NasAccess::Ready => MarketDataStore::load_from_path(&self.config.nas_dir).ok(),
+                NasAccess::Unreachable | NasAccess::Aliased => None,
+            };
             let mut inserted = 0;
             let mut unchanged = 0;
             for record in batch {
                 // Checked against the store as it grows, so a conflict within the batch is caught
-                // as well as one against the persisted primary.
-                if ssd.conflicts_with(&record) {
+                // as well as one against the persisted primary and the archive.
+                if ssd.conflicts_with(&record)
+                    || archived
+                        .as_ref()
+                        .is_some_and(|nas| nas.conflicts_with(&record))
+                {
                     conflicts.push(record);
                     continue;
                 }

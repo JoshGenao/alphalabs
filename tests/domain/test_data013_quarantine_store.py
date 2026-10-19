@@ -172,6 +172,8 @@ def test_a_corrupt_catalog_still_records_the_rejects_it_had_classified() -> None
         # Review r4: conflicts are recorded under the lock BEFORE the primary save.
         "a_conflict_that_cannot_be_recorded_writes_nothing",
         "a_primary_save_failure_after_a_conflict_keeps_the_conflict_recorded",
+        # Review r5: an archived (NAS-only) key is screened too.
+        "an_archived_key_conflict_is_caught_on_both_paths",
     ],
 )
 def test_a_conflicting_reingest_is_quarantined_with_its_payload(rust_test: str) -> None:
