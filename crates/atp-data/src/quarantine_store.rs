@@ -19,10 +19,11 @@
 //! compiler holds that, not a scan:
 //!
 //! ```compile_fail
-//! use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
+//! use atp_data::tiering::{OnConflict, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 //! let tier = TieredStore::new(TierConfig::new("/ssd", "/nas", DEFAULT_HOT_RETENTION_DAYS).unwrap());
-//! // error[E0624]: method `ingest` is private — no unrecorded write to the SSD primary.
-//! let _ = tier.ingest(Vec::new());
+//! // error[E0624]: method `ingest` is private — no unrecorded write to the SSD primary. (The call
+//! // is otherwise well-formed, so making `ingest` public makes this compile and the test fail.)
+//! let _ = tier.ingest(Vec::new(), OnConflict::RefuseBatch);
 //! ```
 //!
 //! while the same tier through a recorded path compiles:
@@ -460,6 +461,58 @@ impl RunHandle {
         self.run.primary = primary;
         self.publish()?;
         Ok(self.run)
+    }
+
+    /// Add the conflicting re-ingests the tier set aside under its writer lock to this run, as
+    /// `DuplicateRecord` entries with their full payloads, emitting one ERR-5 event each through
+    /// `events` (so a counts sink agrees with the run). Returns the records, in order.
+    pub(crate) fn set_aside_conflicts<S: crate::IngestionValidationEventSink>(
+        &mut self,
+        conflicts: Vec<MarketDataRecord>,
+        events: &S,
+    ) -> Vec<MarketDataRecord> {
+        let reason = QuarantineReason::DuplicateRecord;
+        let mut records = Vec::with_capacity(conflicts.len());
+        for record in conflicts {
+            let submission = record.ingestion_submission();
+            events.record(atp_types::IngestionValidationEvent {
+                state: atp_types::RecordValidationOutcome::Quarantined(reason),
+                reason,
+                source: submission.source.clone(),
+                record_hash: submission.record_hash.clone(),
+                observed_at_seconds: self.run.observed_at_seconds,
+            });
+            self.run.entries.push(QuarantinedRecord {
+                reason,
+                source: submission.source,
+                record_hash: submission.record_hash,
+                record: record.clone(),
+            });
+            records.push(record);
+        }
+        records
+    }
+
+    /// Record a batch the tier refused for conflicting re-ingests: every conflict joins the run as
+    /// a `DuplicateRecord` entry and the run is finished `REFUSED` (nothing was written). Returns the
+    /// error the caller reports — the store's conflict error for the first conflict — or the
+    /// quarantine error if the run cannot be finished.
+    pub(crate) fn refuse_conflicts<S: crate::IngestionValidationEventSink>(
+        mut self,
+        conflicts: Vec<MarketDataRecord>,
+        events: &S,
+    ) -> crate::MarketIngestError {
+        let error = match conflicts.first() {
+            Some(first) => crate::store::MarketDataStore::conflict_error(first),
+            None => StoreError::InconsistentField {
+                context: "the tier refused a batch without naming a conflict",
+            },
+        };
+        self.set_aside_conflicts(conflicts, events);
+        match self.finish(PrimaryWrite::Refused) {
+            Ok(_) => crate::MarketIngestError::Tier(crate::tiering::TierError::Ssd(error)),
+            Err(unrecorded) => crate::MarketIngestError::Quarantine(unrecorded),
+        }
     }
 
     /// Record a failed primary write. `FAILED` means nothing from the batch is in primary storage,

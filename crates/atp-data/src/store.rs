@@ -727,6 +727,20 @@ impl MarketDataStore {
         }
     }
 
+    /// Would upserting `record` conflict — its natural key already present with DIFFERENT content
+    /// (the [`StoreError::ConflictingContent`] case)? Read-only.
+    pub fn conflicts_with(&self, record: &MarketDataRecord) -> bool {
+        self.get(&record.key)
+            .is_some_and(|existing| existing.fields != record.fields)
+    }
+
+    /// The error [`upsert`](Self::upsert) raises for a conflicting `record`.
+    pub(crate) fn conflict_error(record: &MarketDataRecord) -> StoreError {
+        StoreError::ConflictingContent {
+            key: key_identity(&record.key),
+        }
+    }
+
     /// Serialize the whole store to the deterministic, dependency-free text form.
     ///
     /// Records are emitted in canonical order, variable-length strings are length-prefixed, and

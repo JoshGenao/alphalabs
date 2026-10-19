@@ -33,7 +33,7 @@ use crate::quarantine_store::{
 use crate::store::{
     DatasetKind, MarketDataRecord, MarketDataStore, MarketField, NaturalKey, STORE_FILENAME,
 };
-use crate::tiering::{TierIngestOutcome, TieredStore};
+use crate::tiering::{OnConflict, TierIngestOutcome, TieredStore};
 use crate::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
 
 /// The six SyRS SYS-77 rule categories in a fixed canonical order — the order the CLI prints counts
@@ -421,9 +421,10 @@ impl DataLayer {
         // duplicate — quarantine it as DuplicateRecord (emit the event + return the record) rather than
         // letting it abort the WHOLE tiered write as a StoreError::ConflictingContent. An IDENTICAL
         // existing record stays (the tier's idempotent upsert collapses it, SRS-DATA-016). The snapshot
-        // is read outside the tier's single-writer lock, so a concurrent conflicting write in the narrow
-        // window still fails closed at `tier.ingest`; a missing store (first ingest) reads as empty and
-        // a genuinely broken store surfaces at `tier.ingest`.
+        // is read outside the tier's single-writer lock; a conflicting write that lands in that window
+        // is set aside by `tier.ingest` under the lock and quarantined below (OnConflict::SetAside). A
+        // missing store (first ingest) reads as empty and a genuinely broken store surfaces at
+        // `tier.ingest`.
         //
         // The snapshot spans the WHOLE tiered view — SSD (hot primary) AND NAS (archival) — not just
         // SSD, so a re-ingest that conflicts with a COLD record archived off SSD (present only on NAS,
@@ -497,12 +498,11 @@ impl DataLayer {
             to_write.push(record);
         }
 
-        let written = to_write.len();
         // Record the run — every quarantined record with its reason — BEFORE the primary write. If
         // it cannot be recorded, nothing is written.
-        let quarantined_records: Vec<MarketDataRecord> =
+        let mut quarantined_records: Vec<MarketDataRecord> =
             entries.iter().map(|entry| entry.record.clone()).collect();
-        let run = quarantine.begin(
+        let mut run = quarantine.begin(
             observed_at_seconds,
             records_in,
             entries,
@@ -510,13 +510,20 @@ impl DataLayer {
         )?;
         // Write ONLY the surviving valid subset — SSD-first durable, then NAS sync — through the
         // SRS-DATA-008 tier. Quarantined records are absent, so they never reach the primary tables.
-        let tier_outcome = match tier.ingest(to_write) {
-            Ok(outcome) => outcome,
+        // A conflict the pre-pass above could not see (a concurrent writer) is set aside by the
+        // tier under its writer lock and quarantined here with its payload.
+        let screened = match tier.ingest(to_write, OnConflict::SetAside) {
+            Ok(screened) => screened,
             Err(error) => {
                 run.primary_write_failed(&error);
                 return Err(error.into());
             }
         };
+        let Some(tier_outcome) = screened.written else {
+            return Err(run.refuse_conflicts(screened.conflicts, events));
+        };
+        let written = tier_outcome.ssd_inserted + tier_outcome.ssd_unchanged;
+        quarantined_records.extend(run.set_aside_conflicts(screened.conflicts, events));
         let quarantine = run.finish_receipt(PrimaryWrite::Written {
             records: written as u64,
         });

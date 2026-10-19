@@ -438,19 +438,23 @@ def check_every_exit_is_recorded(config: dict, sources: dict[str, str]) -> str:
     In each recorded write path, every ``return Err(`` must go through ``quarantine.refuse(``
     (which records the batch, rejects included, as REFUSED) or be the ONE tier-failure exit that
     first records the outcome via ``run.primary_write_failed``; and every ``?`` must sit on a
-    ``quarantine.begin(`` call (whose failure is the quarantine error itself). An early return
+    ``quarantine.begin(`` call (whose failure is the quarantine error itself). A batch the tier
+    refused for conflicting re-ingests returns through ``run.refuse_conflicts(``, which records the
+    conflicts on the already-begun run. An early return
     added anywhere else would drop the rejects collected so far with the error.
     """
     spec = contract_block(config)["recorded_write_paths"]
     refuse = _squash(spec["refuse_token"])
     begin = _squash(spec["begin_token"])
     tier_exit = _squash(spec["tier_failure_exit"])
+    run_refusal = _squash(spec["run_refusal_token"])
     for entry in spec["paths"]:
         name = entry["fn"]
         body = _squash(_strip_rust_comments(_rust_fn_body(sources[entry["file"]], name)))
         returns = body.count("returnErr(")
         refused = body.count("returnErr(" + refuse)
         tier_exits = body.count(tier_exit)
+        run_refusals = body.count("returnErr(" + run_refusal)
         if refused < 2:
             fail(
                 f"`{name}` must refuse through `{spec['refuse_token']}` (found {refused} -- is the scan reading it?)"
@@ -459,9 +463,13 @@ def check_every_exit_is_recorded(config: dict, sources: dict[str, str]) -> str:
             fail(
                 f"`{name}` must record a failed primary write via `{spec['tier_failure_exit']}` exactly once"
             )
-        if returns != refused + tier_exits:
+        if run_refusals != 1:
             fail(
-                f"`{name}` has {returns - refused - tier_exits} early `return Err(` that bypass "
+                f"`{name}` must refuse a conflicting batch via `{spec['run_refusal_token']}` exactly once"
+            )
+        if returns != refused + tier_exits + run_refusals:
+            fail(
+                f"`{name}` has {returns - refused - tier_exits - run_refusals} early `return Err(` that bypass "
                 f"`{spec['refuse_token']}` -- that exit would drop the batch's rejects"
             )
         for statement in body.split(";"):

@@ -251,6 +251,28 @@ pub struct TierIngestOutcome {
     pub nas_sync: NasSyncStatus,
 }
 
+/// What [`TieredStore::ingest`] does with a record whose natural key is already present with
+/// DIFFERENT content (a conflicting re-ingest). Decided under the SSD single-writer lock, so a
+/// concurrent writer cannot slip a conflict past the caller's quarantine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnConflict {
+    /// Refuse the whole batch and write nothing (the fail-closed tiered path).
+    RefuseBatch,
+    /// Set the conflicting records aside and write the rest (the SYS-77 quarantine-and-continue
+    /// path).
+    SetAside,
+}
+
+/// The outcome of a [`TieredStore::ingest`]: the conflicting records it set aside, and the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenedIngest {
+    /// Records set aside because their key is already present with different content, in batch
+    /// order. Never upserted.
+    pub conflicts: Vec<MarketDataRecord>,
+    /// The write; `None` when [`OnConflict::RefuseBatch`] refused the batch and nothing was written.
+    pub written: Option<TierIngestOutcome>,
+}
+
 /// The outcome of an [`TieredStore::archive_cold`]: how many cold records were safely archived off
 /// SSD (confirmed on NAS) vs retained on SSD because they were not yet safely on NAS.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,11 +504,19 @@ impl TieredStore {
     /// surfaces as [`NasSyncStatus::Degraded`] (the SSD write stands), to be reconciled by a later
     /// sync. The SSD lock is released after the SSD save; the NAS push reads a consistent SSD
     /// snapshot (the atomic-publish file), so it needs no SSD lock and cannot deadlock against it.
+    ///
+    /// **Conflicts are decided under the lock** (SRS-DATA-013). A record whose key is already in
+    /// the SSD primary — or earlier in this batch — with different content is set aside, never
+    /// upserted, and returned in [`ScreenedIngest::conflicts`] so the caller can quarantine its
+    /// payload. Under [`OnConflict::RefuseBatch`] any conflict refuses the whole batch and nothing
+    /// is written; under [`OnConflict::SetAside`] the rest of the batch is written.
     pub(crate) fn ingest(
         &self,
         records: impl IntoIterator<Item = MarketDataRecord>,
-    ) -> Result<TierIngestOutcome, TierError> {
+        on_conflict: OnConflict,
+    ) -> Result<ScreenedIngest, TierError> {
         let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let mut conflicts: Vec<MarketDataRecord> = Vec::new();
 
         // --- SSD-FIRST: durable primary write under the single-writer lock. ------------------- //
         crate::store::create_dir_all_durably(&self.config.ssd_dir).map_err(|_| {
@@ -501,10 +531,23 @@ impl TieredStore {
             let mut inserted = 0;
             let mut unchanged = 0;
             for record in batch {
+                // Checked against the store as it grows, so a conflict within the batch is caught
+                // as well as one against the persisted primary.
+                if ssd.conflicts_with(&record) {
+                    conflicts.push(record);
+                    continue;
+                }
                 match ssd.upsert(record).map_err(TierError::Ssd)? {
                     crate::store::UpsertOutcome::Inserted => inserted += 1,
                     crate::store::UpsertOutcome::UnchangedDuplicate => unchanged += 1,
                 }
+            }
+            if on_conflict == OnConflict::RefuseBatch && !conflicts.is_empty() {
+                // Refused: the in-memory upserts are discarded and nothing is saved.
+                return Ok(ScreenedIngest {
+                    conflicts,
+                    written: None,
+                });
             }
             // SSD is durable on disk HERE (unique scratch + fsync + atomic rename + dir fsync),
             // before a single byte is written to the archival tier.
@@ -532,10 +575,13 @@ impl TieredStore {
             },
         };
 
-        Ok(TierIngestOutcome {
-            ssd_inserted,
-            ssd_unchanged,
-            nas_sync,
+        Ok(ScreenedIngest {
+            conflicts,
+            written: Some(TierIngestOutcome {
+                ssd_inserted,
+                ssd_unchanged,
+                nas_sync,
+            }),
         })
     }
 

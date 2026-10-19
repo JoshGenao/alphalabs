@@ -443,6 +443,16 @@ class EveryExitIsRecordedTest(unittest.TestCase):
             check_every_exit_is_recorded(self.config, sources)
         self.assertIn("`?` outside", str(ctx.exception))
 
+    def test_a_conflict_refusal_that_skips_the_run_is_caught(self) -> None:
+        # Review r3: a conflicting re-ingest must be recorded on the run before the refusal.
+        sources = self._mutated(
+            "lib.rs",
+            "return Err(run.refuse_conflicts(screened.conflicts, events));",
+            "return Err(MarketIngestError::Tier(crate::tiering::TierError::Nas(todo!())));",
+        )
+        with self.assertRaises(IngestionValidationCheckError):
+            check_every_exit_is_recorded(self.config, sources)
+
     def test_a_failed_primary_write_that_is_not_recorded_is_caught(self) -> None:
         sources = self._mutated(
             "lib.rs",

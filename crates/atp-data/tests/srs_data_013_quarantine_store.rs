@@ -16,13 +16,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use atp_data::ingestion_validation::mixed_validation_fixture;
-use atp_data::store::{coverage_record, fixture_batch, DatasetKind, STORE_FILENAME};
+use atp_data::store::{
+    coverage_record, fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, MarketField,
+    STORE_FILENAME,
+};
+use atp_data::tiering::TierError;
 use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{
     DataLayer, MarketIngestError, PrimaryWrite, QuarantineRun, QuarantineStore,
     QuarantineStoreError, QuarantineSummarySink, RunRead, Sys77RecordValidator, QUARANTINE_DIRNAME,
 };
+use atp_data::{IngestionValidationEventSink, RecordValidator};
 use atp_types::QuarantineReason;
+use atp_types::{IngestionValidationEvent, RecordValidationOutcome};
 
 const TS: i64 = 1_700_000_000;
 const OBSERVED_AT: u64 = 1_715_000_000;
@@ -272,4 +278,133 @@ fn a_coverage_record_refuses_and_records_the_whole_batch_on_both_paths() {
             "{path}: nothing reached primary"
         );
     }
+}
+
+/// Admits every record: lets a same-key, different-content pair reach the tier, where only the
+/// writer-locked conflict check can catch it.
+struct AcceptAll;
+impl RecordValidator for AcceptAll {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
+        RecordValidationOutcome::Valid
+    }
+}
+
+#[derive(Default)]
+struct CountingSink(std::cell::Cell<usize>);
+impl IngestionValidationEventSink for CountingSink {
+    fn record(&self, _event: IngestionValidationEvent) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+/// `record` with every value field moved by one minor unit: same natural key, different content.
+fn restated(record: &MarketDataRecord) -> MarketDataRecord {
+    let fields = record.fields().iter().map(|f| MarketField {
+        name: f.name.clone(),
+        value_minor: f.value_minor + 1,
+    });
+    MarketDataRecord::new(record.key().clone(), fields).unwrap()
+}
+
+#[test]
+fn tiered_path_records_a_conflicting_reingest_with_its_payload() {
+    let (ssd, nas) = tier_dirs("t_conflict");
+    let tier = tier(&ssd, &nas);
+    let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+    DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            original.clone(),
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect("seed the primary");
+    let conflicting = restated(&original[0]);
+    let sink = QuarantineSummarySink::new();
+    let err = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            vec![conflicting.clone()],
+            &Sys77RecordValidator::new(),
+            &sink,
+            OBSERVED_AT,
+        )
+        .expect_err("a conflicting re-ingest is refused");
+    assert!(
+        matches!(err, MarketIngestError::Tier(TierError::Ssd(_))),
+        "got {err:?}"
+    );
+    let latest = QuarantineStore::beside(&ssd).read_latest(1).unwrap();
+    let RunRead::Readable(run) = &latest.runs[0] else {
+        panic!("expected a readable run")
+    };
+    assert_eq!(run.primary, PrimaryWrite::Refused);
+    assert_eq!(run.count(QuarantineReason::DuplicateRecord), 1);
+    assert_eq!(
+        run.entries[0].record, conflicting,
+        "the rejected payload itself is kept"
+    );
+    assert_eq!(
+        sink.summary().quarantined_total,
+        1,
+        "the counts sink agrees with the run"
+    );
+    // The primary still holds the original values.
+    let primary = MarketDataStore::load_from_path(&ssd).unwrap();
+    assert_eq!(primary.get(original[0].key()), Some(&original[0]));
+}
+
+#[test]
+fn tiered_path_catches_a_conflict_within_the_batch_under_the_lock() {
+    let (ssd, nas) = tier_dirs("t_conflict_in_batch");
+    let tier = tier(&ssd, &nas);
+    let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+    let batch = vec![original[0].clone(), restated(&original[0])];
+    let err = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            batch,
+            &AcceptAll,
+            &CountingSink::default(),
+            OBSERVED_AT,
+        )
+        .expect_err("the batch is refused");
+    assert!(matches!(err, MarketIngestError::Tier(_)), "got {err:?}");
+    assert_eq!(only_run(&ssd).primary, PrimaryWrite::Refused);
+    assert_eq!(only_run(&ssd).quarantined_total(), 1);
+    assert!(
+        !ssd.join(STORE_FILENAME).exists(),
+        "nothing reached primary"
+    );
+}
+
+#[test]
+fn quarantining_path_sets_aside_a_conflict_the_tier_finds_and_writes_the_rest() {
+    let (ssd, nas) = tier_dirs("q_conflict_in_batch");
+    let tier = tier(&ssd, &nas);
+    let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+    let conflicting = restated(&original[0]);
+    let mut batch = original.clone();
+    batch.push(conflicting.clone());
+    let sink = CountingSink::default();
+    let outcome = DataLayer
+        .ingest_market_records_quarantining(&tier, batch, &AcceptAll, &sink, OBSERVED_AT)
+        .expect("quarantine-and-continue");
+    assert_eq!(
+        outcome.written,
+        original.len(),
+        "the non-conflicting records are written"
+    );
+    assert_eq!(outcome.quarantined_records, vec![conflicting.clone()]);
+    assert_eq!(sink.0.get(), 1, "one event for the set-aside conflict");
+    let run = only_run(&ssd);
+    assert_eq!(
+        run.primary,
+        PrimaryWrite::Written {
+            records: original.len() as u64
+        }
+    );
+    assert_eq!(run.count(QuarantineReason::DuplicateRecord), 1);
+    assert_eq!(run.entries[0].record, conflicting);
 }

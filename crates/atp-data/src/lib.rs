@@ -67,9 +67,9 @@ pub use crate::schema_registry::{
     SchemaDescriptor, PERSISTED_ENTITIES,
 };
 pub use crate::tiering::{
-    ArchiveOutcome, NasSyncStatus, RetentionReport, RetentionVerdict, TierConfig, TierError,
-    TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS, MIN_HOT_RETENTION_DAYS,
-    SECONDS_PER_DAY,
+    ArchiveOutcome, NasSyncStatus, OnConflict, RetentionReport, RetentionVerdict, ScreenedIngest,
+    TierConfig, TierError, TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS,
+    MIN_HOT_RETENTION_DAYS, SECONDS_PER_DAY,
 };
 
 use crate::quarantine_store::ReasonCapture;
@@ -494,12 +494,17 @@ impl DataLayer {
         // SSD-FIRST durable write, THEN NAS sync — the tier owns the ordering and the SSD
         // single-writer lock. This is the ONLY durable market-data write in this method, and it is
         // tiered by construction.
-        let tier_outcome = match tier.ingest(validated) {
-            Ok(outcome) => outcome,
+        let screened = match tier.ingest(validated, OnConflict::RefuseBatch) {
+            Ok(screened) => screened,
             Err(error) => {
                 run.primary_write_failed(&error);
                 return Err(error.into());
             }
+        };
+        // A conflicting re-ingest (same key, different content) passes the batch-scoped validator
+        // and is caught by the tier under its writer lock: refused, with its payload recorded.
+        let Some(tier_outcome) = screened.written else {
+            return Err(run.refuse_conflicts(screened.conflicts, events));
         };
         let receipt = run.finish_receipt(PrimaryWrite::Written {
             records: count as u64,

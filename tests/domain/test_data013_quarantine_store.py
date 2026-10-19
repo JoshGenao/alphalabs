@@ -161,3 +161,40 @@ def test_a_corrupt_catalog_still_records_the_rejects_it_had_classified() -> None
         assert run["run_0_primary"] == "REFUSED"
         assert run["run_0_records_in"] == "10"
         assert run["run_0_quarantined_total"] == "6", "every classified reject is recorded"
+
+
+@pytest.mark.parametrize(
+    "rust_test",
+    [
+        "tiered_path_records_a_conflicting_reingest_with_its_payload",
+        "tiered_path_catches_a_conflict_within_the_batch_under_the_lock",
+        "quarantining_path_sets_aside_a_conflict_the_tier_finds_and_writes_the_rest",
+    ],
+)
+def test_a_conflicting_reingest_is_quarantined_with_its_payload(rust_test: str) -> None:
+    # Review r3: a same-key, different-content re-ingest passes the batch-scoped validator and was
+    # lost when the tier refused it. No operator CLI can stage one (the fixtures are fixed), so this
+    # runs the Rust integration test that does, and requires that it actually ran and passed.
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH")
+    result = subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-data",
+            "--test",
+            "srs_data_013_quarantine_store",
+            rust_test,
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "1 passed" in combined, f"the named Rust test did not run:\n{combined}"
