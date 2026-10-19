@@ -109,7 +109,6 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::store::{MarketDataRecord, MarketDataStore, StoreError, StoreLock};
@@ -155,6 +154,19 @@ pub enum TierError {
     /// [`NasSyncStatus`] (`Degraded` if unreachable, `Failed` if reachable-but-broken) without losing
     /// the committed SSD write.
     Nas(StoreError),
+}
+
+impl TierError {
+    /// Could the failed [`TieredStore::ingest`] have committed the SSD primary anyway? `true` for an
+    /// SSD error raised after the store's atomic rename, and for any NAS error (NAS work only starts
+    /// once the SSD write has committed). Configuration errors precede every write.
+    pub fn may_have_published(&self) -> bool {
+        match self {
+            Self::Ssd(error) => error.may_have_published(),
+            Self::Nas(_) => true,
+            Self::HotRetentionBelowFloor { .. } | Self::TiersNotDistinct { .. } => false,
+        }
+    }
 }
 
 impl fmt::Display for TierError {
@@ -477,7 +489,7 @@ impl TieredStore {
         let batch: Vec<MarketDataRecord> = records.into_iter().collect();
 
         // --- SSD-FIRST: durable primary write under the single-writer lock. ------------------- //
-        fs::create_dir_all(&self.config.ssd_dir).map_err(|_| {
+        crate::store::create_dir_all_durably(&self.config.ssd_dir).map_err(|_| {
             TierError::Ssd(StoreError::Io {
                 context: "create SSD tier directory",
             })

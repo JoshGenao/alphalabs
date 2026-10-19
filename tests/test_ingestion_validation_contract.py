@@ -26,6 +26,7 @@ from ingestion_validation_check import (  # noqa: E402
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
     check_event_sink_port,
+    check_every_exit_is_recorded,
     check_ingestion_record_submission_struct,
     check_ingestion_validation_event_struct,
     check_ingestion_validation_guard,
@@ -34,6 +35,7 @@ from ingestion_validation_check import (  # noqa: E402
     check_record_validator_port,
     data_source,
     load_config,
+    recorded_path_sources,
     run_checks,
     types_source,
 )
@@ -401,16 +403,66 @@ class IngestionValidationWireStringTest(unittest.TestCase):
         )
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_eight_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 7 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 8)
+class EveryExitIsRecordedTest(unittest.TestCase):
+    """SRS-DATA-013: no exit from a primary-write path drops the batch's rejects."""
 
-    def test_assert_ingestion_validation_static_emits_seven_evidence_items(self) -> None:
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.sources = recorded_path_sources(self.config)
+
+    def _mutated(self, file: str, old: str, new: str) -> dict[str, str]:
+        sources = dict(self.sources)
+        self.assertEqual(sources[file].count(old), 1, f"anchor must be unique in {file}: {old!r}")
+        sources[file] = sources[file].replace(old, new)
+        return sources
+
+    def test_evidence_on_real_tree(self) -> None:
+        self.assertIn(
+            "every exit from the recorded write paths",
+            check_every_exit_is_recorded(self.config, self.sources),
+        )
+
+    def test_an_early_return_that_skips_the_refusal_is_caught(self) -> None:
+        # The round-1 defect: a corrupt catalog returned its error and dropped the rejects.
+        sources = self._mutated(
+            "ingestion_validation.rs",
+            "                        let error = MarketIngestError::Store(err);\n",
+            "                        return Err(MarketIngestError::Store(err));\n",
+        )
+        with self.assertRaises(IngestionValidationCheckError) as ctx:
+            check_every_exit_is_recorded(self.config, sources)
+        self.assertIn("bypass", str(ctx.exception))
+
+    def test_a_question_mark_outside_begin_is_caught(self) -> None:
+        sources = self._mutated(
+            "lib.rs",
+            "        let count = validated.len();\n",
+            "        let count = validated.len();\n        tier.config().ssd_dir().metadata()?;\n",
+        )
+        with self.assertRaises(IngestionValidationCheckError) as ctx:
+            check_every_exit_is_recorded(self.config, sources)
+        self.assertIn("`?` outside", str(ctx.exception))
+
+    def test_a_failed_primary_write_that_is_not_recorded_is_caught(self) -> None:
+        sources = self._mutated(
+            "lib.rs",
+            "                run.primary_write_failed(&error);\n",
+            "",
+        )
+        with self.assertRaises(IngestionValidationCheckError):
+            check_every_exit_is_recorded(self.config, sources)
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_nine_evidence_items(self) -> None:
+        evidence = run_checks()
+        # 8 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 9)
+
+    def test_assert_ingestion_validation_static_emits_eight_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_ingestion_validation_static(config, ROOT)
-        self.assertEqual(len(evidence), 7)
+        self.assertEqual(len(evidence), 8)
 
 
 if __name__ == "__main__":

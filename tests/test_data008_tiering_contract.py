@@ -201,7 +201,10 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("no vendor SDK", check_no_vendor_tokens(self.config, self.src))
 
     def test_vendor_token_in_code_is_caught(self) -> None:
-        mutated = self.src.replace("use std::fs;", "use std::fs;\nuse ibapi::Client;", 1)
+        # Prepend rather than anchor on an import line: an anchor that matches nothing turns the
+        # mutation into a no-op and the test into one that cannot fail.
+        mutated = "use ibapi::Client;\n" + self.src
+        self.assertNotEqual(mutated, self.src)
         with self.assertRaises(TieringCheckError):
             check_no_vendor_tokens(self.config, mutated)
 

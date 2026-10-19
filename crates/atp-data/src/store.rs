@@ -868,11 +868,10 @@ impl MarketDataStore {
         })?;
 
         // fsync the directory so the rename (a directory-entry change) is itself durable.
-        let dir_handle =
-            fs::File::open(dir).map_err(|err| io_error("open store directory", &err))?;
+        let dir_handle = fs::File::open(dir).map_err(|err| io_error(CTX_OPEN_STORE_DIR, &err))?;
         dir_handle
             .sync_all()
-            .map_err(|err| io_error("sync store directory", &err))?;
+            .map_err(|err| io_error(CTX_SYNC_STORE_DIR, &err))?;
         Ok(())
     }
 
@@ -1366,6 +1365,42 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+/// The two [`MarketDataStore::save_to_path`] failures that happen AFTER the atomic rename: the new
+/// store is already visible to readers, only its directory entry's durability is unconfirmed.
+pub(crate) const CTX_OPEN_STORE_DIR: &str = "open store directory";
+pub(crate) const CTX_SYNC_STORE_DIR: &str = "sync store directory";
+
+impl StoreError {
+    /// Could the failed save already have published the new store? `true` only for the
+    /// post-rename directory-sync failures: every other error is raised before the rename, so the
+    /// previous store is still the one on disk. A caller recording the outcome must treat `true`
+    /// as UNKNOWN, never as "nothing was written".
+    pub fn may_have_published(&self) -> bool {
+        matches!(self, Self::Io { context } if *context == CTX_OPEN_STORE_DIR || *context == CTX_SYNC_STORE_DIR)
+    }
+}
+
+/// `fs::create_dir_all`, then `fsync` the parent of every directory it created, so a directory
+/// this call reports as created survives a power loss (its entry lives in the parent).
+pub(crate) fn create_dir_all_durably(dir: &Path) -> io::Result<()> {
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor = Some(dir);
+    while let Some(path) = cursor {
+        if path.as_os_str().is_empty() || path.is_dir() {
+            break;
+        }
+        missing.push(path.to_path_buf());
+        cursor = path.parent();
+    }
+    fs::create_dir_all(dir)?;
+    for created in missing.iter().rev() {
+        if let Some(parent) = created.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::File::open(parent)?.sync_all()?;
+        }
+    }
+    Ok(())
+}
 
 // --------------------------------------------------------------------------- //
 // Fixture ingestion sources (stand-ins for the four provider adapters)

@@ -45,7 +45,14 @@
 //! — and carries the same FNV-1a integrity checksum, so a reader sees a whole run or none of it.
 //! A run is written TWICE: once as [`PrimaryWrite::Pending`] before the primary write starts, and
 //! again with the outcome. A process that dies in between leaves `Pending` on disk, which reads as
-//! "outcome unknown" — never as a write that did or did not happen.
+//! "outcome unknown" — never as a write that did or did not happen — and so does a failure that
+//! may have followed the primary store's atomic rename. Newly created directories are `fsync`ed
+//! into their parents, so a recorded run survives a power loss with its directory.
+//!
+//! **Every exit is recorded.** Both write paths send every early error through
+//! [`QuarantineStore::refuse`], which records the batch — with every reject classified so far — as
+//! `REFUSED` before the error is returned. `tools/ingestion_validation_check.py` fails on any other
+//! early return in those paths.
 //!
 //! **Scope.** The store lives on the SSD primary only. It is not archived to NAS and is not a backup
 //! unit (the SRS-DATA-018 backup walks NAS catalogs), so losing the SSD loses the quarantine
@@ -278,7 +285,8 @@ impl QuarantineStore {
         entries: Vec<QuarantinedRecord>,
         primary: PrimaryWrite,
     ) -> Result<RunHandle, QuarantineStoreError> {
-        fs::create_dir_all(&self.dir).map_err(|err| io_err("create quarantine directory", &err))?;
+        crate::store::create_dir_all_durably(&self.dir)
+            .map_err(|err| io_err("create quarantine directory", &err))?;
         let recorded_at_millis = now_millis()?;
         let run_id = format!(
             "{recorded_at_millis:020}-{:010}-{:06}",
@@ -299,6 +307,28 @@ impl QuarantineStore {
         };
         handle.publish()?;
         Ok(handle)
+    }
+
+    /// Record a batch refused before any primary write — with every quarantined record collected
+    /// up to the refusal — and return the error the caller reports. Every exit from a write path
+    /// after its batch arrives goes through here or through [`begin`](Self::begin), so a reject is
+    /// never dropped with the error. If the refusal itself cannot be recorded, that is the error.
+    pub(crate) fn refuse(
+        &self,
+        observed_at_seconds: u64,
+        records_in: u64,
+        entries: Vec<QuarantinedRecord>,
+        error: crate::MarketIngestError,
+    ) -> crate::MarketIngestError {
+        match self.begin(
+            observed_at_seconds,
+            records_in,
+            entries,
+            PrimaryWrite::Refused,
+        ) {
+            Ok(_) => error,
+            Err(unrecorded) => crate::MarketIngestError::Quarantine(unrecorded),
+        }
     }
 
     /// The newest `limit` runs (capped at [`MAX_RUNS_READ`]), newest first, plus the total count.
@@ -430,6 +460,15 @@ impl RunHandle {
         self.run.primary = primary;
         self.publish()?;
         Ok(self.run)
+    }
+
+    /// Record a failed primary write. `FAILED` means nothing from the batch is in primary storage,
+    /// so it is recorded only when the error proves that; an error that may have followed the
+    /// store's atomic rename leaves the run `PENDING` — outcome unknown, never a false "failed".
+    pub(crate) fn primary_write_failed(self, error: &crate::tiering::TierError) {
+        if !error.may_have_published() {
+            let _ = self.finish(PrimaryWrite::Failed);
+        }
     }
 
     /// [`finish`](Self::finish) for a write path that has already committed (or failed) its primary
@@ -592,10 +631,13 @@ mod tests {
     use crate::ingestion_validation::mixed_validation_fixture;
 
     fn scratch_dir(tag: &str) -> PathBuf {
+        // Unique per CALL: tests run in parallel, and two that share a tag must not share a
+        // directory (line!() here would be this function's line, the same for every caller).
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "atp-qstore-{tag}-{}-{}",
             std::process::id(),
-            line!()
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -747,6 +789,75 @@ mod tests {
         gone.begin(1, 1, Vec::new(), PrimaryWrite::Refused).unwrap();
         assert_eq!(gone.read_latest(5).unwrap().total_runs, 1);
         let _ = fs::remove_dir_all(&ssd);
+    }
+
+    fn primary_after(error: crate::tiering::TierError) -> PrimaryWrite {
+        let ssd = scratch_dir("after");
+        let store = QuarantineStore::beside(&ssd);
+        store
+            .begin(1, 1, Vec::new(), PrimaryWrite::Pending)
+            .unwrap()
+            .primary_write_failed(&error);
+        let latest = store.read_latest(1).unwrap();
+        let _ = fs::remove_dir_all(&ssd);
+        match &latest.runs[0] {
+            RunRead::Readable(run) => run.primary,
+            other => panic!("expected a readable run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_that_may_follow_the_rename_stays_pending_never_failed() {
+        use crate::store::{CTX_OPEN_STORE_DIR, CTX_SYNC_STORE_DIR};
+        use crate::tiering::TierError;
+        for context in [CTX_OPEN_STORE_DIR, CTX_SYNC_STORE_DIR] {
+            let error = TierError::Ssd(StoreError::Io { context });
+            assert_eq!(primary_after(error), PrimaryWrite::Pending, "{context}");
+        }
+        // NAS work only starts after the SSD primary committed.
+        let nas = TierError::Nas(StoreError::Io {
+            context: "anything",
+        });
+        assert_eq!(primary_after(nas), PrimaryWrite::Pending);
+    }
+
+    #[test]
+    fn a_failure_before_the_rename_is_recorded_failed() {
+        use crate::tiering::TierError;
+        for error in [
+            StoreError::Locked,
+            StoreError::ChecksumMismatch,
+            StoreError::Io {
+                context: "publish store file",
+            },
+            StoreError::Io {
+                context: "write store scratch file",
+            },
+        ] {
+            assert_eq!(
+                primary_after(TierError::Ssd(error.clone())),
+                PrimaryWrite::Failed,
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_store_directory_is_created_with_its_missing_parents() {
+        let base = scratch_dir("nested");
+        let ssd = base.join("a").join("b");
+        let store = QuarantineStore::beside(&ssd);
+        store
+            .begin(1, 1, Vec::new(), PrimaryWrite::Refused)
+            .unwrap();
+        assert!(store.dir().is_dir());
+        assert_eq!(store.read_latest(1).unwrap().total_runs, 1);
+        // A second run into the existing directory is just another run.
+        store
+            .begin(1, 1, Vec::new(), PrimaryWrite::Refused)
+            .unwrap();
+        assert_eq!(store.read_latest(5).unwrap().total_runs, 2);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -429,22 +429,30 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
+        // Every exit from here on records the batch as a run (see QuarantineStore::refuse), so a
+        // reject is never dropped with an error.
+        let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let records_in = batch.len() as u64;
+        let quarantine = QuarantineStore::beside(tier.config().ssd_dir());
+        // The tier is not a second path to a trusted coverage frontier — refuse it here too, so the
+        // tiered surface has EXACTLY the same trust boundary as ingest_market_record. The whole batch
+        // is refused before any record is validated.
+        if let Some(record) = batch
+            .iter()
+            .find(|r| r.key().kind == DatasetKind::CorporateActionCoverage)
+        {
+            let error = MarketIngestError::UnsupportedKind {
+                kind: record.key().kind.as_str(),
+            };
+            return Err(quarantine.refuse(observed_at_seconds, records_in, Vec::new(), error));
+        }
         // Validate the WHOLE batch read-only through the unchanged ERR-5 gate BEFORE any SSD write, so
         // an invalid batch fails closed without touching either tier (no partial primary write).
         let capture = ReasonCapture::new(events);
         let mut validated: Vec<MarketDataRecord> = Vec::new();
         let mut quarantined: Vec<QuarantinedRecord> = Vec::new();
         let mut first_reject: Option<StructuredIngestionError> = None;
-        let mut records_in: u64 = 0;
-        for record in records {
-            records_in += 1;
-            // The tier is not a second path to a trusted coverage frontier — refuse it here too, so
-            // the tiered surface has EXACTLY the same trust boundary as ingest_market_record.
-            if record.key().kind == DatasetKind::CorporateActionCoverage {
-                return Err(MarketIngestError::UnsupportedKind {
-                    kind: record.key().kind.as_str(),
-                });
-            }
+        for record in batch {
             // The gate derives the source+hash envelope from the record, binding validation to exactly
             // the record that will be persisted (no independent payload to forge).
             match self.ingest_record(&record, validator, &capture, observed_at_seconds) {
@@ -453,7 +461,13 @@ impl DataLayer {
                     // The gate emits exactly one event per reject; no event means the ERR-5
                     // contract broke, and the batch fails closed on the gate's own error.
                     let Some(reason) = capture.take() else {
-                        return Err(MarketIngestError::Rejected(error));
+                        let error = MarketIngestError::Rejected(error);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            quarantined,
+                            error,
+                        ));
                     };
                     quarantined.push(QuarantinedRecord {
                         reason,
@@ -465,16 +479,10 @@ impl DataLayer {
                 }
             }
         }
-        let quarantine = QuarantineStore::beside(tier.config().ssd_dir());
         if let Some(error) = first_reject {
             // Refused outright: record every reject durably, THEN report the refusal.
-            quarantine.begin(
-                observed_at_seconds,
-                records_in,
-                quarantined,
-                PrimaryWrite::Refused,
-            )?;
-            return Err(MarketIngestError::Rejected(error));
+            let error = MarketIngestError::Rejected(error);
+            return Err(quarantine.refuse(observed_at_seconds, records_in, quarantined, error));
         }
         let count = validated.len();
         let run = quarantine.begin(
@@ -489,7 +497,7 @@ impl DataLayer {
         let tier_outcome = match tier.ingest(validated) {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = run.finish(PrimaryWrite::Failed);
+                run.primary_write_failed(&error);
                 return Err(error.into());
             }
         };

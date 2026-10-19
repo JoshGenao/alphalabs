@@ -367,19 +367,27 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
+        // Every exit from here on records the batch as a run (see QuarantineStore::refuse), so a
+        // reject is never dropped with an error.
+        let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let records_in = batch.len() as u64;
+        let quarantine = QuarantineStore::beside(tier.config().ssd_dir());
+        // Same trust boundary as ingest_market_record / ingest_market_records_tiered: the tier is
+        // not a second path to a trusted coverage frontier, so refuse COVERAGE here too — the whole
+        // batch, before any record is validated.
+        if let Some(record) = batch
+            .iter()
+            .find(|r| r.key().kind == DatasetKind::CorporateActionCoverage)
+        {
+            let error = MarketIngestError::UnsupportedKind {
+                kind: record.key().kind.as_str(),
+            };
+            return Err(quarantine.refuse(observed_at_seconds, records_in, Vec::new(), error));
+        }
         let capture = ReasonCapture::new(events);
         let mut valid: Vec<MarketDataRecord> = Vec::new();
         let mut entries: Vec<QuarantinedRecord> = Vec::new();
-        let mut records_in: u64 = 0;
-        for record in records {
-            records_in += 1;
-            // Same trust boundary as ingest_market_record / ingest_market_records_tiered: the tier is
-            // not a second path to a trusted coverage frontier, so refuse COVERAGE here too.
-            if record.key().kind == DatasetKind::CorporateActionCoverage {
-                return Err(MarketIngestError::UnsupportedKind {
-                    kind: record.key().kind.as_str(),
-                });
-            }
+        for record in batch {
             match self.ingest_record(&record, validator, &capture, observed_at_seconds) {
                 // Valid → candidate for the primary write (subject to the cross-store check below).
                 Ok(_) => valid.push(record),
@@ -390,7 +398,13 @@ impl DataLayer {
                 // batch fails closed on the gate's own error.
                 Err(error) => {
                     let Some(reason) = capture.take() else {
-                        return Err(MarketIngestError::Rejected(error));
+                        let error = MarketIngestError::Rejected(error);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            entries,
+                            error,
+                        ));
                     };
                     entries.push(QuarantinedRecord {
                         reason,
@@ -445,7 +459,13 @@ impl DataLayer {
                 // in that case the tier's NAS sync degrades and alerts.)
                 Err(err) => {
                     if dir.join(STORE_FILENAME).exists() {
-                        return Err(MarketIngestError::Store(err));
+                        let error = MarketIngestError::Store(err);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            entries,
+                            error,
+                        ));
                     }
                 }
             }
@@ -482,7 +502,7 @@ impl DataLayer {
         // it cannot be recorded, nothing is written.
         let quarantined_records: Vec<MarketDataRecord> =
             entries.iter().map(|entry| entry.record.clone()).collect();
-        let run = QuarantineStore::beside(tier.config().ssd_dir()).begin(
+        let run = quarantine.begin(
             observed_at_seconds,
             records_in,
             entries,
@@ -493,7 +513,7 @@ impl DataLayer {
         let tier_outcome = match tier.ingest(to_write) {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = run.finish(PrimaryWrite::Failed);
+                run.primary_write_failed(&error);
                 return Err(error.into());
             }
         };

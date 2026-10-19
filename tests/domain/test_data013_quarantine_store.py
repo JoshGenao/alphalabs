@@ -143,3 +143,21 @@ def test_a_corrupt_run_is_reported_in_place_never_skipped() -> None:
         assert run["run_0_status"] == "unreadable"
         assert run["run_0_error"] == "quarantine run checksum mismatch"
         assert "run_0_quarantined_total" not in run, "an unreadable run carries no counts"
+
+
+def test_a_corrupt_catalog_still_records_the_rejects_it_had_classified() -> None:
+    # Review r1: the quarantining path classified the rejects, then failed closed on a corrupt
+    # primary catalog and dropped them with the error. The batch is refused AND recorded.
+    cli = _bin("data013_ingestion_validation_cli")
+    with tempfile.TemporaryDirectory(prefix="atp_data013_qs_") as tmp:
+        ssd, nas = Path(tmp) / "ssd", Path(tmp) / "nas"
+        ssd.mkdir()
+        nas.mkdir()
+        (ssd / "market_data.store").write_text("corrupt primary catalog")
+        ingest = _run(cli, "ingest", "--ssd", str(ssd), "--nas", str(nas))
+        assert ingest.returncode != 0, "a corrupt catalog fails the batch closed"
+        run = _fields(_run(cli, "summary", "--ssd", str(ssd)).stdout)
+        assert run["total_runs"] == "1"
+        assert run["run_0_primary"] == "REFUSED"
+        assert run["run_0_records_in"] == "10"
+        assert run["run_0_quarantined_total"] == "6", "every classified reject is recorded"

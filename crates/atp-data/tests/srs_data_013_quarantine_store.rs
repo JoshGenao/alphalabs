@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use atp_data::ingestion_validation::mixed_validation_fixture;
-use atp_data::store::{fixture_batch, DatasetKind, STORE_FILENAME};
+use atp_data::store::{coverage_record, fixture_batch, DatasetKind, STORE_FILENAME};
 use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{
     DataLayer, MarketIngestError, PrimaryWrite, QuarantineRun, QuarantineStore,
@@ -207,4 +207,69 @@ fn tiered_path_records_a_failed_primary_write_as_failed() {
         .expect_err("a corrupt primary fails the write");
     assert!(matches!(err, MarketIngestError::Tier(_)), "got {err:?}");
     assert_eq!(only_run(&ssd).primary, PrimaryWrite::Failed);
+}
+
+#[test]
+fn quarantining_path_records_its_rejects_when_a_catalog_cannot_be_read() {
+    let (ssd, nas) = tier_dirs("q_corrupt_catalog");
+    let tier = tier(&ssd, &nas);
+    // A present-but-corrupt SSD catalog: the cross-store duplicate pass fails closed AFTER the
+    // batch's rejects were classified. They must not be dropped with the error.
+    fs::create_dir_all(&ssd).unwrap();
+    fs::write(ssd.join(STORE_FILENAME), b"corrupt primary").unwrap();
+    let err = DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            mixed_validation_fixture(TS),
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect_err("a corrupt catalog fails the batch closed");
+    assert!(matches!(err, MarketIngestError::Store(_)), "got {err:?}");
+    let run = only_run(&ssd);
+    assert_eq!(run.primary, PrimaryWrite::Refused);
+    assert_eq!(run.records_in, 10);
+    assert_eq!(
+        run.quarantined_total(),
+        6,
+        "every classified reject is recorded"
+    );
+}
+
+#[test]
+fn a_coverage_record_refuses_and_records_the_whole_batch_on_both_paths() {
+    for path in ["quarantining", "tiered"] {
+        let (ssd, nas) = tier_dirs(&format!("coverage_{path}"));
+        let tier = tier(&ssd, &nas);
+        let mut batch = mixed_validation_fixture(TS);
+        batch.push(coverage_record(TS, "AAPL"));
+        let validator = Sys77RecordValidator::new();
+        let sink = QuarantineSummarySink::new();
+        let err = if path == "quarantining" {
+            DataLayer
+                .ingest_market_records_quarantining(&tier, batch, &validator, &sink, OBSERVED_AT)
+                .map(|_| ())
+                .expect_err("coverage is refused")
+        } else {
+            DataLayer
+                .ingest_market_records_tiered(&tier, batch, &validator, &sink, OBSERVED_AT)
+                .map(|_| ())
+                .expect_err("coverage is refused")
+        };
+        assert!(
+            matches!(err, MarketIngestError::UnsupportedKind { .. }),
+            "{path}: got {err:?}"
+        );
+        let run = only_run(&ssd);
+        assert_eq!(run.primary, PrimaryWrite::Refused, "{path}");
+        assert_eq!(
+            run.records_in, 11,
+            "{path}: the whole batch is accounted for"
+        );
+        assert!(
+            !ssd.join(STORE_FILENAME).exists(),
+            "{path}: nothing reached primary"
+        );
+    }
 }
