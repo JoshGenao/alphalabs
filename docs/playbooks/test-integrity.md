@@ -398,3 +398,10 @@ Read this whenever you write a test, and before you believe a green one.
     assertion, and the second-wrong fix is hardcoding the new id — the right one is
     deriving the owner from the payload so the property survives the next re-owning.
     `(NOTIF-001)`
+45. **A scanner that truncates at the first `#[cfg(test)]` hides every production line after
+    a test-only ITEM.** The DATA-015 persistence scan cut each Rust file there to skip the
+    test module; a `#[cfg(test)]` accessor above a writer made the writer invisible, and the
+    registry check passed with an unregistered format. Strip only `#[cfg(test)] mod` blocks
+    (brace-matched), and pin a real-tree case: "the scan sees <known writer>" fails the
+    moment the scanner goes blind, where a unit test of the strip function does not.
+    `(DATA-013 r5)`

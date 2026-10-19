@@ -173,3 +173,26 @@ Reference implementation: `crates/atp-simulation/src/backtest_store.rs::save_to_
     content check as a consistency assertion, not as the proof: a record whose id matches
     but whose subject does not is corruption, and acting on it is acting on something you
     cannot explain. `(RESV-006 r26)`
+
+## A side record the primary write must not outrun (DATA-013 r1-r5)
+
+The quarantine store records every rejected record of an ingestion batch. Five Codex rounds
+each found a path where the primary write could happen, or fail, without that record.
+
+34. **Every exit after the batch arrives records the batch.** Rejects collected before a later
+    failure (a corrupt catalog, a refused kind) were dropped with the error. Route every early
+    error through ONE function that records first and returns the error, and add a static
+    check that fails on any other `return Err(` or `?` in the write path. `(DATA-013 r1)`
+35. **"The write failed" is three facts: before the rename, after it, unknown.** A save that
+    fails after its atomic rename (the directory fsync) has already published. Record that as
+    unknown (PENDING), never as FAILED. Give the store error a predicate
+    (`may_have_published`) rather than matching message text at each caller. `(DATA-013 r1)`
+36. **A directory is durable only when its parent's entry is.** fsync the parent of a new
+    directory — and do it for the WHOLE ancestor chain on EVERY call. Existence is not proof:
+    an earlier call may have created it and failed before the parent fsync, and a relative
+    path's parent is the empty string, which a careless filter skips. `(DATA-013 r1, r2)`
+37. **Decide and record a side record under the writer's lock, BEFORE the primary save.** A
+    conflict found inside the locked write and handed back after the save is lost to a save
+    error or a crash. Pass the recorder into the writer as a callback; if it fails, write
+    nothing. And screen against everything the key can live in — an archived (NAS-only) key
+    passed an SSD-only check. `(DATA-013 r3, r4, r5)`
