@@ -1381,25 +1381,31 @@ impl StoreError {
     }
 }
 
-/// `fs::create_dir_all`, then `fsync` the parent of every directory it created, so a directory
-/// this call reports as created survives a power loss (its entry lives in the parent).
+/// `fs::create_dir_all`, then `fsync` every ancestor of `dir`, so the directory survives a power
+/// loss (each directory's entry lives in its parent).
+///
+/// The WHOLE ancestor chain is synced on EVERY call. Existence is not proof of durability: an
+/// earlier call may have created the directory and then failed before its parent's `fsync`, and a
+/// retry that trusted `is_dir()` would never repair that. A relative `dir` is resolved first, so
+/// its parent is a real directory rather than the empty path. The cost is a few directory
+/// `fsync`s per call, paid once per ingestion batch.
 pub(crate) fn create_dir_all_durably(dir: &Path) -> io::Result<()> {
-    let mut missing: Vec<PathBuf> = Vec::new();
-    let mut cursor = Some(dir);
-    while let Some(path) = cursor {
-        if path.as_os_str().is_empty() || path.is_dir() {
-            break;
-        }
-        missing.push(path.to_path_buf());
-        cursor = path.parent();
-    }
     fs::create_dir_all(dir)?;
-    for created in missing.iter().rev() {
-        if let Some(parent) = created.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::File::open(parent)?.sync_all()?;
-        }
+    for ancestor in ancestors_to_sync(dir)? {
+        fs::File::open(&ancestor)?.sync_all()?;
     }
     Ok(())
+}
+
+/// The directories [`create_dir_all_durably`] fsyncs for an existing `dir`: every ancestor of its
+/// canonical absolute path, nearest first, up to the filesystem root.
+pub(crate) fn ancestors_to_sync(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let absolute = dir.canonicalize()?;
+    Ok(absolute
+        .ancestors()
+        .skip(1)
+        .map(Path::to_path_buf)
+        .collect())
 }
 
 // --------------------------------------------------------------------------- //

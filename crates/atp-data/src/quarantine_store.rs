@@ -861,6 +861,36 @@ mod tests {
     }
 
     #[test]
+    fn every_ancestor_is_synced_on_every_call_even_for_a_relative_path() {
+        use crate::store::{ancestors_to_sync, create_dir_all_durably};
+        // Relative to the test's working directory (the crate root): the parent of a fresh
+        // relative directory must be a real directory, never the empty path.
+        let relative = PathBuf::from(format!("target/atp-qstore-rel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&relative);
+        let nested = relative.join("ssd").join(QUARANTINE_DIRNAME);
+        create_dir_all_durably(&nested).unwrap();
+        let synced = ancestors_to_sync(&nested).unwrap();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert!(synced
+            .iter()
+            .all(|p| p.is_absolute() && !p.as_os_str().is_empty()));
+        assert_eq!(synced[0], nested.canonicalize().unwrap().parent().unwrap());
+        assert!(
+            synced.contains(&cwd),
+            "the working directory holds the new top-level entry"
+        );
+        assert!(
+            synced.contains(&PathBuf::from("/")),
+            "the chain reaches the root"
+        );
+        // A retry against the now-existing directory re-syncs the SAME chain: existence is not
+        // taken as proof that an earlier call's parent fsync succeeded.
+        create_dir_all_durably(&nested).unwrap();
+        assert_eq!(ancestors_to_sync(&nested).unwrap(), synced);
+        let _ = fs::remove_dir_all(&relative);
+    }
+
+    #[test]
     fn scratch_files_are_never_read_as_runs() {
         let ssd = scratch_dir("scratch");
         let store = QuarantineStore::beside(&ssd);
