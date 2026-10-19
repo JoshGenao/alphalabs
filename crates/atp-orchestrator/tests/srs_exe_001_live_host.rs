@@ -674,3 +674,66 @@ fn an_oversize_frame_is_refused_and_the_connection_closed() {
     );
     assert!(host.broker.strategies().is_empty());
 }
+
+/// Read the one refusal a host sends before closing, then require end-of-stream.
+/// On Linux, a host that closes with the client's bytes still unread resets the
+/// connection, and the first `read_line` fails with `ConnectionReset`.
+fn refusal_then_close(stream: UnixStream) -> String {
+    let mut reader = BufReader::new(stream);
+    let mut reply = String::new();
+    reader.read_line(&mut reply).unwrap();
+    let mut rest = String::new();
+    assert_eq!(
+        reader.read_line(&mut rest).unwrap(),
+        0,
+        "connection stayed open"
+    );
+    reply
+}
+
+#[test]
+fn a_non_utf8_frame_is_refused_and_the_connection_closed() {
+    let host = start(&["live-a"]);
+    designate(&host.state(), "live-a");
+    let mut stream = UnixStream::connect(host.socket("live-a")).unwrap();
+    // The bad frame, then more frames than the host's read buffer holds, in one
+    // write: the host refuses at the first frame with the rest still unread.
+    let mut bytes = vec![0xff, b'\n'];
+    bytes.extend("x\n".repeat(10_000).as_bytes());
+    let _ = stream.write_all(&bytes);
+    let reply = refusal_then_close(stream);
+    assert!(
+        reply.contains("\trefused\t") && reply.contains("not UTF-8"),
+        "{reply}"
+    );
+    assert!(host.broker.strategies().is_empty());
+}
+
+#[test]
+fn a_connection_over_the_limit_is_refused_and_closed() {
+    let host = start(&["live-a"]);
+    designate(&host.state(), "live-a");
+    // Fill every slot. One round trip each proves the host is serving it, so it
+    // is counted before the next connection arrives.
+    let held: Vec<UnixStream> = (0..server::MAX_CONNECTIONS_PER_STRATEGY)
+        .map(|_| {
+            let mut stream = UnixStream::connect(host.socket("live-a")).unwrap();
+            stream.write_all(b"not-a-frame\n").unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert!(line.ends_with('\n'), "{line:?}");
+            stream
+        })
+        .collect();
+    let mut extra = UnixStream::connect(host.socket("live-a")).unwrap();
+    let _ = extra.write_all("x\n".repeat(10_000).as_bytes());
+    let reply = refusal_then_close(extra);
+    assert!(
+        reply.contains("\trefused\t") && reply.contains("TooManyConnections"),
+        "{reply}"
+    );
+    drop(held);
+    assert!(host.broker.strategies().is_empty());
+}

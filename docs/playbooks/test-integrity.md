@@ -405,3 +405,10 @@ Read this whenever you write a test, and before you believe a green one.
     (brace-matched), and pin a real-tree case: "the scan sees <known writer>" fails the
     moment the scanner goes blind, where a unit test of the strip function does not.
     `(DATA-013 r5)`
+46. **A socket or filesystem test that is green on macOS proves nothing about Linux.** CI is
+    Linux; reproduce there (`docker run rust:<version>`) before fixing. Three container traps
+    each faked a result once: a read-only source mount fails every test that writes under
+    the crate; root ignores `chmod 0500`, so permission-denial tests fail (run as a plain
+    user); and a file overlaid with an mtime older than the last build is not rebuilt, so a
+    "without the fix" mutation run silently tests the fixed binary. `touch` the overlay and
+    grep it inside the container before trusting a green. `(EXE-001 red main)`
