@@ -40,8 +40,8 @@ per the structural contract in ``architecture/runtime_services.json`` (block
 
 The PASS line is ``SRS-DATA-016 IDEMPOTENT-INGEST PASS`` -- it names the deferred owners (the real
 provider network adapters via SRS-DATA-001/003/005/006, the unified query consumers via
-SRS-DATA-007, SSD/NAS tiering via SRS-DATA-008/009/010, the validator rules + alert surface via
-SRS-DATA-013 / SRS-NOTIF-001). Unlike the SDK-surface checks, SRS-DATA-016 flips passes:true: the
+SRS-DATA-007, SSD/NAS tiering via SRS-DATA-008/009/010, the quarantine alert surface via
+SRS-DATA-013). Unlike the SDK-surface checks, SRS-DATA-016 flips passes:true: the
 idempotency property is a self-contained runtime property demonstrated end to end.
 
 Mirrors the PASS/FAIL output style of ``tools/backtest_store_check.py``.
@@ -564,8 +564,8 @@ _DEFERRED_OWNERS = (
     "unified historical query READ consumers -- strategy code, notebooks (SRS-DATA-007)",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the store directory "
     "(SRS-DATA-008/009/010)",
-    "the concrete validator SYS-77 rule logic + quarantine dashboard/notification alert surface "
-    "(SRS-DATA-013 / SRS-NOTIF-001)",
+    "the quarantine dashboard pane + operator notification of quarantine counts and reasons "
+    "(SRS-DATA-013)",
 )
 
 

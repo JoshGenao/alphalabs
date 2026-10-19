@@ -1858,11 +1858,14 @@
     "delivered": [
       "SRS-DATA-013 Sys77RecordValidator (atp-data ingestion_validation): the concrete read-only kind-aware classifier for the six SyRS SYS-77 rules (a..f) against equity OHLCV and option-chain records, one deterministic reason per record",
       "DataLayer::ingest_market_records_quarantining: quarantine-and-continue batch write — invalid records quarantined (returned, never written to primary), valid subset written SSD-first + NAS-synced via the SRS-DATA-008 tier; duplicate (rule e) spans the batch AND the SSD+NAS tiered view",
-      "QuarantineSummarySink / QuarantineSummary: the count-and-nature-of-quarantined-records aggregation for the SyRS SYS-77 alert clause (surfaced via data013_ingestion_validation_cli)"
+      "QuarantineSummarySink / QuarantineSummary: the count-and-nature-of-quarantined-records aggregation for the SyRS SYS-77 alert clause (surfaced via data013_ingestion_validation_cli)",
+      "Durable quarantine store (atp-data quarantine_store): one atomically written, checksummed run file per ingestion batch under <ssd>/quarantine -- every quarantined record in full with its reason, ERR-5 source and hash, plus batch totals and the primary-write outcome (PENDING, then WRITTEN / REFUSED / FAILED). Recorded BEFORE the primary write on both primary-write paths (ingest_market_records_tiered, ingest_market_records_quarantining); a batch whose run cannot be recorded writes nothing (MarketIngestError::Quarantine)",
+      "TieredStore::ingest is crate-private (compile_fail doctest in quarantine_store): outside atp-data, provider market data reaches the SSD primary only through the two recorded paths. data016_ingest_cli, data005_fundamental_cli and data008_tier_cli ingest through ingest_market_records_tiered; ingest_market_record (one record into a caller-held in-memory store) is the building block their non-persisting reingest proofs use",
+      "data013_ingestion_validation_cli summary --ssd <dir> [--limit 1-200]: the newest runs with totals, primary-write outcome and the count for every SYS-77 reason; an unreadable run is printed in its place, a missing SSD primary is an error"
     ],
     "deferred": [
-      "Durable quarantine STORE that persists the rejected payload + reason + timestamp + source for inspection/recovery — the gate emits the event and the quarantining path returns the records, but nothing persists them durably yet (owner: SRS-DATA-014 / SRS-DATA-015)",
-      "Notification dispatcher + dashboard hookup that fans the per-record event into dashboard alert counts and SMTP/push reason summaries — this feature produces the structured counts-and-reasons those surfaces will consume, it does not render them (owner: SRS-UI-001 / SRS-NOTIF-001 / SYS-77 alert clause)",
+      "Pruning old quarantine runs: the store keeps every run (one small file per ingestion batch) and read_latest lists the whole directory, O(runs) in file names while parsing at most MAX_RUNS_READ files (owner: SRS-DATA-010 SSD storage eviction policy)",
+      "Operator notification (Email + Push) and the dashboard quarantine pane over the durable quarantine store, with per-run counts and reasons (owner: SRS-DATA-013 landings 2-3, in progress)",
       "Indexed per-key tiered existence check for duplicate detection at production NAS scale (this feature loads the SSD+NAS stores in full, matching the current in-memory MarketDataStore model) (owner: SRS-DATA-009 tiered read / SRS-DATA-018 catalog)"
     ]
   },
@@ -8872,7 +8875,7 @@
       "Real Databento / IB / Sharadar / option-chain NETWORK adapters that materialize records from the live providers (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; the atp-adapters provider traits stay not_configured stubs -- fixture sources stand in, as the SRS-DATA-016 step permits)",
       "Unified historical query READ consumers -- strategy code, backtests, factor jobs, notebooks (read via the now-complete SRS-DATA-007 interface; this idempotent store's records()/get() is the substrate they consume -- no longer a DATA-016 deferral)",
       "SSD-primary / NAS-archival TIERING, eviction, and cold-read failover of the store directory (owner: SRS-DATA-008 / SRS-DATA-009 / SRS-DATA-010)",
-      "The concrete RecordValidator SYS-77 rule logic + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-DATA-014 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
+      "The quarantine dashboard pane + operator notification of quarantine counts and reasons (owner: SRS-DATA-013 landings 2-3; ingest_market_record composes the UNCHANGED ERR-5 gate)"
     ]
   },
   "fundamental_ingestion_contract": {
@@ -9006,7 +9009,7 @@
       "The NFR-P8d overnight-window (16:00->09:30 ET) wall-clock completion proof over the full 8,000+ US-equity universe against a real clock (a wall-clock performance harness, deferred like SRS-FAC-001's NFR-P7; the fixture run proves the mapping/validation/catalog/availability LOGIC, not wall-clock completion)",
       "The in-process orchestrated fetch->ingest HOST wiring the adapter to the data layer (owner: the orchestrator -- no crate depends on both adapter and data; the two halves meet at the FundamentalStatements boundary DTO)",
       "RESTATEMENT / amended-filing point-in-time history: the fundamental natural key is (Fundamental, symbol, resolution, period_end_ts) with available_ts as a value field, so it models ONE authoritative filing per fiscal period. A later restatement (same period, different filing date + revised numbers) is a same-key / different-content write that the SRS-DATA-016 idempotency core fails CLOSED on (StoreError::ConflictingContent) -- rejected, not silently corrupted and not a lookahead leak, but not yet cataloged as point-in-time history (pinned by srs_data_005_restatement_currently_fails_closed_pending_filing_version_keying). Representing multiple filings per period needs a filing-version dimension in the fundamental store identity + a loader that picks the latest filing available as-of the run date -- a STORAGE-SCHEMA change (NaturalKey / codec / SCHEMA_VERSION) deferred with the real Sharadar restatement feed (owner: SRS-DATA-005 + the SRS-DATA-016 storage substrate)",
-      "The concrete RecordValidator SYS-77 fundamental field-range rules + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
+      "Fundamental field-range validation (SyRS SYS-77 names OHLCV and option rules only; for fundamentals SRS-DATA-013 applies the duplicate rule) (owner: SRS-DATA-005) + the quarantine dashboard pane and operator notification (owner: SRS-DATA-013 landings 2-3)"
     ]
   },
   "unified_query_runtime_contract": {
@@ -9145,10 +9148,14 @@
       "inspect_load_token": "MarketDataStore::load_from_path"
     },
     "writer_serialization": {
-      "ingest_fn": "cmd_ingest",
+      "cli_ingest_fn": "cmd_ingest",
+      "cli_route_token": "ingest_market_records_tiered(",
+      "cli_forbidden_write_token": "save_to_path",
+      "writer_module": "tiering",
+      "ingest_fn": "ingest",
       "acquire_token": "StoreLock::acquire",
       "load_token": "MarketDataStore::load_from_path",
-      "save_token": "store.save_to_path",
+      "save_token": "ssd.save_to_path",
       "lock_binding": "_lock"
     },
     "atomic_publish": {
@@ -10392,11 +10399,10 @@
     "cli_bin": "data008_tier_cli",
     "cli_failed_exit_token": "if let NasSyncStatus::Failed { reason } = &outcome.tier.nas_sync",
     "ingestion_routing": {
-      "description": "SRS-DATA-008 'all ingestion writes to SSD first; new data is synced to NAS' is enforced STRUCTURALLY (not merely demonstrated by one CLI): (1) the SINGLE validated, tiered market-data write surface DataLayer::ingest_market_records_tiered composes the UNCHANGED ERR-5 validation gate with TieredStore::ingest (SSD-first durable write, THEN NAS sync), and refuses corporate-action COVERAGE (MarketIngestError::UnsupportedKind) exactly like ingest_market_record; (2) EVERY market-data ingestion binary's cmd_ingest SYNCS its SSD write to NAS via the tier -- data008_tier_cli uses the encapsulated ingest_market_records_tiered, while data016_ingest_cli (generic) and data005_fundamental_cli (fundamentals) keep their SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization contract (StoreLock-held SSD load-modify-save) and then call TieredStore::sync_ssd_to_nas_best_effort so the committed SSD snapshot is archived to NAS; (3) tools/data008_tiering_check.py::check_ingestion_routing SWEEPS every binary and fails closed if any persists via MarketDataStore::save_to_path WITHOUT a paired NAS sync, so a NEW ingest bin (or a future real provider adapter) that writes SSD-only trips the guard. The ONLY binary permitted to persist without a NAS sync is data011_coverage_cli: corporate-action COVERAGE is an operator TRUST ASSERTION (the SRS-DATA-011 completeness frontier the split-adjusted gate reads), which the tiered surface deliberately REFUSES, so it is not provider market-data ingestion; durable retention/backup of ALL catalogs (including coverage) is the SRS-DATA-018 backup + validated-recovery / catalog owner. The real Databento/IB/Sharadar/option-chain NETWORK adapters (SRS-DATA-001/003/006) are provider-agnostic feeders -- when built they MUST sync to NAS via the tier, which this guard enforces.",
+      "description": "SRS-DATA-008 'all ingestion writes to SSD first; new data is synced to NAS' is enforced STRUCTURALLY (not merely demonstrated by one CLI): (1) the SINGLE validated, tiered market-data write surface DataLayer::ingest_market_records_tiered composes the UNCHANGED ERR-5 validation gate with TieredStore::ingest (SSD-first durable write, THEN NAS sync), and refuses corporate-action COVERAGE (MarketIngestError::UnsupportedKind) exactly like ingest_market_record; (2) EVERY market-data ingestion binary's cmd_ingest (data008_tier_cli, data016_ingest_cli, data005_fundamental_cli) writes through the encapsulated ingest_market_records_tiered, so its SSD write is synced to NAS by the tier; TieredStore::ingest holds the SRS-DATA-017 single-writer StoreLock across its SSD load-modify-save and applies the SRS-DATA-016 idempotent upsert, and since SRS-DATA-013 the raw TieredStore::ingest is crate-private and every batch is recorded in the quarantine store before the primary write; (3) tools/data008_tiering_check.py::check_ingestion_routing SWEEPS every binary and fails closed if any persists via MarketDataStore::save_to_path at all (a NAS sync after a direct save no longer excuses it: that write skips the SRS-DATA-013 quarantine run), so a NEW ingest bin (or a future real provider adapter) that writes the store directly trips the guard; the sweep must find the one known direct writer, or its clean result is refused as vacuous. The ONLY binary permitted to persist directly is data011_coverage_cli: corporate-action COVERAGE is an operator TRUST ASSERTION (the SRS-DATA-011 completeness frontier the split-adjusted gate reads), which the tiered surface deliberately REFUSES, so it is not provider market-data ingestion; durable retention/backup of ALL catalogs (including coverage) is the SRS-DATA-018 backup + validated-recovery / catalog owner. The real Databento/IB/Sharadar/option-chain NETWORK adapters (SRS-DATA-001/003/006) are provider-agnostic feeders -- when built they MUST sync to NAS via the tier, which this guard enforces.",
       "lib_surface_token": "pub fn ingest_market_records_tiered",
       "tiered_write_surface": "ingest_market_records_tiered",
       "best_effort_sync_fn": "pub fn sync_ssd_to_nas_best_effort",
-      "nas_sync_markers": ["sync_ssd_to_nas_best_effort", "ingest_market_records_tiered"],
       "market_data_ingest_bins": ["data016_ingest_cli", "data005_fundamental_cli", "data008_tier_cli"],
       "persist_token": ".save_to_path(",
       "coverage_exception_bin": "data011_coverage_cli",
@@ -10414,7 +10420,7 @@
     },
     "tiered_store": {
       "struct": "TieredStore",
-      "ingest_fn": "pub fn ingest",
+      "ingest_fn": "pub(crate) fn ingest",
       "sync_fn": "pub fn sync_ssd_to_nas",
       "archive_fn": "pub fn archive_cold",
       "report_fn": "pub fn retention_report",

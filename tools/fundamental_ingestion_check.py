@@ -30,7 +30,7 @@ atp-data and the loader) drives build -> ingest -> persist -> reload -> re-inges
 
 The PASS line is ``SRS-DATA-005 FUNDAMENTAL-INGEST PASS`` -- it names the deferred owners (the real
 Sharadar network adapter; the NFR-P8d overnight wall-clock proof; the orchestrated fetch->ingest host;
-the SYS-77 validator rules + alert surface). SRS-DATA-005 STAYS passes:false: the substrate is
+fundamental field-range validation; the quarantine alert surface). SRS-DATA-005 STAYS passes:false: the substrate is
 demonstrated end to end over fixture sources, but the close needs those deferred owners.
 
 Invoke:
@@ -386,8 +386,8 @@ _DEFERRED_OWNERS = (
     "(StoreError::ConflictingContent -- no corruption, no lookahead); multi-filing keying is a "
     "STORAGE-SCHEMA change deferred with the real Sharadar restatement feed (SRS-DATA-005 + "
     "SRS-DATA-016)",
-    "the concrete RecordValidator SYS-77 fundamental field-range rules + the quarantine "
-    "dashboard/notification alert surface (SRS-DATA-013 / SRS-NOTIF-001)",
+    "fundamental field-range validation (SYS-77 names OHLCV and option rules only; SRS-DATA-005) + "
+    "the quarantine dashboard pane and operator notification (SRS-DATA-013)",
 )
 
 

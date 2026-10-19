@@ -470,7 +470,7 @@ impl TieredStore {
     /// surfaces as [`NasSyncStatus::Degraded`] (the SSD write stands), to be reconciled by a later
     /// sync. The SSD lock is released after the SSD save; the NAS push reads a consistent SSD
     /// snapshot (the atomic-publish file), so it needs no SSD lock and cannot deadlock against it.
-    pub fn ingest(
+    pub(crate) fn ingest(
         &self,
         records: impl IntoIterator<Item = MarketDataRecord>,
     ) -> Result<TierIngestOutcome, TierError> {

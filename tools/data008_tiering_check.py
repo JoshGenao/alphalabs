@@ -186,7 +186,8 @@ def check_tiered_store(config: dict, src: str) -> str:
         if _compact(spec[key]) not in compact:
             fail(f"{spec['struct']} must expose `{spec[key]}`")
     return (
-        f"{spec['struct']} exposes the tier API: {spec['ingest_fn']} (SSD-first ingest), "
+        f"{spec['struct']} exposes the tier API: {spec['ingest_fn']} (SSD-first ingest, "
+        "crate-private since SRS-DATA-013 so only the recorded DataLayer paths reach it), "
         f"{spec['sync_fn']} (reconcile), {spec['archive_fn']} (safe archival), "
         f"{spec['report_fn']} (cross-tier verification)"
     )
@@ -379,26 +380,22 @@ def check_ingestion_routing(config: dict, root: Path = ROOT) -> str:
 
       (1) the single validated, tiered write surface `DataLayer::ingest_market_records_tiered`
           (ERR-5 gate + TieredStore SSD-first + NAS sync) exists in lib.rs;
-      (2) EVERY market-data ingestion binary's cmd_ingest SYNCS its SSD write to NAS via the tier —
-          either the encapsulated `ingest_market_records_tiered` (data008_tier_cli) or an explicit
-          `sync_ssd_to_nas_best_effort` after the SSD-first write (data016/data005, which keep their
-          SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization contract on cmd_ingest);
-      (3) an ALL-binaries sweep confirms no binary that durably persists via `save_to_path` does so
-          WITHOUT a paired NAS sync — the ONLY exception is the corporate-action COVERAGE trust
-          assertion (`data011_coverage_cli`), which the tiered surface deliberately REFUSES
-          (MarketIngestError::UnsupportedKind), so it is not provider market-data ingestion. A NEW
-          ingest bin that writes SSD-only therefore trips this guard.
+      (2) EVERY market-data ingestion binary's cmd_ingest writes through the encapsulated
+          `ingest_market_records_tiered` and persists nothing itself — since SRS-DATA-013 that surface
+          also records every batch in the quarantine store before the primary write, so a cmd_ingest
+          that saved the store itself (even with a NAS sync after it) would skip the quarantine run;
+      (3) an ALL-binaries sweep confirms no binary persists via `save_to_path` at all — the ONLY
+          exception is the corporate-action COVERAGE trust assertion (`data011_coverage_cli`), which
+          the tiered surface deliberately REFUSES (MarketIngestError::UnsupportedKind), so it is not
+          provider market-data ingestion. A NEW ingest bin that writes the store directly therefore
+          trips this guard, NAS sync or not.
     """
     spec = contract_block(config).get("ingestion_routing")
     if spec is None:
         fail("tiered_storage_contract is missing the ingestion_routing block")
     surface = spec["tiered_write_surface"]
-    markers = spec["nas_sync_markers"]
     persist = spec["persist_token"]
     coverage_bin = spec["coverage_exception_bin"]
-
-    def syncs_to_nas(text: str) -> bool:
-        return any(marker in text for marker in markers)
 
     # (1) The single validated, tiered write surface is defined on DataLayer.
     lib = lib_source(config, root)
@@ -408,46 +405,56 @@ def check_ingestion_routing(config: dict, root: Path = ROOT) -> str:
             "defined in lib.rs (ERR-5 validation gate + TieredStore SSD-first + NAS sync)"
         )
 
-    # (2) Every market-data ingest bin's cmd_ingest syncs its SSD write to NAS via the tier.
+    # (2) Every market-data ingest bin's cmd_ingest writes ONLY through the tiered surface.
     bins = spec["market_data_ingest_bins"]
     for name in bins:
         body = _strip_comments(_fn_body(bin_source(config, name, root), "cmd_ingest"))
-        if not syncs_to_nas(body):
+        if surface not in body:
             fail(
-                f"{name} cmd_ingest must sync its SSD write to NAS via the tier (one of: "
-                f"{', '.join(markers)}) so ingestion is SSD-first + NAS-synced (SRS-DATA-008), not "
-                "SSD-only"
+                f"{name} cmd_ingest must write through `{surface}` so ingestion is SSD-first + "
+                "NAS-synced (SRS-DATA-008) and every batch is recorded in the quarantine store "
+                "(SRS-DATA-013)"
+            )
+        if persist in body:
+            fail(
+                f"{name} cmd_ingest persists the store itself (`{persist}`) — a write outside the "
+                f"tiered surface skips the SRS-DATA-013 quarantine run; write through `{surface}`"
             )
 
-    # (3) All-bins sweep, scoped so a marker cannot be satisfied by an UNRELATED function. For EVERY
-    #     binary with a cmd_ingest, the marker must appear in the SAME cmd_ingest body that persists —
-    #     a bin whose cmd_ingest saves SSD-only but mentions the sync marker in some other command (e.g.
-    #     cmd_sync) is still an offender. A bin with NO cmd_ingest is checked whole-file (its
-    #     persistence is not an ingest path), with the coverage trust assertion the sole exception.
+    # (3) All-bins sweep: no binary persists the store directly, whatever else it calls. A NAS sync
+    #     after a direct save no longer excuses it — that write skips the quarantine run. The
+    #     coverage trust assertion is the sole exception, and it must still be found persisting, so a
+    #     scan that read nothing cannot pass as a clean tree.
     offenders = []
+    coverage_seen = False
     for path in sorted(bins_dir(config, root).glob("*.rs")):
         code = _strip_comments(path.read_text(encoding="utf-8"))
-        if "fn cmd_ingest" in code:
-            body = _strip_comments(_fn_body(path.read_text(encoding="utf-8"), "cmd_ingest"))
-            if persist in body and not syncs_to_nas(body):
-                offenders.append(path.stem)
-        elif path.stem != coverage_bin and persist in code and not syncs_to_nas(code):
+        if persist not in code:
+            continue
+        if path.stem == coverage_bin:
+            coverage_seen = True
+        else:
             offenders.append(path.stem)
     if offenders:
         fail(
-            f"these binaries durably persist market data (`{persist}`) WITHOUT a paired NAS sync in the "
-            f"same ingest path, an SSD-only bypass of TieredStore: {', '.join(offenders)}. Sync via one "
-            f"of {', '.join(markers)} in cmd_ingest (only {coverage_bin} — the corporate-action COVERAGE "
-            "trust assertion the tiered surface refuses — may persist without a NAS sync)"
+            f"these binaries persist market data directly (`{persist}`), outside the tiered surface "
+            f"that syncs NAS and records the SRS-DATA-013 quarantine run: {', '.join(offenders)}. "
+            f"Write through `{surface}` (only {coverage_bin} — the corporate-action COVERAGE trust "
+            "assertion the tiered surface refuses — may persist directly)"
+        )
+    if not coverage_seen:
+        fail(
+            f"the all-bins sweep did not find {coverage_bin} persisting via `{persist}` — the scan "
+            "found nothing it knows is there, so its clean result proves nothing"
         )
 
     return (
         f"ALL ingestion is SSD-first + NAS-synced: {len(bins)} market-data ingest binaries "
-        f"({', '.join(bins)}) sync their cmd_ingest SSD write to NAS via the tier, and an all-bins "
-        f"sweep (marker required in the SAME cmd_ingest that persists) confirms no binary persists via "
-        f"`{persist}` without a paired NAS sync (only {coverage_bin}, the corporate-action COVERAGE "
-        "trust assertion the tiered surface refuses, persists directly; durable backup of all catalogs "
-        "is SRS-DATA-018)"
+        f"({', '.join(bins)}) write their cmd_ingest only through `{surface}` (which syncs NAS and "
+        f"records the SRS-DATA-013 quarantine run), and an all-bins sweep confirms no other binary "
+        f"persists via `{persist}` (only {coverage_bin}, the corporate-action COVERAGE trust "
+        "assertion the tiered surface refuses, persists directly; durable backup of all catalogs is "
+        "SRS-DATA-018)"
     )
 
 

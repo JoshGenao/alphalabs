@@ -99,6 +99,16 @@ def write_cli_source(config: dict, root: Path = ROOT) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def writer_source(config: dict, root: Path = ROOT) -> str:
+    """The module holding the ONE locked load-modify-save writer (``TieredStore::ingest``)."""
+    block = contract_block(config)
+    module = block["writer_serialization"]["writer_module"]
+    path = _crate_path(config, root) / "src" / f"{module}.rs"
+    if not path.exists():
+        fail(f"source missing: {path.relative_to(root)}")
+    return path.read_text(encoding="utf-8")
+
+
 def cargo_source(config: dict, root: Path = ROOT) -> str:
     path = _crate_path(config, root) / "Cargo.toml"
     if not path.exists():
@@ -177,9 +187,34 @@ def check_inspect_lock_free(config: dict, write_cli_src: str) -> str:
     )
 
 
-def check_writer_serialized(config: dict, write_cli_src: str) -> str:
+def check_cli_routes_through_writer(config: dict, write_cli_src: str) -> str:
+    """The ingest CLI must reach primary storage ONLY through the shared locked writer.
+
+    A second, hand-rolled load-modify-save in the CLI is a second writer: it would need its own lock
+    discipline AND it bypasses the SRS-DATA-013 quarantine run the tiered surface records.
+    """
     spec = contract_block(config)["writer_serialization"]
-    body = _compact(_fn_body(write_cli_src, spec["ingest_fn"]))
+    body = _compact(_fn_body(write_cli_src, spec["cli_ingest_fn"]))
+    if _compact(spec["cli_route_token"]) not in body:
+        fail(
+            f"the ingestion writer (`{spec['cli_ingest_fn']}`) must route through "
+            f"`{spec['cli_route_token']}` -- the single locked, tiered write surface"
+        )
+    if _compact(spec["cli_forbidden_write_token"]) in body:
+        fail(
+            f"the ingestion writer (`{spec['cli_ingest_fn']}`) must not persist the store itself "
+            f"(`{spec['cli_forbidden_write_token']}` found) -- a second writer outside the shared "
+            "locked load-modify-save"
+        )
+    return (
+        f"{contract_block(config)['write_cli_bin']} `{spec['cli_ingest_fn']}` writes ONLY through "
+        f"`{spec['cli_route_token']}` (no `{spec['cli_forbidden_write_token']}` of its own)"
+    )
+
+
+def check_writer_serialized(config: dict, writer_src: str) -> str:
+    spec = contract_block(config)["writer_serialization"]
+    body = _compact(_fn_body(writer_src, spec["ingest_fn"]))
     for key, label in (
         ("acquire_token", "acquire the single-writer StoreLock"),
         ("load_token", "load the existing catalog"),
@@ -212,10 +247,11 @@ def check_writer_serialized(config: dict, write_cli_src: str) -> str:
             "reopens last-publish-wins data loss between concurrent ingestion jobs"
         )
     return (
-        f"{contract_block(config)['write_cli_bin']} `{spec['ingest_fn']}` acquires the single-writer "
-        "StoreLock BEFORE and holds it ACROSS the whole load-modify-save (acquire -> load_from_path -> "
-        "save_to_path, with no premature drop) -- writers are serialized, so a reader never observes a "
-        "half-applied ingestion and two concurrent jobs cannot last-publish-wins over each other"
+        f"{spec['writer_module']}.rs `{spec['ingest_fn']}` (TieredStore::ingest, the shared writer) "
+        "acquires the single-writer StoreLock BEFORE and holds it ACROSS the whole load-modify-save "
+        "(acquire -> load_from_path -> save_to_path, with no premature drop) -- writers are "
+        "serialized, so a reader never observes a half-applied ingestion and two concurrent jobs "
+        "cannot last-publish-wins over each other"
     )
 
 
@@ -372,12 +408,14 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
 # Coverage and entry point
 # --------------------------------------------------------------------------- #
 
-# (name, collector, source-key) -- "store" reads store.rs, "read_cli"/"write_cli" read the operator
-# binaries, "cargo" reads Cargo.toml, "load_test" reads the Rust Load test.
+# (name, collector, source-key) -- "store" reads store.rs, "writer" reads the shared locked writer's
+# module, "read_cli"/"write_cli" read the operator binaries, "cargo" reads Cargo.toml, "load_test"
+# reads the Rust Load test.
 _STATIC_CHECKS = (
     ("read_cli_lock_free", check_read_cli_lock_free, "read_cli"),
     ("inspect_lock_free", check_inspect_lock_free, "write_cli"),
-    ("writer_serialized", check_writer_serialized, "write_cli"),
+    ("cli_routes_through_writer", check_cli_routes_through_writer, "write_cli"),
+    ("writer_serialized", check_writer_serialized, "writer"),
     ("atomic_publish", check_atomic_publish, "store"),
     ("fail_closed_read", check_fail_closed_read, "store"),
     ("single_writer_lock", check_single_writer_lock, "store"),
@@ -407,6 +445,7 @@ def assert_concurrent_read_static(config: dict, root: Path = ROOT) -> list[str]:
         "store": store_source(config, root),
         "read_cli": read_cli_source(config, root),
         "write_cli": write_cli_source(config, root),
+        "writer": writer_source(config, root),
         "cargo": cargo_source(config, root),
         "load_test": load_test_source(config, root),
     }

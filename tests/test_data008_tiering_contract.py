@@ -249,21 +249,42 @@ class IngestionRoutingTest(_Fixture):
     def test_evidence_on_real_tree(self) -> None:
         self.assertIn("ALL ingestion is SSD-first", check_ingestion_routing(self.config))
 
-    def test_explicit_save_plus_best_effort_sync_passes(self) -> None:
-        # The data016/data005 pattern (save_to_path + sync_ssd_to_nas_best_effort) is accepted: an SSD
-        # write paired with a NAS sync is NOT an SSD-only bypass.
+    def test_explicit_save_plus_best_effort_sync_is_caught(self) -> None:
+        # The old data016/data005 pattern (save_to_path + sync_ssd_to_nas_best_effort) synced NAS but
+        # skipped the SRS-DATA-013 quarantine run the tiered surface records, so it is a bypass now.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._write_tree(
                 root,
                 {
                     "data016_ingest_cli": self._good_explicit_sync(),
-                    "data005_fundamental_cli": self._good_explicit_sync(),
+                    "data005_fundamental_cli": self._good_encapsulated(),
                     "data008_tier_cli": self._good_encapsulated(),
                     "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",
                 },
             )
-            self.assertIn("ALL ingestion is SSD-first", check_ingestion_routing(self.config, root))
+            with self.assertRaises(TieringCheckError) as ctx:
+                check_ingestion_routing(self.config, root)
+            self.assertIn("data016_ingest_cli", str(ctx.exception))
+
+    def test_a_sweep_that_cannot_see_the_coverage_writer_fails(self) -> None:
+        # Non-vacuity: the one binary known to persist directly must be found, or "no offenders"
+        # could mean the sweep read nothing.
+        good = self._good_encapsulated()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": good,
+                    "data005_fundamental_cli": good,
+                    "data008_tier_cli": good,
+                    "data011_coverage_cli": "fn main() {}\n",
+                },
+            )
+            with self.assertRaises(TieringCheckError) as ctx:
+                check_ingestion_routing(self.config, root)
+            self.assertIn("data011_coverage_cli", str(ctx.exception))
 
     def test_market_data_bin_that_persists_ssd_only_is_caught(self) -> None:
         good = self._good_encapsulated()
@@ -337,7 +358,7 @@ class IngestionRoutingTest(_Fixture):
                     "data016_ingest_cli": good,
                     "data005_fundamental_cli": good,
                     "data008_tier_cli": good,
-                    "data011_coverage_cli": "fn main() {}\n",
+                    "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",
                 },
             )
             # Remove the single validated + tiered write surface from lib.rs -> guard fails closed.

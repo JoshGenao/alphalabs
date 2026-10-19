@@ -971,7 +971,7 @@ fn io_error(context: &'static str, _err: &io::Error) -> StoreError {
 // Record encode / decode
 // --------------------------------------------------------------------------- //
 
-fn encode_record(body: &mut String, record: &MarketDataRecord) {
+pub(crate) fn encode_record(body: &mut String, record: &MarketDataRecord) {
     push_i128(body, record.key.kind.tag());
     push_str(body, &record.key.symbol);
     push_str(body, &record.key.resolution);
@@ -984,7 +984,7 @@ fn encode_record(body: &mut String, record: &MarketDataRecord) {
     }
 }
 
-fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError> {
+pub(crate) fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError> {
     let kind = DatasetKind::from_tag(cursor.read_i64("dataset kind tag")?)?;
     let symbol = cursor.read_str("symbol")?;
     let resolution = cursor.read_str("resolution")?;
@@ -1020,26 +1020,26 @@ fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError
 // --------------------------------------------------------------------------- //
 
 /// Append `value` as its own line.
-fn push_line(out: &mut String, value: &str) {
+pub(crate) fn push_line(out: &mut String, value: &str) {
     out.push_str(value);
     out.push('\n');
 }
 
 /// Append a decimal integer as its own line.
-fn push_i128(out: &mut String, value: i128) {
+pub(crate) fn push_i128(out: &mut String, value: i128) {
     out.push_str(&value.to_string());
     out.push('\n');
 }
 
 /// Append a non-negative count as its own line.
-fn push_count(out: &mut String, value: usize) {
+pub(crate) fn push_count(out: &mut String, value: usize) {
     out.push_str(&value.to_string());
     out.push('\n');
 }
 
 /// Append a length-prefixed string: the byte length on one line, then the bytes followed by a
 /// newline — so any byte (spaces, an OCC option symbol, etc.) round-trips without escaping.
-fn push_str(out: &mut String, value: &str) {
+pub(crate) fn push_str(out: &mut String, value: &str) {
     out.push_str(&value.len().to_string());
     out.push('\n');
     out.push_str(value);
@@ -1224,13 +1224,13 @@ mod sha256 {
 /// A forward-only cursor over a serialized store's bytes. Reads are exact and fail closed: a missing
 /// newline, a malformed integer, a truncated length-prefixed string, or trailing garbage all
 /// surface as [`StoreError::CorruptRecord`].
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(serialized: &'a str) -> Self {
+    pub(crate) fn new(serialized: &'a str) -> Self {
         Self {
             bytes: serialized.as_bytes(),
             pos: 0,
@@ -1238,12 +1238,12 @@ impl<'a> Cursor<'a> {
     }
 
     /// The not-yet-consumed bytes (used to checksum the body after the header).
-    fn remaining(&self) -> &'a [u8] {
+    pub(crate) fn remaining(&self) -> &'a [u8] {
         &self.bytes[self.pos..]
     }
 
     /// Read up to (and consuming) the next `\n`, returning the line without it.
-    fn read_line(&mut self, context: &'static str) -> Result<&'a str, StoreError> {
+    pub(crate) fn read_line(&mut self, context: &'static str) -> Result<&'a str, StoreError> {
         let start = self.pos;
         while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
             self.pos += 1;
@@ -1256,20 +1256,20 @@ impl<'a> Cursor<'a> {
         std::str::from_utf8(line).map_err(|_| StoreError::CorruptRecord { context })
     }
 
-    fn read_i64(&mut self, context: &'static str) -> Result<i64, StoreError> {
+    pub(crate) fn read_i64(&mut self, context: &'static str) -> Result<i64, StoreError> {
         self.read_line(context)?
             .parse::<i64>()
             .map_err(|_| StoreError::CorruptRecord { context })
     }
 
-    fn read_u64(&mut self, context: &'static str) -> Result<u64, StoreError> {
+    pub(crate) fn read_u64(&mut self, context: &'static str) -> Result<u64, StoreError> {
         self.read_line(context)?
             .parse::<u64>()
             .map_err(|_| StoreError::CorruptRecord { context })
     }
 
     /// Read a non-negative count line (a `usize`).
-    fn read_count(&mut self, context: &'static str) -> Result<usize, StoreError> {
+    pub(crate) fn read_count(&mut self, context: &'static str) -> Result<usize, StoreError> {
         self.read_line(context)?
             .parse::<usize>()
             .map_err(|_| StoreError::CorruptRecord { context })
@@ -1277,7 +1277,7 @@ impl<'a> Cursor<'a> {
 
     /// Read a length-prefixed string: a byte-length line, then exactly that many bytes, then a
     /// terminating `\n`.
-    fn read_str(&mut self, context: &'static str) -> Result<String, StoreError> {
+    pub(crate) fn read_str(&mut self, context: &'static str) -> Result<String, StoreError> {
         let len = self.read_count(context)?;
         let end = self
             .pos
@@ -1294,7 +1294,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Confirm the cursor is exhausted; trailing bytes mean the blob is corrupt.
-    fn expect_end(&self) -> Result<(), StoreError> {
+    pub(crate) fn expect_end(&self) -> Result<(), StoreError> {
         if self.pos == self.bytes.len() {
             Ok(())
         } else {

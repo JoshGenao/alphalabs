@@ -38,6 +38,7 @@ from concurrent_read_check import (  # noqa: E402
     cargo_source,
     check_atomic_publish,
     check_cargo_test_smoke,
+    check_cli_routes_through_writer,
     check_fail_closed_read,
     check_inspect_lock_free,
     check_load_test_present,
@@ -52,6 +53,7 @@ from concurrent_read_check import (  # noqa: E402
     run_checks,
     store_source,
     write_cli_source,
+    writer_source,
 )
 
 
@@ -69,7 +71,8 @@ class ConcurrentReadScriptTest(unittest.TestCase):
         for needle in (
             "data007_query_cli is a lock-free reader",
             "`cmd_inspect` is a lock-free reader",
-            "`cmd_ingest` acquires the single-writer StoreLock BEFORE and holds it ACROSS",
+            "`cmd_ingest` writes ONLY through `ingest_market_records_tiered(`",
+            "`ingest` (TieredStore::ingest, the shared writer) acquires the single-writer StoreLock",
             "publishes atomically",
             "reads fail-closed",
             "single-writer guard",
@@ -86,6 +89,7 @@ class _Fixture(unittest.TestCase):
         self.store_src = store_source(self.config)
         self.read_cli_src = read_cli_source(self.config)
         self.write_cli_src = write_cli_source(self.config)
+        self.writer_src = writer_source(self.config)
         self.cargo_src = cargo_source(self.config)
         self.load_test_src = load_test_source(self.config)
 
@@ -122,24 +126,65 @@ class InspectLockFreeTest(_Fixture):
         self.assertIn("StoreLock::acquire", str(ctx.exception))
 
 
+class CliRoutesThroughWriterTest(_Fixture):
+    def test_evidence(self) -> None:
+        self.assertIn(
+            "writes ONLY through",
+            check_cli_routes_through_writer(self.config, self.write_cli_src),
+        )
+
+    def test_unrouted_cli_is_caught(self) -> None:
+        # An ingest CLI that stops calling the tiered surface has some other way to primary storage.
+        mutated = self.write_cli_src.replace(
+            ".ingest_market_records_tiered(", ".ingest_market_records_elsewhere(", 1
+        )
+        self.assertNotEqual(mutated, self.write_cli_src, "the mutation must change cmd_ingest")
+        with self.assertRaises(ConcurrentReadCheckError) as ctx:
+            check_cli_routes_through_writer(self.config, mutated)
+        self.assertIn("ingest_market_records_tiered(", str(ctx.exception))
+
+    def test_second_writer_in_cli_is_caught(self) -> None:
+        # A hand-rolled save next to the tiered call is a second writer outside the shared lock.
+        mutated = self.write_cli_src.replace(
+            "    let nas_sync = outcome.tier.nas_sync.clone();",
+            "    let nas_sync = outcome.tier.nas_sync.clone();\n"
+            "    MarketDataStore::new().save_to_path(&dir).ok();",
+            1,
+        )
+        self.assertNotEqual(mutated, self.write_cli_src, "the mutation must change cmd_ingest")
+        with self.assertRaises(ConcurrentReadCheckError) as ctx:
+            check_cli_routes_through_writer(self.config, mutated)
+        self.assertIn("save_to_path", str(ctx.exception))
+
+
+_TIER_LOCK_LINE = (
+    "            let _lock = StoreLock::acquire(&self.config.ssd_dir).map_err(TierError::Ssd)?;\n"
+)
+
+
+def _mutate_tier_ingest(writer_src: str, old: str, new: str) -> str:
+    """Replace ``old`` inside ``TieredStore::ingest`` ONLY. The lock line also appears in another
+    tiering.rs function, so a module-wide replace could mutate the wrong writer and prove nothing."""
+    start = writer_src.index("    pub(crate) fn ingest(\n")
+    end = writer_src.index("\n    }\n", start)
+    body = writer_src[start:end]
+    assert body.count(old) == 1, "the anchor must be unique inside TieredStore::ingest"
+    return writer_src[:start] + body.replace(old, new) + writer_src[end:]
+
+
 class WriterSerializedTest(_Fixture):
     def test_evidence(self) -> None:
         self.assertIn(
             "holds it ACROSS the whole load-modify-save",
-            check_writer_serialized(self.config, self.write_cli_src),
+            check_writer_serialized(self.config, self.writer_src),
         )
 
     def test_dropped_writer_lock_is_caught(self) -> None:
-        # Removing the lock from the ingest writer reintroduces last-publish-wins between two jobs.
-        mutated = self.write_cli_src.replace(
-            "    let _lock = StoreLock::acquire(&dir).map_err(|err| err.to_string())?;\n"
-            "    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;\n"
-            "    let (inserted, duplicates) = ingest_batch",
-            "    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;\n"
-            "    let (inserted, duplicates) = ingest_batch",
-            1,
+        # Removing the lock from the shared writer reintroduces last-publish-wins between two jobs.
+        mutated = _mutate_tier_ingest(self.writer_src, _TIER_LOCK_LINE, "")
+        self.assertNotEqual(
+            mutated, self.writer_src, "the mutation must change TieredStore::ingest"
         )
-        self.assertNotEqual(mutated, self.write_cli_src, "the mutation must change cmd_ingest")
         with self.assertRaises(ConcurrentReadCheckError) as ctx:
             check_writer_serialized(self.config, mutated)
         self.assertIn("StoreLock::acquire", str(ctx.exception))
@@ -147,15 +192,12 @@ class WriterSerializedTest(_Fixture):
     def test_premature_lock_drop_is_caught(self) -> None:
         # Acquiring the lock then dropping it BEFORE the load-modify-save passes a naive token-presence
         # check but reopens last-publish-wins data loss; the lifetime check must catch it.
-        mutated = self.write_cli_src.replace(
-            "    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;\n"
-            "    let (inserted, duplicates) = ingest_batch",
-            "    drop(_lock);\n"
-            "    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;\n"
-            "    let (inserted, duplicates) = ingest_batch",
-            1,
+        mutated = _mutate_tier_ingest(
+            self.writer_src, _TIER_LOCK_LINE, _TIER_LOCK_LINE + "            drop(_lock);\n"
         )
-        self.assertNotEqual(mutated, self.write_cli_src, "the mutation must change cmd_ingest")
+        self.assertNotEqual(
+            mutated, self.writer_src, "the mutation must change TieredStore::ingest"
+        )
         with self.assertRaises(ConcurrentReadCheckError) as ctx:
             check_writer_serialized(self.config, mutated)
         self.assertIn("drop(_lock)", str(ctx.exception))
@@ -245,12 +287,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_static_evidence_is_nine_items(self) -> None:
-        self.assertEqual(len(assert_concurrent_read_static(load_config(), ROOT)), 9)
+    def test_static_evidence_is_ten_items(self) -> None:
+        self.assertEqual(len(assert_concurrent_read_static(load_config(), ROOT)), 10)
 
-    def test_run_checks_emits_ten_items(self) -> None:
-        # 9 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 10)
+    def test_run_checks_emits_eleven_items(self) -> None:
+        # 10 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 11)
 
 
 class BehavioralConcurrentReadTest(unittest.TestCase):

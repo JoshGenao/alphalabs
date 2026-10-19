@@ -135,24 +135,27 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
             .map_err(|err| format!("creating {}: {err}", tier.config().nas_dir().display()))?;
     }
 
-    // SSD-FIRST: the durable primary write, serialized behind the single-writer StoreLock held across
-    // the WHOLE load-modify-save. Each record flows through the ERR-5 validation gate before it is
-    // upserted (`DataLayer::ingest_market_record`).
-    let (inserted, duplicates, store_len, count_fundamental) = {
-        let _lock = StoreLock::acquire(&ssd).map_err(|err| err.to_string())?;
-        let mut store = MarketDataStore::load_from_path(&ssd).map_err(|err| err.to_string())?;
-        let (inserted, duplicates) =
-            ingest_fixture(&DataLayer, &mut store, event_ts, available_ts)?;
-        store.save_to_path(&ssd).map_err(|err| err.to_string())?;
-        let count_fundamental = store.count_for_kind(DatasetKind::Fundamental);
-        (inserted, duplicates, store.len(), count_fundamental)
-        // _lock released on scope exit — the NAS sync below reads the SSD snapshot lock-free.
-    };
-
-    // THEN sync the committed SSD snapshot to NAS (the "new data is synced to NAS" half). Best-effort:
-    // an unreachable NAS degrades (the SSD write stands), a reachable-but-broken NAS fails — so there
-    // is no SSD-only ingest path.
-    let nas_sync = tier.sync_ssd_to_nas_best_effort();
+    // A missing SSD directory without --init fails closed HERE: the tier would otherwise create it.
+    MarketDataStore::load_from_path(&ssd).map_err(|err| err.to_string())?;
+    // SSD-FIRST through the single validated, tiered write surface: the ERR-5 gate over the WHOLE
+    // batch, the SRS-DATA-013 quarantine run (recorded before any primary write), then the tier's
+    // locked load-modify-save and its NAS sync. An unreachable NAS degrades (the SSD write stands); a
+    // reachable-but-broken NAS fails.
+    let outcome = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            fixture_records(event_ts, available_ts)?,
+            &Sys77RecordValidator::new(),
+            &NullSink,
+            observed_at(),
+        )
+        .map_err(format_ingest_error)?;
+    let inserted = outcome.tier.ssd_inserted;
+    let duplicates = outcome.tier.ssd_unchanged;
+    let store = MarketDataStore::load_from_path(&ssd).map_err(|err| err.to_string())?;
+    let store_len = store.len();
+    let count_fundamental = store.count_for_kind(DatasetKind::Fundamental);
+    let nas_sync = outcome.tier.nas_sync.clone();
 
     println!("event_ts:{event_ts}");
     println!("available_ts:{available_ts}");
@@ -166,6 +169,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         "nas_store_file:{}",
         tier.config().nas_dir().join(STORE_FILENAME).display()
     );
+    println!("quarantine_run_id:{}", outcome.quarantine.run_id);
+    println!("quarantine_run_finalized:{}", outcome.quarantine.finalized);
 
     // A reachable-but-broken archive is an INTEGRITY failure: exit non-zero so operator automation
     // cannot mistake it for a clean ingest. A Degraded (NAS-unreachable) outcome stays exit 0.
@@ -173,6 +178,13 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         return Err(format!(
             "NAS archival sync FAILED ({reason}): the SSD write committed but the archive is not a \
              superset — investigate the NAS store before relying on indefinite retention"
+        ));
+    }
+    if !outcome.quarantine.finalized {
+        return Err(format!(
+            "quarantine run {} could not be finalized: the SSD write committed but the run still \
+             reads PENDING",
+            outcome.quarantine.run_id
         ));
     }
     Ok(())
@@ -338,6 +350,16 @@ fn print_nas_sync(nas_sync: &NasSyncStatus) {
 /// IN-MEMORY store (the `reingest` idempotency proof), returning (inserted, duplicates_skipped). Each
 /// record flows through the UNCHANGED [`DataLayer::ingest_market_record`] (ERR-5 gate + idempotent
 /// `upsert`). A conflicting re-ingest fails closed (propagated as an error).
+/// The deterministic fixture fundamental bundle as records (all four statements per symbol), in the
+/// order [`ingest_fixture`] applies them.
+fn fixture_records(event_ts: i64, available_ts: i64) -> Result<Vec<MarketDataRecord>, String> {
+    let mut out = Vec::new();
+    for statements in fixture_statements(event_ts, available_ts)? {
+        out.extend(build_fundamental_records(&statements).map_err(|err| err.to_string())?);
+    }
+    Ok(out)
+}
+
 fn ingest_fixture(
     layer: &DataLayer,
     store: &mut MarketDataStore,

@@ -15,14 +15,17 @@
 //! - `inspect --ssd S` — load the primary (SSD) store and list every record present, so an operator
 //!   (or a test) can confirm the quarantined records are ABSENT from the primary tables while the
 //!   valid ones are present.
+//! - `summary --ssd S [--limit N]` — read the newest runs from the durable quarantine store beside
+//!   the SSD primary (`<ssd>/quarantine`): per run, the totals, the primary-write outcome, and the
+//!   count for every SYS-77 reason. This is the read the dashboard's quarantine pane makes; an
+//!   unreadable run is printed as `unreadable` in its place, never skipped.
 //!
 //! Directories resolve fail-closed: explicit `--ssd` / `--nas` win, else the `ATP_SSD_DATA_DIR` /
 //! `ATP_NAS_DATA_DIR` config keys (read here as environment variables). `--event-ts` defaults to a
 //! fixed instant (NOT a clock read) so the demonstration is deterministic and re-runnable.
 //!
-//! Scope: the durable quarantine STORE that persists rejected payloads is SRS-DATA-014 / SRS-DATA-015;
-//! the dashboard alert pane and email/push reason summaries are SRS-UI-001 / SRS-NOTIF-001. This CLI
-//! produces the structured counts-and-reasons those surfaces will consume.
+//! Every ingest is recorded in the quarantine store before the primary write (see
+//! `atp_data::quarantine_store`); `ingest` prints the run id it was recorded under.
 
 use std::env;
 use std::path::PathBuf;
@@ -31,11 +34,17 @@ use std::process::ExitCode;
 use atp_data::ingestion_validation::mixed_validation_fixture;
 use atp_data::store::{DatasetKind, MarketDataStore, STORE_FILENAME};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
-use atp_data::{DataLayer, QuarantineSummarySink, Sys77RecordValidator};
+use atp_data::{
+    DataLayer, PrimaryWrite, QuarantineStore, QuarantineSummarySink, RunRead, Sys77RecordValidator,
+    MAX_RUNS_READ,
+};
 
 /// A fixed default event timestamp (NOT a clock read — keeps the demo deterministic).
 /// 2023-11-14T22:13:20Z.
 const DEFAULT_TS: i64 = 1_700_000_000;
+
+/// How many runs `summary` prints when `--limit` is not given.
+const DEFAULT_SUMMARY_LIMIT: usize = 20;
 
 const USAGE: &str = "\
 data013_ingestion_validation_cli — SRS-DATA-013 / SyRS SYS-77 ingestion-validation workflow
@@ -43,12 +52,14 @@ data013_ingestion_validation_cli — SRS-DATA-013 / SyRS SYS-77 ingestion-valida
 USAGE:
     data013_ingestion_validation_cli ingest  --ssd <path> --nas <path> [--event-ts <ts>]
     data013_ingestion_validation_cli inspect --ssd <path>
+    data013_ingestion_validation_cli summary --ssd <path> [--limit <1-200>]
 
 `ingest` runs a deterministic mixed fixture (valid records + one malformed record per SYS-77 rule)
 through the quarantine-and-continue path: invalid records are quarantined (never written to primary),
 the valid subset is written SSD-first + NAS-synced, and the count and nature of quarantined records
 is printed. `inspect` lists the records present in the primary (SSD) store so absence of the
-quarantined records is verifiable.
+quarantined records is verifiable. `summary` prints the newest runs from the durable quarantine
+store beside the SSD primary, with the count for every SYS-77 reason (default limit 20).
 
 Directories come from --ssd/--nas, else ATP_SSD_DATA_DIR / ATP_NAS_DATA_DIR.
 ";
@@ -72,6 +83,7 @@ fn run(args: &[String]) -> Result<(), String> {
     match command.as_str() {
         "ingest" => cmd_ingest(rest),
         "inspect" => cmd_inspect(rest),
+        "summary" => cmd_summary(rest),
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(())
@@ -85,7 +97,7 @@ fn run(args: &[String]) -> Result<(), String> {
 // --------------------------------------------------------------------------- //
 
 fn cmd_ingest(rest: &[String]) -> Result<(), String> {
-    let parsed = ParsedArgs::parse(rest)?;
+    let parsed = ParsedArgs::parse(rest, &["--ssd", "--nas", "--event-ts"])?;
     let tier = parsed.tier()?;
     let event_ts = parsed.event_ts.unwrap_or(DEFAULT_TS);
 
@@ -133,6 +145,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         "ssd_store_file:{}",
         tier.config().ssd_dir().join(STORE_FILENAME).display()
     );
+    println!("quarantine_run_id:{}", outcome.quarantine.run_id);
+    println!("quarantine_run_finalized:{}", outcome.quarantine.finalized);
 
     // A reachable-but-broken NAS archive is an integrity failure (the SSD write committed but NAS is
     // not a superset). Exit non-zero so operator automation gating on exit status cannot mistake it for
@@ -143,11 +157,57 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
              is not a superset — investigate the NAS store"
         ));
     }
+    // The valid records committed, but the run on disk still reads PENDING (outcome unknown).
+    if !outcome.quarantine.finalized {
+        return Err(format!(
+            "quarantine run {} could not be finalized: the valid records committed to SSD but the run \
+             still reads PENDING",
+            outcome.quarantine.run_id
+        ));
+    }
+    Ok(())
+}
+
+fn cmd_summary(rest: &[String]) -> Result<(), String> {
+    let parsed = ParsedArgs::parse(rest, &["--ssd", "--limit"])?;
+    let ssd = resolve_dir(parsed.ssd.as_deref(), "ATP_SSD_DATA_DIR", "--ssd")?;
+    let limit = parsed.limit.unwrap_or(DEFAULT_SUMMARY_LIMIT);
+    let store = QuarantineStore::beside(&ssd);
+    let latest = store.read_latest(limit).map_err(|err| err.to_string())?;
+
+    println!("quarantine_dir:{}", store.dir().display());
+    println!("total_runs:{}", latest.total_runs);
+    println!("returned:{}", latest.runs.len());
+    println!("truncated:{}", latest.runs.len() < latest.total_runs);
+    for (i, run) in latest.runs.iter().enumerate() {
+        match run {
+            RunRead::Readable(run) => {
+                println!("run_{i}_id:{}", run.run_id);
+                println!("run_{i}_status:readable");
+                println!("run_{i}_recorded_at_millis:{}", run.recorded_at_millis);
+                println!("run_{i}_observed_at_seconds:{}", run.observed_at_seconds);
+                println!("run_{i}_records_in:{}", run.records_in);
+                println!("run_{i}_primary:{}", run.primary.as_str());
+                if let PrimaryWrite::Written { records } = run.primary {
+                    println!("run_{i}_written:{records}");
+                }
+                println!("run_{i}_quarantined_total:{}", run.quarantined_total());
+                for (reason, count) in run.per_reason() {
+                    println!("run_{i}_count_{}:{count}", reason.as_str());
+                }
+            }
+            RunRead::Unreadable { run_id, error } => {
+                println!("run_{i}_id:{run_id}");
+                println!("run_{i}_status:unreadable");
+                println!("run_{i}_error:{error}");
+            }
+        }
+    }
     Ok(())
 }
 
 fn cmd_inspect(rest: &[String]) -> Result<(), String> {
-    let parsed = ParsedArgs::parse(rest)?;
+    let parsed = ParsedArgs::parse(rest, &["--ssd"])?;
     let ssd = resolve_dir(parsed.ssd.as_deref(), "ATP_SSD_DATA_DIR", "--ssd")?;
     let store = MarketDataStore::load_from_path(&ssd).map_err(|err| err.to_string())?;
 
@@ -184,17 +244,24 @@ struct ParsedArgs {
     ssd: Option<String>,
     nas: Option<String>,
     event_ts: Option<i64>,
+    limit: Option<usize>,
 }
 
 impl ParsedArgs {
-    fn parse(rest: &[String]) -> Result<Self, String> {
+    /// Parse `rest`, refusing any flag the subcommand does not declare in `allowed` (an accepted
+    /// but ignored flag reads to the operator as if it took effect).
+    fn parse(rest: &[String], allowed: &[&str]) -> Result<Self, String> {
         let mut parsed = ParsedArgs::default();
         let mut iter = rest.iter();
         while let Some(flag) = iter.next() {
+            if !allowed.contains(&flag.as_str()) {
+                return Err(format!("unknown flag '{flag}'\n\n{USAGE}"));
+            }
             match flag.as_str() {
                 "--ssd" => parsed.ssd = Some(take_value(&mut iter, flag)?),
                 "--nas" => parsed.nas = Some(take_value(&mut iter, flag)?),
                 "--event-ts" => parsed.event_ts = Some(parse_ts(&mut iter, flag)?),
+                "--limit" => parsed.limit = Some(parse_limit(&mut iter, flag)?),
                 other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
             }
         }
@@ -220,6 +287,19 @@ fn parse_ts<'a>(iter: &mut impl Iterator<Item = &'a String>, flag: &str) -> Resu
         return Err(format!("{flag} must be non-negative"));
     }
     Ok(ts)
+}
+
+fn parse_limit<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+    flag: &str,
+) -> Result<usize, String> {
+    let raw = take_value(iter, flag)?;
+    match raw.parse::<usize>() {
+        Ok(limit) if (1..=MAX_RUNS_READ).contains(&limit) => Ok(limit),
+        _ => Err(format!(
+            "{flag} expects an integer from 1 to {MAX_RUNS_READ}, got '{raw}'"
+        )),
+    }
 }
 
 /// Resolve a tier directory: explicit flag, else the named environment config key, else error.

@@ -139,16 +139,28 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     // the WHOLE load-modify-save (the SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization
     // contract). Each record flows through the ERR-5 validation gate before it is upserted. The lock is
     // held to the end of this function; the NAS sync below reads the SSD snapshot lock-free.
-    let _lock = StoreLock::acquire(&dir).map_err(|err| err.to_string())?;
-    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;
-    let (inserted, duplicates) = ingest_batch(&store_layer(), &mut store, kind, event_ts)?;
-    store.save_to_path(&dir).map_err(|err| err.to_string())?;
-    let store_len = store.len();
-
-    // THEN sync the committed SSD snapshot to NAS (the "new data is synced to NAS" half). Best-effort:
-    // an unreachable NAS degrades (the SSD write stands, a later `data008_tier_cli sync` reconciles), a
-    // reachable-but-broken NAS fails — so there is no SSD-only ingest path.
-    let nas_sync = tier.sync_ssd_to_nas_best_effort();
+    //
+    // A missing SSD directory without --init fails closed HERE: the tier would otherwise create it.
+    MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;
+    // The single validated, tiered write surface: the ERR-5 gate over the WHOLE batch, the
+    // SRS-DATA-013 quarantine run (recorded before any primary write), then the tier's locked
+    // load-modify-save and its NAS sync. An unreachable NAS degrades (the SSD write stands, a later
+    // `data008_tier_cli sync` reconciles); a reachable-but-broken NAS fails.
+    let outcome = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            fixture_batch(kind, event_ts),
+            &Sys77RecordValidator::new(),
+            &NullSink,
+            observed_at(),
+        )
+        .map_err(format_ingest_error)?;
+    let inserted = outcome.tier.ssd_inserted;
+    let duplicates = outcome.tier.ssd_unchanged;
+    let store_len = MarketDataStore::load_from_path(&dir)
+        .map_err(|err| err.to_string())?
+        .len();
+    let nas_sync = outcome.tier.nas_sync.clone();
 
     println!("kind:{}", kind.as_str());
     println!("event_ts:{event_ts}");
@@ -161,6 +173,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         "nas_store_file:{}",
         tier.config().nas_dir().join(store_filename()).display()
     );
+    println!("quarantine_run_id:{}", outcome.quarantine.run_id);
+    println!("quarantine_run_finalized:{}", outcome.quarantine.finalized);
 
     // A reachable-but-broken archive (corrupt/conflicting NAS store, lock contention, or an SSD alias)
     // is an INTEGRITY failure: exit NON-ZERO so operator automation gating on exit status cannot
@@ -170,6 +184,13 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         return Err(format!(
             "NAS archival sync FAILED ({reason}): the SSD write committed but the archive is not a \
              superset — investigate the NAS store before relying on indefinite retention"
+        ));
+    }
+    if !outcome.quarantine.finalized {
+        return Err(format!(
+            "quarantine run {} could not be finalized: the SSD write committed but the run still \
+             reads PENDING",
+            outcome.quarantine.run_id
         ));
     }
     Ok(())
