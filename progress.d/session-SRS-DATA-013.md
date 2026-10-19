@@ -117,6 +117,7 @@ WHAT I BUILT
 - The run format is registered in PERSISTED_ENTITIES (quarantine-run, Pinned v1); the DATA-015
   scanner no longer truncates at the first #[cfg(test)].
 
+Adversarial rounds: 6   (5 BLOCK, then APPROVE; landing 1 only)
 REVIEW: 6 Codex rounds (Codex works again: ~/.codex/config.toml pinned gpt-5.5, which the
 account no longer offers; now gpt-6.1-sol). Rounds 1-5 BLOCK, each a real defect, each fixed as
 a class with a mutation-checked test; round 6 APPROVE with no findings.
