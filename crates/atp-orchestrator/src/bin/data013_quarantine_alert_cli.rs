@@ -46,8 +46,8 @@ ENVIRONMENT:
 
 EXIT CODES:
     0  every due run got out on both channels and was stored (or nothing was due)
-    1  a due run's alert did not get out or was not stored, or a settled run's
-       marker could not be written
+    1  a due run's alert did not get out or was not stored, or a settlement
+       marker could not be written or is not valid
     2  bad invocation / unusable configuration / unreadable store
 ";
 
@@ -130,6 +130,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     let mut all_ok = true;
     for alert in &report.alerts {
         all_ok &= print_alert(alert);
+    }
+    for marker in &report.invalid_markers {
+        // Its run was re-examined rather than trusted as settled; the marker needs attention.
+        println!("invalid_marker:{marker}");
+        all_ok = false;
     }
     for error in &report.settle_errors {
         // Nothing is lost (the run stays unsettled and its alerted state is not re-sent).

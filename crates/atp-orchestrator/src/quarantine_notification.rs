@@ -98,6 +98,8 @@ pub struct NotifyReport {
     /// Settlement markers that could not be written. Nothing is lost — the run stays unsettled
     /// and its alerted state is not sent again — but the operator should know.
     pub settle_errors: Vec<String>,
+    /// Markers that are not valid (see [`read_settlement`]): their runs were re-examined.
+    pub invalid_markers: Vec<String>,
 }
 
 /// Why a pass could not run at all.
@@ -138,7 +140,8 @@ pub fn notify_quarantined_runs(
     let audit = NotificationEventStore::load_from_path(store_dir)
         .map_err(NotifyError::NotificationStore)?;
     let alerted = alerted_states(audit.events());
-    let settled = settled_run_ids(store_dir)?;
+    let settlement = read_settlement(store_dir)?;
+    let settled = &settlement.settled;
 
     let mut report = NotifyReport {
         alerts: Vec::new(),
@@ -148,6 +151,7 @@ pub fn notify_quarantined_runs(
         settled_now: 0,
         waiting: 0,
         settle_errors: Vec::new(),
+        invalid_markers: settlement.invalid.clone(),
     };
     // Oldest first, so alerts reach the operator in the order the runs happened.
     for run_id in ids.iter().filter(|id| !settled.contains(*id)) {
@@ -362,33 +366,55 @@ fn recorded_at_from_run_id(run_id: &str) -> Option<u64> {
 // Settlement markers
 // --------------------------------------------------------------------------- //
 
-/// The runs settled so far: every published `<run_id>.settled` marker. A marker is published by
-/// atomic rename, so its name proves it is whole. No markers directory yet means none settled.
-pub fn settled_run_ids(store_dir: &Path) -> Result<BTreeSet<String>, NotifyError> {
+/// The settlement markers: the runs they validly settle, and every marker that is not valid.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settlement {
+    /// Runs with a valid marker.
+    pub settled: BTreeSet<String>,
+    /// Marker names that are not a valid marker for the run they name (not a regular file,
+    /// unreadable, wrong magic or version, or a body naming another run). Their runs are NOT
+    /// settled — they are re-examined, and their alerted state is not re-sent — and the pass
+    /// reports them.
+    pub invalid: Vec<String>,
+}
+
+/// Read every settlement marker. A marker settles its run only when it is a regular file whose
+/// body is exactly the [`SETTLED_MAGIC`] / [`SETTLED_SCHEMA_VERSION`] record naming that run: a
+/// name proves publication, not that the state behind it is valid (a damaged or restored file, a
+/// directory, an unsupported version). No markers directory yet means none settled; a directory
+/// that cannot be listed is an error.
+pub fn read_settlement(store_dir: &Path) -> Result<Settlement, NotifyError> {
     let listing = match std::fs::read_dir(store_dir.join(SETTLED_DIRNAME)) {
         Ok(listing) => listing,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Settlement::default()),
         Err(_) => {
             return Err(NotifyError::Settlement {
                 context: "the markers directory could not be listed",
             })
         }
     };
-    let mut settled = BTreeSet::new();
+    let mut settlement = Settlement::default();
     for entry in listing {
         let entry = entry.map_err(|_| NotifyError::Settlement {
             context: "a markers directory entry could not be read",
         })?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if let Some(id) = name
-            .strip_suffix(&format!(".{SETTLED_EXTENSION}"))
-            .and_then(parse_run_id)
-        {
-            settled.insert(id.to_string());
+        let Some(stem) = name.strip_suffix(&format!(".{SETTLED_EXTENSION}")) else {
+            continue; // scratch files and anything else are not markers
+        };
+        let valid = parse_run_id(stem).is_some()
+            && std::fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_file())
+            && std::fs::read_to_string(entry.path()).is_ok_and(|body| {
+                body == format!("{SETTLED_MAGIC}\n{SETTLED_SCHEMA_VERSION}\n{stem}\n")
+            });
+        if valid {
+            settlement.settled.insert(stem.to_string());
+        } else {
+            settlement.invalid.push(name.to_string());
         }
     }
-    Ok(settled)
+    Ok(settlement)
 }
 
 /// Publish `run_id`'s settlement marker: a per-call unique scratch file (exclusive create),
@@ -563,10 +589,9 @@ mod tests {
                 scope.spawn(|| mark_settled(&dir, id).unwrap());
             }
         });
-        assert_eq!(
-            settled_run_ids(&dir).unwrap(),
-            BTreeSet::from([id.to_string()])
-        );
+        let settlement = read_settlement(&dir).unwrap();
+        assert_eq!(settlement.settled, BTreeSet::from([id.to_string()]));
+        assert!(settlement.invalid.is_empty());
         let markers = dir.join(SETTLED_DIRNAME);
         let names: Vec<String> = std::fs::read_dir(&markers)
             .unwrap()
@@ -581,6 +606,43 @@ mod tests {
         assert_eq!(
             text,
             format!("{SETTLED_MAGIC}\n{SETTLED_SCHEMA_VERSION}\n{id}\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_marker_settles_only_its_own_run_in_the_exact_format() {
+        // Review L2 r3: a name proves publication, not a valid settlement.
+        let dir = std::env::temp_dir().join(format!("atp-qmarkers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let markers = dir.join(SETTLED_DIRNAME);
+        std::fs::create_dir_all(&markers).unwrap();
+        let ids = [
+            "00000001792383193180-0000008791-000000",
+            "00000001792383193181-0000008791-000000",
+            "00000001792383193182-0000008791-000000",
+            "00000001792383193183-0000008791-000000",
+        ];
+        mark_settled(&dir, ids[0]).unwrap();
+        // A body naming another run, an unsupported version, and a directory with a marker name.
+        let marker = |id: &str| markers.join(format!("{id}.{SETTLED_EXTENSION}"));
+        std::fs::write(
+            marker(ids[1]),
+            format!("{SETTLED_MAGIC}\n{SETTLED_SCHEMA_VERSION}\n{}\n", ids[0]),
+        )
+        .unwrap();
+        std::fs::write(marker(ids[2]), format!("{SETTLED_MAGIC}\n2\n{}\n", ids[2])).unwrap();
+        std::fs::create_dir(marker(ids[3])).unwrap();
+        let settlement = read_settlement(&dir).unwrap();
+        assert_eq!(settlement.settled, BTreeSet::from([ids[0].to_string()]));
+        let mut invalid = settlement.invalid.clone();
+        invalid.sort();
+        assert_eq!(
+            invalid,
+            ids[1..]
+                .iter()
+                .map(|id| format!("{id}.{SETTLED_EXTENSION}"))
+                .collect::<Vec<_>>()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

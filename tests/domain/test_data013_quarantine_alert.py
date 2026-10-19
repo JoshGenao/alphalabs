@@ -49,6 +49,7 @@ def _cargo() -> str:
         "an_old_quarantine_run_behind_200_clean_runs_is_still_alerted",
         "a_failed_alert_is_retried_however_many_runs_follow_it",
         "a_run_published_after_newer_runs_settled_is_still_alerted",
+        "a_damaged_marker_cannot_hide_a_run",
     ],
 )
 def test_rust_quarantine_alert_behaviour(rust_test: str) -> None:

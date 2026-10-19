@@ -360,3 +360,33 @@ fn a_run_published_after_newer_runs_settled_is_still_alerted() {
     );
     assert_eq!(sends.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn a_damaged_marker_cannot_hide_a_run() {
+    // Review L2 r3: the marker's NAME alone settled its run. A damaged marker now leaves the run
+    // unsettled and is reported; the run's alerted state is still not re-sent.
+    use atp_orchestrator::quarantine_notification::{SETTLED_DIRNAME, SETTLED_EXTENSION};
+    let (ssd, nas, store) = dirs("damaged_marker");
+    ingest_mixed(&ssd, &nas);
+    let (channels, sends) = channels(false);
+    let notifier = OperatorNotifier::new();
+    let first = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
+    assert_eq!(first.settled_now, 1);
+    let marker = fs::read_dir(store.join(SETTLED_DIRNAME))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == SETTLED_EXTENSION))
+        .unwrap();
+    fs::write(&marker, "damaged").unwrap();
+    let second = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
+    assert_eq!(second.invalid_markers.len(), 1, "{second:?}");
+    assert_eq!(
+        second.examined, 1,
+        "the run is re-examined, not trusted as settled"
+    );
+    assert_eq!(
+        second.already_alerted, 1,
+        "its delivered state is recognised"
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 2, "and not sent again");
+}
