@@ -386,6 +386,19 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         posture: EvolutionPosture::Pinned,
         legacy_unversioned: false,
     },
+    SchemaDescriptor {
+        entity_id: "quarantine-alert-cursor",
+        owner_srs: "SRS-DATA-013",
+        writer_path: "crates/atp-orchestrator/src/quarantine_notification.rs",
+        marker: "CURSOR_SCHEMA_VERSION",
+        magic: Some("ATP-QUARANTINE-ALERT-CURSOR"),
+        current_version: 1,
+        min_supported_version: 1,
+        // The quarantine alert's scan watermark. Versioned from its first byte; a cursor of any
+        // other version is refused (the pass then fails closed rather than guessing).
+        posture: EvolutionPosture::Pinned,
+        legacy_unversioned: false,
+    },
 ];
 
 /// A structural defect in [`PERSISTED_ENTITIES`] itself.

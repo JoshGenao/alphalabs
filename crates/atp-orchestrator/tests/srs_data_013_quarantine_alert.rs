@@ -149,10 +149,16 @@ fn a_quarantine_run_is_alerted_once_with_its_count_and_nature() {
     assert_eq!(audit.events()[0].summary(), summary);
     assert_eq!(sends.load(Ordering::SeqCst), 2);
 
-    // A second pass alerts nothing more: the audit store is the cursor.
+    // A second pass alerts nothing more: the watermark is past the settled run.
     let again = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
     assert!(again.alerts.is_empty(), "{again:?}");
-    assert_eq!(again.already_alerted, 1);
+    assert_eq!(again.examined, 0);
+    // And without the watermark, the audit store still knows the run was alerted.
+    fs::remove_file(store.join(atp_orchestrator::quarantine_notification::CURSOR_FILENAME))
+        .unwrap();
+    let rescanned = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
+    assert!(rescanned.alerts.is_empty(), "{rescanned:?}");
+    assert_eq!(rescanned.already_alerted, 1);
     assert_eq!(sends.load(Ordering::SeqCst), 2, "no second send");
 }
 
@@ -260,4 +266,81 @@ fn an_unreadable_store_is_an_error_not_nothing_due() {
         0,
         "nothing sent without knowing what is due"
     );
+}
+
+/// `n` clean ingest runs (empty batches) after whatever the store already holds.
+fn clean_runs(ssd: &Path, nas: &Path, n: usize) {
+    let tier = TieredStore::new(TierConfig::new(ssd, nas, DEFAULT_HOT_RETENTION_DAYS).unwrap());
+    for _ in 0..n {
+        DataLayer
+            .ingest_market_records_tiered(
+                &tier,
+                Vec::new(),
+                &Sys77RecordValidator::new(),
+                &QuarantineSummarySink::new(),
+                OBSERVED_AT,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn an_old_quarantine_run_behind_200_clean_runs_is_still_alerted() {
+    // Review L2 r1: the pass read only the newest 200 runs, so this run was never examined.
+    let (ssd, nas, store) = dirs("deep");
+    ingest_mixed(&ssd, &nas);
+    clean_runs(&ssd, &nas, 201);
+    let (channels, sends) = channels(false);
+    let report =
+        notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
+    assert_eq!(report.examined, 202);
+    assert_eq!(report.alerts.len(), 1, "{:?}", report.alerts);
+    assert!(matches!(report.alerts[0], RunAlert::Stored { .. }));
+    assert_eq!(sends.load(Ordering::SeqCst), 2);
+    // Everything is settled, so the watermark is the newest run and the next pass reads nothing.
+    let next =
+        notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
+    assert_eq!(next.examined, 0);
+    assert_eq!(next.watermark, report.watermark);
+}
+
+#[test]
+fn a_failed_alert_is_retried_however_many_runs_follow_it() {
+    let (ssd, nas, store) = dirs("outage");
+    ingest_mixed(&ssd, &nas);
+    let notifier = OperatorNotifier::new();
+    let (failing, _) = channels(true);
+    let during_outage = notify_quarantined_runs(&ssd, &store, &notifier, &failing, now()).unwrap();
+    assert_eq!(during_outage.alerts.len(), 1);
+    assert_eq!(
+        during_outage.watermark, None,
+        "an unsettled run holds the watermark"
+    );
+
+    clean_runs(&ssd, &nas, 201);
+    let (working, sends) = channels(false);
+    let recovered = notify_quarantined_runs(&ssd, &store, &notifier, &working, now()).unwrap();
+    assert_eq!(recovered.alerts.len(), 1, "{:?}", recovered.alerts);
+    assert!(matches!(recovered.alerts[0], RunAlert::Stored { .. }));
+    assert_eq!(sends.load(Ordering::SeqCst), 2);
+    assert!(recovered.watermark.is_some());
+}
+
+#[test]
+fn a_corrupt_watermark_fails_closed_before_any_send() {
+    use atp_orchestrator::quarantine_notification::CURSOR_FILENAME;
+    let (ssd, nas, store) = dirs("cursor");
+    ingest_mixed(&ssd, &nas);
+    fs::write(
+        store.join(CURSOR_FILENAME),
+        "ATP-QUARANTINE-ALERT-CURSOR\n1\n1\nx\n",
+    )
+    .unwrap();
+    let (channels, sends) = channels(false);
+    let result = notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now());
+    assert!(
+        matches!(result, Err(NotifyError::Cursor { .. })),
+        "{result:?}"
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
 }

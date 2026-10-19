@@ -339,17 +339,28 @@ impl QuarantineStore {
     /// - SSD present, no quarantine directory yet → no runs (nothing has been ingested here).
     /// - A run file that cannot be read → [`RunRead::Unreadable`] in its place.
     pub fn read_latest(&self, limit: usize) -> Result<LatestRuns, QuarantineStoreError> {
+        let mut ids = self.run_ids()?;
+        ids.reverse();
+        let total_runs = ids.len();
+        let runs = ids
+            .into_iter()
+            .take(limit.min(MAX_RUNS_READ))
+            .map(|id| self.read(&id))
+            .collect();
+        Ok(LatestRuns { total_runs, runs })
+    }
+
+    /// Every published run id, OLDEST first. Lists names only (O(runs)); reads no run file.
+    ///
+    /// Same tri-state as [`read_latest`](Self::read_latest): a missing SSD primary is an error,
+    /// an SSD with no quarantine directory yet has no runs.
+    pub fn run_ids(&self) -> Result<Vec<String>, QuarantineStoreError> {
         if !self.ssd_dir.is_dir() {
             return Err(QuarantineStoreError::PrimaryDirectoryMissing);
         }
         let listing = match fs::read_dir(&self.dir) {
             Ok(listing) => listing,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok(LatestRuns {
-                    total_runs: 0,
-                    runs: Vec::new(),
-                })
-            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(io_err("list quarantine directory", &err)),
         };
         let mut stems: Vec<String> = Vec::new();
@@ -365,20 +376,19 @@ impl QuarantineStore {
             }
         }
         // Run ids lead with a zero-padded millisecond timestamp, so name order is time order.
-        stems.sort_unstable_by(|a, b| b.cmp(a));
-        let total_runs = stems.len();
-        let runs = stems
-            .into_iter()
-            .take(limit.min(MAX_RUNS_READ))
-            .map(|stem| match self.read_run(&stem) {
-                Ok(run) => RunRead::Readable(run),
-                Err(error) => RunRead::Unreadable {
-                    run_id: stem,
-                    error,
-                },
-            })
-            .collect();
-        Ok(LatestRuns { total_runs, runs })
+        stems.sort_unstable();
+        Ok(stems)
+    }
+
+    /// One run by id: the run, or the fact that it could not be read.
+    pub fn read(&self, run_id: &str) -> RunRead {
+        match self.read_run(run_id) {
+            Ok(run) => RunRead::Readable(run),
+            Err(error) => RunRead::Unreadable {
+                run_id: run_id.to_string(),
+                error,
+            },
+        }
     }
 
     fn read_run(&self, stem: &str) -> Result<QuarantineRun, QuarantineStoreError> {
