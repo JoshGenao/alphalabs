@@ -117,7 +117,7 @@ WHAT I BUILT
 - The run format is registered in PERSISTED_ENTITIES (quarantine-run, Pinned v1); the DATA-015
   scanner no longer truncates at the first #[cfg(test)].
 
-Adversarial rounds: 6   (5 BLOCK, then APPROVE; landing 1 only)
+Adversarial rounds: 11   (whole feature so far: landing 1 = rounds 1-6, landing 2 = rounds 7-11)
 REVIEW: 6 Codex rounds (Codex works again: ~/.codex/config.toml pinned gpt-5.5, which the
 account no longer offers; now gpt-6.1-sol). Rounds 1-5 BLOCK, each a real defect, each fixed as
 a class with a mutation-checked test; round 6 APPROVE with no findings.
@@ -138,12 +138,45 @@ PROCESS NOTE: twice I edited the tree while a background CI mirror was running a
 Both runs were stopped and discarded; the green mirror recorded for this landing ran on the
 committed, unedited round-5 tree (5619 passed, every step ran).
 
-Resume / next — landings 2 and 3 (the plan file has the detail):
-  2. Operator notification: TriggerKind::DataQuarantine (severity Error; not suppressible by the
-     MD-005 restart window), store codec tag, data013_quarantine_alert_cli notify (reads unnotified
-     runs, one Email + Push per run with counts and reasons, durable cursor). Owner of running it
-     after every ingestion job: SRS-DATA-001/002.
-  3. Dashboard pane over `summary` (ATP_SSD_DATA_DIR), five visual states, browser evidence +
-     a live Email/Push run on the VM. Then steps 3-4 of the evidence record and the operator's
-     attested close.
-  Do NOT rebuild the store, the write-path recording, or the conflict screening.
+=== SESSION SRS-DATA-013 (2) - landing 2 of 3: operator notification, 2026-10-19 ===
+Outcome: serialized (passes STAYS false). Steps 1-2 re-recorded at the landing-2 head; steps 3-4
+need landing 3.
+
+WHAT I BUILT
+- atp-notification: TriggerKind::DataQuarantine ("DATA_QUARANTINE", severity Error), never
+  suppressed by the MD-005 restart window; store codec tag "Q", schema v4 (reads v3). A store
+  refuses a suppressed data-quarantine event, and a pre-v4 store that claims to hold one.
+- atp-orchestrator/src/operator_channels.rs: the Email + Push channel construction and the
+  placeholder-secret refusal, moved out of notif001_operator_alert_cli so both CLIs share it.
+- atp-orchestrator/src/quarantine_notification.rs + data013_quarantine_alert_cli `notify --ssd
+  --store`: one alert per run state (the run id, N of M records quarantined, each reason's
+  count, and the primary write's outcome), at-least-once. A run is settled by a per-run marker file
+  (quarantine_settled/<id>.settled, validated on read) only once its alert got out on a channel
+  or it was clean. PENDING runs wait out a 5-minute grace period, then alert provisionally; an
+  unreadable run is alerted as unreadable and never settled. Exit 0 ok, 1 when an alert failed,
+  a settle failed, or a marker is invalid, 2 for usage/configuration.
+
+REVIEW (landing 2): rounds 7-11. Rounds 7-9 BLOCK, round 10 WARN, round 11 APPROVE with no
+findings. Each finding fixed as a class with a mutation-checked test.
+  r7  (L2 r1) a run older than the newest 200 fell out of the alert scan
+  r8  (L2 r2) a run published late was skipped by the watermark; two saves shared a scratch
+      name. Replaced the watermark with one settlement marker per run.
+  r9  (L2 r3) a damaged or foreign marker settled its run. Markers are validated on read.
+  r10 (L2 r4) the writer's `{:06}` sequence is a minimum width; the parser wanted exactly six,
+      so from run 1,000,000 every marker read as invalid. durable-writes.md rule 38.
+The 8-round budget ran out after r9; the operator granted one more (recorded in review.jsonl).
+
+VERIFIED: CI mirror green on e22729f (every step ran); deterministic critic APPROVE over
+origin/main..HEAD; evidence steps 1-2 pass (34 domain tests).
+
+KNOWN BOUNDS
+- Nothing runs `notify` automatically yet. Running it after every ingestion job belongs to the
+  ingestion jobs themselves: SRS-DATA-001/002 (both blocked on this feature).
+- Not yet run against the real transports (Brevo email, ntfy push). That is landing 3's live run.
+
+Resume / next - landing 3:
+  Dashboard pane over `data013_ingestion_validation_cli summary` (ATP_SSD_DATA_DIR), five visual
+  states (never configured, store unreadable, no runs yet, clean run, run with quarantines),
+  browser evidence with screenshots + a live Email/Push run on the VM. Then evidence steps 3-4,
+  a fresh whole-feature judgment review, and the operator's attested close.
+  Do NOT rebuild the store, the write-path recording, the conflict screening, or the alerting.

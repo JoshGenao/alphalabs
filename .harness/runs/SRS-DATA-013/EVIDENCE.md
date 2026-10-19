@@ -12,7 +12,6 @@
 
 - step 3 has no evidence: Step 3: Verify acceptance criteria: Records failing structural, range,
 - step 4 has no evidence: Step 4: Record objective evidence from test and leave passes false unt
-- judgment critic approved at 3bbc1ad6, but 2 non-evidence path(s) have changed since (docs/playbooks/durable-writes.md, docs/playbooks/test-integrity.md) — the approval describes code this close would not ship. Re-run the judgment review.
 - verification_method is 'e2e' but no image artifact is attached to step 3 — its acceptance criterion is about what a reviewer can SEE. Attach one: `tools/evidence.py artifact SRS-DATA-013 --step 3 --file <screenshot.png> --caption '...'`
 
 ## Acceptance criterion
@@ -72,14 +71,14 @@ Step 2: Exercise SRS-DATA-013 using CLI/API workflows with fixture market data, 
 `pass` · exit `0` · executed by the tool
 
 ```
-.venv/bin/python -m pytest -q -p no:cacheprovider tests/domain/test_data013_quarantine_store.py tests/domain/test_data013_ingestion_validation.py
+.venv/bin/python -m pytest -q -p no:cacheprovider tests/domain/test_data013_quarantine_store.py tests/domain/test_data013_ingestion_validation.py tests/domain/test_data013_quarantine_alert.py
 ```
 
 <details><summary>observed output (tail)</summary>
 
 ```
-......................                                                   [100%]
-22 passed in 2.52s
+..................................                                       [100%]
+34 passed in 21.08s
 ```
 
 </details>
