@@ -93,6 +93,9 @@ pub const RUN_EXTENSION: &str = "qrun";
 const SCRATCH_PREFIX: &str = ".scratch-";
 /// The most run files one [`QuarantineStore::read_latest`] call will parse, whatever it is asked.
 pub const MAX_RUNS_READ: usize = 200;
+/// A run id's sequence part is zero-padded to at least this many digits, and grows past them
+/// (sequence 1,000,000 is seven). [`parse_run_id`] accepts every width the writer can emit.
+const RUN_SEQ_MIN_WIDTH: usize = 6;
 
 static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -291,9 +294,10 @@ impl QuarantineStore {
             .map_err(|err| io_err("create quarantine directory", &err))?;
         let recorded_at_millis = now_millis()?;
         let run_id = format!(
-            "{recorded_at_millis:020}-{:010}-{:06}",
+            "{recorded_at_millis:020}-{:010}-{:0width$}",
             std::process::id(),
-            RUN_SEQ.fetch_add(1, Ordering::Relaxed)
+            RUN_SEQ.fetch_add(1, Ordering::Relaxed),
+            width = RUN_SEQ_MIN_WIDTH,
         );
         let run = QuarantineRun {
             run_id,
@@ -375,8 +379,12 @@ impl QuarantineStore {
                 stems.push(stem.to_string());
             }
         }
-        // Run ids lead with a zero-padded millisecond timestamp, so name order is time order.
-        stems.sort_unstable();
+        // Oldest first, by the id's numbers: name order is not run order once a sequence outgrows
+        // its padding ("1000000" sorts before "999999"). A stem that is not a run id sorts last.
+        stems.sort_unstable_by(|a, b| {
+            let (ka, kb) = (run_id_parts(a), run_id_parts(b));
+            (ka.is_none(), ka, a).cmp(&(kb.is_none(), kb, b))
+        });
         Ok(stems)
     }
 
@@ -405,19 +413,31 @@ impl QuarantineStore {
     }
 }
 
-/// `text` if it is exactly a run id this store mints — `<20-digit millis>-<10-digit pid>-<6-digit
-/// seq>` — else `None`. Consumers that carry a run id in free text (the operator notification's
-/// summary) parse it back through this, so the format has one owner.
+/// `text` if it is exactly a run id this store mints — `<20-digit millis>-<10-digit pid>-<seq>`,
+/// the seq zero-padded to at least six digits — else `None`. Consumers that carry a run id in free
+/// text (the operator notification's summary) parse it back through this, so the format has one
+/// owner.
 pub fn parse_run_id(text: &str) -> Option<&str> {
-    let mut parts = text.split('-');
-    let shape = [20usize, 10, 6];
-    for width in shape {
-        let part = parts.next()?;
-        if part.len() != width || !part.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+    run_id_parts(text).map(|_| text)
+}
+
+/// A run id's `(millis, pid, seq)`, if `text` is exactly one the writer can emit: each part in
+/// range for its type, and one spelling per number (a seq wider than its padding has no leading
+/// zero).
+fn run_id_parts(text: &str) -> Option<(u64, u32, u64)> {
+    fn digits(part: &str) -> Option<&str> {
+        (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())).then_some(part)
     }
-    parts.next().is_none().then_some(text)
+    let mut parts = text.split('-');
+    let millis = digits(parts.next()?).filter(|p| p.len() == 20)?;
+    let pid = digits(parts.next()?).filter(|p| p.len() == 10)?;
+    let seq = digits(parts.next()?).filter(|p| {
+        p.len() == RUN_SEQ_MIN_WIDTH || (p.len() > RUN_SEQ_MIN_WIDTH && !p.starts_with('0'))
+    })?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((millis.parse().ok()?, pid.parse().ok()?, seq.parse().ok()?))
 }
 
 /// Which quarantine run recorded an ingestion batch, and whether its outcome reached disk.
@@ -982,9 +1002,72 @@ mod tests {
             "0000000179238319318x-0000008791-000000",
             "1792383193180-8791-0",
             " 00000001792383193180-0000008791-000000",
+            // Review L2 r4: one spelling per number, and every part in range for its type.
+            "00000001792383193180-0000008791-0999999",
+            "00000001792383193180-0000008791-00000",
+            "00000001792383193180-0000008791-",
+            "00000001792383193180-0000008791-18446744073709551616",
+            "00000001792383193180-4294967296-000000",
+            "99999999999999999999-0000008791-000000",
         ] {
             assert_eq!(parse_run_id(bad), None, "{bad:?}");
         }
+        for good in [
+            "00000001792383193180-0000008791-999999",
+            "00000001792383193180-0000008791-1000000",
+            "00000001792383193180-0000008791-18446744073709551615",
+            "18446744073709551615-4294967295-000000",
+        ] {
+            assert_eq!(parse_run_id(good), Some(good), "{good:?}");
+        }
+        let _ = fs::remove_dir_all(&ssd);
+    }
+
+    #[test]
+    fn a_sequence_past_its_padding_is_minted_parsed_and_read() {
+        // Review L2 r4: the writer's `{:06}` is a MINIMUM width. Push the shared sequence past it
+        // and mint through the real writer: the ids must still parse and their runs still read.
+        RUN_SEQ.fetch_max(999_999, Ordering::Relaxed);
+        let ssd = scratch_dir("wide-seq");
+        let store = QuarantineStore::beside(&ssd);
+        let ids: Vec<String> = (0..2)
+            .map(|_| {
+                let handle = store
+                    .begin(1, 1, Vec::new(), PrimaryWrite::Refused)
+                    .unwrap();
+                handle.run().run_id.clone()
+            })
+            .collect();
+        let seq = ids[1].rsplit('-').next().unwrap();
+        assert!(seq.len() > RUN_SEQ_MIN_WIDTH, "{}", ids[1]);
+        for id in &ids {
+            assert_eq!(parse_run_id(id), Some(id.as_str()));
+            assert!(matches!(store.read(id), RunRead::Readable(_)), "{id}");
+        }
+        assert_eq!(store.run_ids().unwrap(), ids);
+        let _ = fs::remove_dir_all(&ssd);
+    }
+
+    #[test]
+    fn run_ids_are_in_run_order_past_the_sequence_padding() {
+        // Name order is not run order once a sequence outgrows its padding.
+        let ssd = scratch_dir("seq-order");
+        let dir = ssd.join(QUARANTINE_DIRNAME);
+        fs::create_dir_all(&dir).unwrap();
+        let names = [
+            "00000001792383193180-0000008791-1000000",
+            "00000001792383193180-0000008791-999999",
+            "00000001792383193179-0000008791-1000001",
+            "not-a-run",
+        ];
+        for name in names {
+            fs::write(dir.join(format!("{name}.{RUN_EXTENSION}")), "").unwrap();
+        }
+        let store = QuarantineStore::beside(&ssd);
+        assert_eq!(
+            store.run_ids().unwrap(),
+            vec![names[2], names[1], names[0], names[3]]
+        );
         let _ = fs::remove_dir_all(&ssd);
     }
 

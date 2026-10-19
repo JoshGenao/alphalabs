@@ -196,3 +196,9 @@ each found a path where the primary write could happen, or fail, without that re
     error or a crash. Pass the recorder into the writer as a callback; if it fails, write
     nothing. And screen against everything the key can live in — an archived (NAS-only) key
     passed an SSD-only check. `(DATA-013 r3, r4, r5)`
+38. **`{:06}` is a MINIMUM width, not a fixed one.** A file name minted with a padded counter
+    grows past its padding, so a reader that wants exactly six digits rejects the writer's own
+    output from 1,000,000 on, and name order stops being numeric order ("1000000" < "999999").
+    Keep the width in one constant both sides use, parse each part as a number in range for
+    its type, and sort by the parsed numbers. Test the boundary through the real writer.
+    `(DATA-013 L2 r4)`

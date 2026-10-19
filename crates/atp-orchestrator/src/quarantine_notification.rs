@@ -472,6 +472,29 @@ mod tests {
         assert_eq!(recorded_at_from_run_id(id), Some(1_792_383_193_180));
     }
 
+    #[test]
+    fn a_sequence_past_its_padding_settles_and_names_its_run() {
+        // Review L2 r4: the writer pads the sequence to six digits and grows past them. A reader
+        // that wanted exactly six read every marker from run 1,000,000 on as invalid.
+        let dir = std::env::temp_dir().join(format!("atp-qwide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ids = [
+            "00000001792383193180-0000008791-999999",
+            "00000001792383193180-0000008791-1000000",
+        ];
+        for id in ids {
+            mark_settled(&dir, id).unwrap();
+            let summary = format!("{RUN_SUMMARY_PREFIX}{id}: 1 of 1 records quarantined");
+            assert_eq!(run_id_in_summary(&summary), Some(id));
+            assert_eq!(recorded_at_from_run_id(id), Some(1_792_383_193_180));
+        }
+        let settlement = read_settlement(&dir).unwrap();
+        assert!(settlement.invalid.is_empty(), "{:?}", settlement.invalid);
+        assert_eq!(settlement.settled, BTreeSet::from(ids.map(str::to_string)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn run(primary: PrimaryWrite, recorded_at_millis: u64, quarantined: usize) -> QuarantineRun {
         let record =
             atp_data::ingestion_validation::mixed_validation_fixture(1_700_000_000).remove(0);
