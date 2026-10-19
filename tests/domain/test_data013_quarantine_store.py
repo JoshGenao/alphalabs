@@ -169,6 +169,9 @@ def test_a_corrupt_catalog_still_records_the_rejects_it_had_classified() -> None
         "tiered_path_records_a_conflicting_reingest_with_its_payload",
         "tiered_path_catches_a_conflict_within_the_batch_under_the_lock",
         "quarantining_path_sets_aside_a_conflict_the_tier_finds_and_writes_the_rest",
+        # Review r4: conflicts are recorded under the lock BEFORE the primary save.
+        "a_conflict_that_cannot_be_recorded_writes_nothing",
+        "a_primary_save_failure_after_a_conflict_keeps_the_conflict_recorded",
     ],
 )
 def test_a_conflicting_reingest_is_quarantined_with_its_payload(rust_test: str) -> None:

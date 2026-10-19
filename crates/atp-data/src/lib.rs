@@ -311,7 +311,12 @@ impl From<StoreError> for MarketIngestError {
 
 impl From<TierError> for MarketIngestError {
     fn from(error: TierError) -> Self {
-        Self::Tier(error)
+        match error {
+            // The tier refused to write because the conflicts could not be quarantined: that is a
+            // quarantine failure, reported as one.
+            TierError::ConflictsNotRecorded(unrecorded) => Self::Quarantine(unrecorded),
+            other => Self::Tier(other),
+        }
     }
 }
 
@@ -485,7 +490,7 @@ impl DataLayer {
             return Err(quarantine.refuse(observed_at_seconds, records_in, quarantined, error));
         }
         let count = validated.len();
-        let run = quarantine.begin(
+        let mut run = quarantine.begin(
             observed_at_seconds,
             records_in,
             Vec::new(),
@@ -494,7 +499,9 @@ impl DataLayer {
         // SSD-FIRST durable write, THEN NAS sync — the tier owns the ordering and the SSD
         // single-writer lock. This is the ONLY durable market-data write in this method, and it is
         // tiered by construction.
-        let screened = match tier.ingest(validated, OnConflict::RefuseBatch) {
+        let screened = match tier.ingest(validated, OnConflict::RefuseBatch, |conflicts| {
+            run.record_conflicts(conflicts, events)
+        }) {
             Ok(screened) => screened,
             Err(error) => {
                 run.primary_write_failed(&error);
@@ -504,7 +511,7 @@ impl DataLayer {
         // A conflicting re-ingest (same key, different content) passes the batch-scoped validator
         // and is caught by the tier under its writer lock: refused, with its payload recorded.
         let Some(tier_outcome) = screened.written else {
-            return Err(run.refuse_conflicts(screened.conflicts, events));
+            return Err(run.refuse_conflicts(&screened.conflicts));
         };
         let receipt = run.finish_receipt(PrimaryWrite::Written {
             records: count as u64,

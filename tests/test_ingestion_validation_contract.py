@@ -447,7 +447,7 @@ class EveryExitIsRecordedTest(unittest.TestCase):
         # Review r3: a conflicting re-ingest must be recorded on the run before the refusal.
         sources = self._mutated(
             "lib.rs",
-            "return Err(run.refuse_conflicts(screened.conflicts, events));",
+            "return Err(run.refuse_conflicts(&screened.conflicts));",
             "return Err(MarketIngestError::Tier(crate::tiering::TierError::Nas(todo!())));",
         )
         with self.assertRaises(IngestionValidationCheckError):

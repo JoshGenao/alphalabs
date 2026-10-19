@@ -20,10 +20,11 @@
 //!
 //! ```compile_fail
 //! use atp_data::tiering::{OnConflict, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
+//! use atp_data::QuarantineStoreError;
 //! let tier = TieredStore::new(TierConfig::new("/ssd", "/nas", DEFAULT_HOT_RETENTION_DAYS).unwrap());
 //! // error[E0624]: method `ingest` is private — no unrecorded write to the SSD primary. (The call
 //! // is otherwise well-formed, so making `ingest` public makes this compile and the test fail.)
-//! let _ = tier.ingest(Vec::new(), OnConflict::RefuseBatch);
+//! let _ = tier.ingest(Vec::new(), OnConflict::RefuseBatch, |_| Ok::<(), QuarantineStoreError>(()));
 //! ```
 //!
 //! while the same tier through a recorded path compiles:
@@ -463,16 +464,16 @@ impl RunHandle {
         Ok(self.run)
     }
 
-    /// Add the conflicting re-ingests the tier set aside under its writer lock to this run, as
-    /// `DuplicateRecord` entries with their full payloads, emitting one ERR-5 event each through
-    /// `events` (so a counts sink agrees with the run). Returns the records, in order.
-    pub(crate) fn set_aside_conflicts<S: crate::IngestionValidationEventSink>(
+    /// Record the conflicting re-ingests the tier found under its writer lock: each joins this run
+    /// as a `DUPLICATE_RECORD` entry with its full payload, one ERR-5 event is emitted per conflict
+    /// (so a counts sink agrees with the run), and the run is re-published — still `PENDING` —
+    /// before the tier saves anything. The tier writes nothing if this fails.
+    pub(crate) fn record_conflicts<S: crate::IngestionValidationEventSink>(
         &mut self,
-        conflicts: Vec<MarketDataRecord>,
+        conflicts: &[MarketDataRecord],
         events: &S,
-    ) -> Vec<MarketDataRecord> {
+    ) -> Result<(), QuarantineStoreError> {
         let reason = QuarantineReason::DuplicateRecord;
-        let mut records = Vec::with_capacity(conflicts.len());
         for record in conflicts {
             let submission = record.ingestion_submission();
             events.record(atp_types::IngestionValidationEvent {
@@ -488,19 +489,17 @@ impl RunHandle {
                 record_hash: submission.record_hash,
                 record: record.clone(),
             });
-            records.push(record);
         }
-        records
+        self.publish()
     }
 
-    /// Record a batch the tier refused for conflicting re-ingests: every conflict joins the run as
-    /// a `DuplicateRecord` entry and the run is finished `REFUSED` (nothing was written). Returns the
-    /// error the caller reports — the store's conflict error for the first conflict — or the
-    /// quarantine error if the run cannot be finished.
-    pub(crate) fn refuse_conflicts<S: crate::IngestionValidationEventSink>(
-        mut self,
-        conflicts: Vec<MarketDataRecord>,
-        events: &S,
+    /// Finish a run whose batch the tier refused for conflicting re-ingests (already recorded by
+    /// [`record_conflicts`](Self::record_conflicts)) as `REFUSED`. Returns the error the caller
+    /// reports — the store's conflict error for the first conflict — or the quarantine error if the
+    /// run cannot be finished.
+    pub(crate) fn refuse_conflicts(
+        self,
+        conflicts: &[MarketDataRecord],
     ) -> crate::MarketIngestError {
         let error = match conflicts.first() {
             Some(first) => crate::store::MarketDataStore::conflict_error(first),
@@ -508,7 +507,6 @@ impl RunHandle {
                 context: "the tier refused a batch without naming a conflict",
             },
         };
-        self.set_aside_conflicts(conflicts, events);
         match self.finish(PrimaryWrite::Refused) {
             Ok(_) => crate::MarketIngestError::Tier(crate::tiering::TierError::Ssd(error)),
             Err(unrecorded) => crate::MarketIngestError::Quarantine(unrecorded),

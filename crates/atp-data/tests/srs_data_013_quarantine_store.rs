@@ -408,3 +408,110 @@ fn quarantining_path_sets_aside_a_conflict_the_tier_finds_and_writes_the_rest() 
     assert_eq!(run.count(QuarantineReason::DuplicateRecord), 1);
     assert_eq!(run.entries[0].record, conflicting);
 }
+
+/// Fault injection for the writer-locked conflict step: when the conflict's ERR-5 event fires
+/// (inside `record_conflicts`, under the tier's lock, before anything is saved), make `dir`
+/// read-only. Unix permissions; the caller checks they are actually enforced.
+#[cfg(unix)]
+struct ReadOnlyOnEvent(PathBuf);
+
+#[cfg(unix)]
+impl IngestionValidationEventSink for ReadOnlyOnEvent {
+    fn record(&self, _event: IngestionValidationEvent) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&self.0, fs::Permissions::from_mode(0o555)).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn make_writable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o755));
+}
+
+/// Read-only directories do not stop root; such a run cannot inject these faults.
+#[cfg(unix)]
+fn read_only_is_enforced(scratch: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = scratch.join("probe");
+    fs::create_dir_all(&probe).unwrap();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
+    let enforced = fs::write(probe.join("x"), b"x").is_err();
+    make_writable(&probe);
+    let _ = fs::remove_dir_all(&probe);
+    enforced
+}
+
+#[cfg(unix)]
+#[test]
+fn a_conflict_that_cannot_be_recorded_writes_nothing() {
+    let (ssd, nas) = tier_dirs("fault_record");
+    let tier = tier(&ssd, &nas);
+    if !read_only_is_enforced(ssd.parent().unwrap()) {
+        eprintln!("SKIPPED: read-only directories are not enforced for this user");
+        return;
+    }
+    let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+    let mut batch = original.clone();
+    batch.push(restated(&original[0]));
+    let quarantine_dir = ssd.join(QUARANTINE_DIRNAME);
+    let result = DataLayer.ingest_market_records_quarantining(
+        &tier,
+        batch,
+        &AcceptAll,
+        &ReadOnlyOnEvent(quarantine_dir.clone()),
+        OBSERVED_AT,
+    );
+    make_writable(&quarantine_dir);
+    let err = result.expect_err("an unrecordable conflict refuses the write");
+    assert!(
+        matches!(err, MarketIngestError::Quarantine(_)),
+        "got {err:?}"
+    );
+    assert!(
+        !ssd.join(STORE_FILENAME).exists(),
+        "nothing reached primary: the conflict is recorded BEFORE the save"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_primary_save_failure_after_a_conflict_keeps_the_conflict_recorded() {
+    let (ssd, nas) = tier_dirs("fault_save");
+    let tier = tier(&ssd, &nas);
+    if !read_only_is_enforced(ssd.parent().unwrap()) {
+        eprintln!("SKIPPED: read-only directories are not enforced for this user");
+        return;
+    }
+    let original = fixture_batch(DatasetKind::DailyEquityBar, TS);
+    let conflicting = restated(&original[0]);
+    let mut batch = original.clone();
+    batch.push(conflicting.clone());
+    // The SSD directory goes read-only once the conflict is found: the quarantine directory
+    // beneath it stays writable, the primary save cannot create its scratch file.
+    let result = DataLayer.ingest_market_records_quarantining(
+        &tier,
+        batch,
+        &AcceptAll,
+        &ReadOnlyOnEvent(ssd.clone()),
+        OBSERVED_AT,
+    );
+    make_writable(&ssd);
+    let err = result.expect_err("the primary save fails");
+    assert!(
+        matches!(err, MarketIngestError::Tier(TierError::Ssd(_))),
+        "got {err:?}"
+    );
+    let run = only_run(&ssd);
+    assert_eq!(
+        run.primary,
+        PrimaryWrite::Failed,
+        "the save failed before its rename"
+    );
+    assert_eq!(run.count(QuarantineReason::DuplicateRecord), 1);
+    assert_eq!(
+        run.entries[0].record, conflicting,
+        "the conflict's payload survived"
+    );
+    assert!(!ssd.join(STORE_FILENAME).exists());
+}

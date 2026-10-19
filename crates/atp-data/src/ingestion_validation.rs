@@ -512,7 +512,9 @@ impl DataLayer {
         // SRS-DATA-008 tier. Quarantined records are absent, so they never reach the primary tables.
         // A conflict the pre-pass above could not see (a concurrent writer) is set aside by the
         // tier under its writer lock and quarantined here with its payload.
-        let screened = match tier.ingest(to_write, OnConflict::SetAside) {
+        let screened = match tier.ingest(to_write, OnConflict::SetAside, |conflicts| {
+            run.record_conflicts(conflicts, events)
+        }) {
             Ok(screened) => screened,
             Err(error) => {
                 run.primary_write_failed(&error);
@@ -520,10 +522,11 @@ impl DataLayer {
             }
         };
         let Some(tier_outcome) = screened.written else {
-            return Err(run.refuse_conflicts(screened.conflicts, events));
+            return Err(run.refuse_conflicts(&screened.conflicts));
         };
         let written = tier_outcome.ssd_inserted + tier_outcome.ssd_unchanged;
-        quarantined_records.extend(run.set_aside_conflicts(screened.conflicts, events));
+        // Already recorded on the run (under the tier's lock, before its save).
+        quarantined_records.extend(screened.conflicts);
         let quarantine = run.finish_receipt(PrimaryWrite::Written {
             records: written as u64,
         });

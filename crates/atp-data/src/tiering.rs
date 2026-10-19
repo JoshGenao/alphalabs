@@ -154,6 +154,9 @@ pub enum TierError {
     /// [`NasSyncStatus`] (`Degraded` if unreachable, `Failed` if reachable-but-broken) without losing
     /// the committed SSD write.
     Nas(StoreError),
+    /// SRS-DATA-013: the conflicting records this ingest set aside could not be recorded in the
+    /// quarantine store, so nothing was written (they are recorded BEFORE the primary save).
+    ConflictsNotRecorded(crate::quarantine_store::QuarantineStoreError),
 }
 
 impl TierError {
@@ -164,7 +167,9 @@ impl TierError {
         match self {
             Self::Ssd(error) => error.may_have_published(),
             Self::Nas(_) => true,
-            Self::HotRetentionBelowFloor { .. } | Self::TiersNotDistinct { .. } => false,
+            Self::HotRetentionBelowFloor { .. }
+            | Self::TiersNotDistinct { .. }
+            | Self::ConflictsNotRecorded(_) => false,
         }
     }
 }
@@ -183,6 +188,10 @@ impl fmt::Display for TierError {
             ),
             Self::Ssd(err) => write!(f, "SSD (primary) tier error: {err}"),
             Self::Nas(err) => write!(f, "NAS (archival) tier error: {err}"),
+            Self::ConflictsNotRecorded(err) => write!(
+                f,
+                "conflicting records could not be quarantined, so nothing was written: {err}"
+            ),
         }
     }
 }
@@ -510,10 +519,18 @@ impl TieredStore {
     /// upserted, and returned in [`ScreenedIngest::conflicts`] so the caller can quarantine its
     /// payload. Under [`OnConflict::RefuseBatch`] any conflict refuses the whole batch and nothing
     /// is written; under [`OnConflict::SetAside`] the rest of the batch is written.
+    ///
+    /// `record_conflicts` is called with the conflicts while the lock is still held and BEFORE
+    /// anything is saved; if it fails, nothing is written ([`TierError::ConflictsNotRecorded`]).
+    /// So a save failure or a crash after this point can never lose a conflict's payload.
     pub(crate) fn ingest(
         &self,
         records: impl IntoIterator<Item = MarketDataRecord>,
         on_conflict: OnConflict,
+        record_conflicts: impl FnOnce(
+            &[MarketDataRecord],
+        )
+            -> Result<(), crate::quarantine_store::QuarantineStoreError>,
     ) -> Result<ScreenedIngest, TierError> {
         let batch: Vec<MarketDataRecord> = records.into_iter().collect();
         let mut conflicts: Vec<MarketDataRecord> = Vec::new();
@@ -541,6 +558,9 @@ impl TieredStore {
                     crate::store::UpsertOutcome::Inserted => inserted += 1,
                     crate::store::UpsertOutcome::UnchangedDuplicate => unchanged += 1,
                 }
+            }
+            if !conflicts.is_empty() {
+                record_conflicts(&conflicts).map_err(TierError::ConflictsNotRecorded)?;
             }
             if on_conflict == OnConflict::RefuseBatch && !conflicts.is_empty() {
                 // Refused: the in-memory upserts are discarded and nothing is saved.
