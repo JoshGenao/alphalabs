@@ -187,7 +187,11 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         // asserting a destination acknowledgement the IF-10 path never
         // established, so reading one forward would import exactly the false
         // claim the split removes.
-        current_version: 3,
+        //
+        // v4 (2026-10-19): TriggerKind::DataQuarantine (trigger tag "Q",
+        // SRS-DATA-013). Additive — a v3 blob cannot contain the tag — so the
+        // minimum stays at 3.
+        current_version: 4,
         min_supported_version: 3,
         posture: EvolutionPosture::Ranged,
         legacy_unversioned: false,

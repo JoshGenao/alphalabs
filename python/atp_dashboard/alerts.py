@@ -75,7 +75,8 @@ ALERT_FIELDS: tuple[str, ...] = (
 )
 
 #: The severity vocabulary of the SRS-NOTIF-001 trigger set (``event.rs``):
-#: ``CRITICAL_FAILURE`` -> CRITICAL, ``IB_CONNECTIVITY_LOSS`` -> ERROR.
+#: ``CRITICAL_FAILURE`` -> CRITICAL, ``IB_CONNECTIVITY_LOSS`` -> ERROR,
+#: ``DATA_QUARANTINE`` (SRS-DATA-013) -> ERROR.
 ALERT_SEVERITIES: tuple[str, ...] = ("CRITICAL", "ERROR")
 
 

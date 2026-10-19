@@ -248,9 +248,11 @@ impl OperatorNotifier {
             });
         }
 
-        // A critical failure is never suppressed, whatever the caller passes.
+        // Only a connectivity loss can be suppressed (the SYS-75 restart window). A
+        // critical failure and a data quarantine always notify, whatever the caller
+        // passes.
         let effective_suppression = match trigger.kind() {
-            TriggerKind::CriticalFailure => None,
+            TriggerKind::CriticalFailure | TriggerKind::DataQuarantine => None,
             TriggerKind::ConnectivityLoss => suppression,
         };
 

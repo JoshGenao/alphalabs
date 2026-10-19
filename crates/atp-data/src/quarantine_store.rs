@@ -395,6 +395,21 @@ impl QuarantineStore {
     }
 }
 
+/// `text` if it is exactly a run id this store mints — `<20-digit millis>-<10-digit pid>-<6-digit
+/// seq>` — else `None`. Consumers that carry a run id in free text (the operator notification's
+/// summary) parse it back through this, so the format has one owner.
+pub fn parse_run_id(text: &str) -> Option<&str> {
+    let mut parts = text.split('-');
+    let shape = [20usize, 10, 6];
+    for width in shape {
+        let part = parts.next()?;
+        if part.len() != width || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    parts.next().is_none().then_some(text)
+}
+
 /// Which quarantine run recorded an ingestion batch, and whether its outcome reached disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunReceipt {
@@ -939,6 +954,28 @@ mod tests {
         create_dir_all_durably(&nested).unwrap();
         assert_eq!(ancestors_to_sync(&nested).unwrap(), synced);
         let _ = fs::remove_dir_all(&relative);
+    }
+
+    #[test]
+    fn a_minted_run_id_parses_and_nothing_else_does() {
+        let ssd = scratch_dir("ids");
+        let store = QuarantineStore::beside(&ssd);
+        let handle = store
+            .begin(1, 1, Vec::new(), PrimaryWrite::Refused)
+            .unwrap();
+        let id = handle.run().run_id.clone();
+        assert_eq!(parse_run_id(&id), Some(id.as_str()));
+        for bad in [
+            "",
+            "00000001792383193180-0000008791",
+            "00000001792383193180-0000008791-000000-1",
+            "0000000179238319318x-0000008791-000000",
+            "1792383193180-8791-0",
+            " 00000001792383193180-0000008791-000000",
+        ] {
+            assert_eq!(parse_run_id(bad), None, "{bad:?}");
+        }
+        let _ = fs::remove_dir_all(&ssd);
     }
 
     #[test]

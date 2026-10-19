@@ -58,7 +58,7 @@ pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
 };
 pub use crate::quarantine_store::{
-    LatestRuns, PrimaryWrite, QuarantineRun, QuarantineStore, QuarantineStoreError,
+    parse_run_id, LatestRuns, PrimaryWrite, QuarantineRun, QuarantineStore, QuarantineStoreError,
     QuarantinedRecord, RunRead, RunReceipt, MAX_RUNS_READ, QUARANTINE_DIRNAME,
 };
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};

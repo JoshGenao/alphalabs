@@ -54,7 +54,12 @@ pub const MAGIC: &str = "ATP-NOTIFICATION-EVENT-STORE";
 /// delivery in it is tagged `"D"`, asserting a destination acknowledgement the
 /// SMTP path could never have established, because that path hands off to a
 /// Postfix queue this system operates.
-pub const SCHEMA_VERSION: i64 = 3;
+///
+/// v4 (2026-10-19): `TriggerKind::DataQuarantine` (trigger tag `"Q"`,
+/// SRS-DATA-013). Additive: a v3 blob cannot contain the tag, so it still reads
+/// forward unchanged and the minimum stays at 3; only an OLDER reader meeting a
+/// v4 blob is refused, by version, rather than by an unknown tag.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The oldest schema version [`NotificationEventStore::restore`] still reads.
 ///
@@ -228,6 +233,17 @@ impl NotificationEventStore {
             events.push(decode_event(&mut cursor)?);
         }
         cursor.expect_end()?;
+        // The data-quarantine trigger arrived in v4. A blob that declares an older version
+        // and still carries one was not written by any real producer of that version.
+        if schema_version < 4
+            && events
+                .iter()
+                .any(|event| event.trigger_kind() == TriggerKind::DataQuarantine)
+        {
+            return Err(NotificationStoreError::Corrupt {
+                context: "a pre-v4 store cannot hold a data-quarantine event",
+            });
+        }
         Ok(Self { events })
     }
 
@@ -519,6 +535,9 @@ fn decode_event(cursor: &mut Cursor<'_>) -> Result<NotificationEvent, Notificati
         TriggerKind::CriticalFailure => {
             NotificationTrigger::critical_failure(summary, detected_at_millis)
         }
+        TriggerKind::DataQuarantine => {
+            NotificationTrigger::data_quarantine(summary, detected_at_millis)
+        }
     };
 
     // Untrusted count — grow incrementally, never pre-reserve (see restore()).
@@ -561,6 +580,11 @@ fn decode_event(cursor: &mut Cursor<'_>) -> Result<NotificationEvent, Notificati
             context: "restored critical-failure event has suppressed deliveries (never produced)",
         });
     }
+    if matches!(kind, TriggerKind::DataQuarantine) && suppressed != 0 {
+        return Err(NotificationStoreError::Corrupt {
+            context: "restored data-quarantine event has suppressed deliveries (never produced)",
+        });
+    }
     if suppressed != 0 && suppressed != deliveries.len() {
         return Err(NotificationStoreError::Corrupt {
             context: "restored event mixes suppressed and non-suppressed deliveries",
@@ -578,6 +602,7 @@ const fn trigger_tag(kind: TriggerKind) -> &'static str {
     match kind {
         TriggerKind::ConnectivityLoss => "C",
         TriggerKind::CriticalFailure => "F",
+        TriggerKind::DataQuarantine => "Q",
     }
 }
 
@@ -585,6 +610,7 @@ fn trigger_from_tag(tag: &str) -> Result<TriggerKind, NotificationStoreError> {
     match tag {
         "C" => Ok(TriggerKind::ConnectivityLoss),
         "F" => Ok(TriggerKind::CriticalFailure),
+        "Q" => Ok(TriggerKind::DataQuarantine),
         _ => Err(NotificationStoreError::Corrupt {
             context: "unknown trigger tag",
         }),
