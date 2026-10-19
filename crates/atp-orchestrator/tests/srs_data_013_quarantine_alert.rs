@@ -149,12 +149,13 @@ fn a_quarantine_run_is_alerted_once_with_its_count_and_nature() {
     assert_eq!(audit.events()[0].summary(), summary);
     assert_eq!(sends.load(Ordering::SeqCst), 2);
 
-    // A second pass alerts nothing more: the watermark is past the settled run.
+    assert_eq!(report.settled_now, 1, "a final, delivered run is settled");
+    // A second pass reads nothing: the run is settled.
     let again = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
     assert!(again.alerts.is_empty(), "{again:?}");
     assert_eq!(again.examined, 0);
-    // And without the watermark, the audit store still knows the run was alerted.
-    fs::remove_file(store.join(atp_orchestrator::quarantine_notification::CURSOR_FILENAME))
+    // And without the markers, the audit store still knows this state was alerted.
+    fs::remove_dir_all(store.join(atp_orchestrator::quarantine_notification::SETTLED_DIRNAME))
         .unwrap();
     let rescanned = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
     assert!(rescanned.alerts.is_empty(), "{rescanned:?}");
@@ -297,11 +298,13 @@ fn an_old_quarantine_run_behind_200_clean_runs_is_still_alerted() {
     assert_eq!(report.alerts.len(), 1, "{:?}", report.alerts);
     assert!(matches!(report.alerts[0], RunAlert::Stored { .. }));
     assert_eq!(sends.load(Ordering::SeqCst), 2);
-    // Everything is settled, so the watermark is the newest run and the next pass reads nothing.
+    assert_eq!(
+        report.settled_now, 202,
+        "every run is final, so every run settles"
+    );
     let next =
         notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
     assert_eq!(next.examined, 0);
-    assert_eq!(next.watermark, report.watermark);
 }
 
 #[test]
@@ -313,8 +316,8 @@ fn a_failed_alert_is_retried_however_many_runs_follow_it() {
     let during_outage = notify_quarantined_runs(&ssd, &store, &notifier, &failing, now()).unwrap();
     assert_eq!(during_outage.alerts.len(), 1);
     assert_eq!(
-        during_outage.watermark, None,
-        "an unsettled run holds the watermark"
+        during_outage.settled_now, 0,
+        "an alert no channel carried does not settle"
     );
 
     clean_runs(&ssd, &nas, 201);
@@ -323,24 +326,37 @@ fn a_failed_alert_is_retried_however_many_runs_follow_it() {
     assert_eq!(recovered.alerts.len(), 1, "{:?}", recovered.alerts);
     assert!(matches!(recovered.alerts[0], RunAlert::Stored { .. }));
     assert_eq!(sends.load(Ordering::SeqCst), 2);
-    assert!(recovered.watermark.is_some());
+    assert_eq!(recovered.settled_now, 202);
 }
 
 #[test]
-fn a_corrupt_watermark_fails_closed_before_any_send() {
-    use atp_orchestrator::quarantine_notification::CURSOR_FILENAME;
-    let (ssd, nas, store) = dirs("cursor");
+fn a_run_published_after_newer_runs_settled_is_still_alerted() {
+    // Review L2 r2: run ids are minted before publication, so an older id can appear after the
+    // scan has settled newer runs (and a clock step does the same). Settlement is per run, so it
+    // is simply an unsettled run when it appears.
+    let (ssd, nas, store) = dirs("late");
     ingest_mixed(&ssd, &nas);
-    fs::write(
-        store.join(CURSOR_FILENAME),
-        "ATP-QUARANTINE-ALERT-CURSOR\n1\n1\nx\n",
-    )
-    .unwrap();
+    let quarantine = ssd.join(QUARANTINE_DIRNAME);
+    let late = fs::read_dir(&quarantine)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "qrun"))
+        .unwrap();
+    let held = late.with_extension("held");
+    fs::rename(&late, &held).unwrap(); // not yet published
+    clean_runs(&ssd, &nas, 3);
     let (channels, sends) = channels(false);
-    let result = notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now());
-    assert!(
-        matches!(result, Err(NotifyError::Cursor { .. })),
-        "{result:?}"
-    );
+    let notifier = OperatorNotifier::new();
+    let first = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
+    assert_eq!(first.settled_now, 3);
     assert_eq!(sends.load(Ordering::SeqCst), 0);
+
+    fs::rename(&held, &late).unwrap(); // published late, with the OLDEST id
+    let second = notify_quarantined_runs(&ssd, &store, &notifier, &channels, now()).unwrap();
+    assert_eq!(second.examined, 1);
+    assert!(
+        matches!(second.alerts[..], [RunAlert::Stored { .. }]),
+        "{second:?}"
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 2);
 }

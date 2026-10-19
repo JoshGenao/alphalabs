@@ -46,8 +46,8 @@ ENVIRONMENT:
 
 EXIT CODES:
     0  every due run got out on both channels and was stored (or nothing was due)
-    1  a due run's alert did not get out or was not stored, or the scan watermark
-       could not be saved
+    1  a due run's alert did not get out or was not stored, or a settled run's
+       marker could not be written
     2  bad invocation / unusable configuration / unreadable store
 ";
 
@@ -124,18 +124,16 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     println!("examined_runs:{}", report.examined);
     println!("already_alerted:{}", report.already_alerted);
     println!("clean_runs:{}", report.clean);
+    println!("settled_now:{}", report.settled_now);
+    println!("waiting_runs:{}", report.waiting);
     println!("due_runs:{}", report.alerts.len());
-    println!(
-        "watermark:{}",
-        report.watermark.as_deref().unwrap_or("none")
-    );
     let mut all_ok = true;
     for alert in &report.alerts {
         all_ok &= print_alert(alert);
     }
-    if let Some(error) = &report.cursor_not_saved {
-        // Nothing is lost (the next pass re-examines from the old watermark), but say so.
-        println!("cursor_saved:false error:{error}");
+    for error in &report.settle_errors {
+        // Nothing is lost (the run stays unsettled and its alerted state is not re-sent).
+        println!("settle_error:{error}");
         all_ok = false;
     }
     println!("alert_path_ok:{all_ok}");

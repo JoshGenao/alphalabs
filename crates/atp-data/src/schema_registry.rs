@@ -387,15 +387,15 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         legacy_unversioned: false,
     },
     SchemaDescriptor {
-        entity_id: "quarantine-alert-cursor",
+        entity_id: "quarantine-settled-marker",
         owner_srs: "SRS-DATA-013",
         writer_path: "crates/atp-orchestrator/src/quarantine_notification.rs",
-        marker: "CURSOR_SCHEMA_VERSION",
-        magic: Some("ATP-QUARANTINE-ALERT-CURSOR"),
+        marker: "SETTLED_SCHEMA_VERSION",
+        magic: Some("ATP-QUARANTINE-SETTLED"),
         current_version: 1,
         min_supported_version: 1,
-        // The quarantine alert's scan watermark. Versioned from its first byte; a cursor of any
-        // other version is refused (the pass then fails closed rather than guessing).
+        // One marker per settled quarantine run, published by atomic rename; its NAME is the
+        // fact (the run id), its body is a versioned record of it.
         posture: EvolutionPosture::Pinned,
         legacy_unversioned: false,
     },

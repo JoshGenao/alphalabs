@@ -3,26 +3,32 @@
 //! SYS-77: records failing validation are quarantined, and the system "shall alert the operator
 //! via the dashboard and notification subsystem with the count and nature of quarantined
 //! records". The data layer records every ingestion batch as a run in its quarantine store
-//! (`atp_data::quarantine_store`); this module turns each run that quarantined something into one
-//! SRS-NOTIF-001 operator notification (email + push), and stores it in the notification audit
-//! store.
+//! (`atp_data::quarantine_store`); this module turns each run that quarantined something into an
+//! SRS-NOTIF-001 operator notification (email + push), stored in the notification audit store.
 //!
-//! **The notification store is the cursor.** A run counts as alerted when a stored
-//! `DATA_QUARANTINE` event names it AND at least one of that event's channels got out (delivered,
-//! or queued at our relay). So a run whose alert reached no channel is retried on the next pass
-//! rather than marked done, and there is no second state file to keep consistent with the audit
-//! trail. Delivery is therefore at-least-once: a crash between the dispatch and the store append,
-//! or two passes running at once, can alert a run twice; nothing here can alert it zero times
-//! once it is due.
+//! **An alert describes a run's CURRENT state.** A run counts as alerted for its current state
+//! when a stored `DATA_QUARANTINE` event's summary is exactly that state's [`describe`] AND at
+//! least one of the event's channels got out (delivered, or queued at our relay). So a run whose
+//! alert reached no channel is retried, and a run that changes — a `PENDING` run that gains
+//! conflicts or finishes — is alerted again with its new summary rather than left with a stale one.
+//! Delivery is at-least-once: a crash between the dispatch and the store append, or two passes at
+//! once, can send an alert twice; nothing here can drop one that is due.
 //!
-//! **Which runs are due.** A readable run that quarantined at least one record. A run still
-//! `PENDING` within [`PENDING_GRACE_MILLIS`] of being recorded may be an ingest in progress (its
-//! conflicts are added under the writer lock), so it waits; past the grace period it is alerted
-//! with its primary-write outcome reported as unknown, so a crashed ingest cannot block its own
-//! alert. An UNREADABLE run is due too, saying so — never treated as clean.
+//! **Settlement is per run.** A run is SETTLED once it is final (not `PENDING`) and either
+//! quarantined nothing or its final state was alerted. Settling publishes a marker,
+//! `<store>/quarantine_settled/<run_id>.settled`, by atomic rename from a per-call scratch file, so
+//! the marker's name alone proves it is whole. Each pass lists run names and marker names and
+//! reads only unsettled runs. Nothing is ordered by time: a run published late (its id was minted
+//! before a newer run's) or after a clock step is unsettled until it is examined.
+//!
+//! **What is never settled.** A `PENDING` run: within [`PENDING_GRACE_MILLIS`] it may be an ingest
+//! in progress and is left alone; past it, a run that quarantined something is alerted
+//! provisionally (outcome unknown), once per state, and re-examined until it finishes. An
+//! UNREADABLE run is alerted, once per error, and re-examined — never treated as clean.
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atp_data::{
     parse_run_id, PrimaryWrite, QuarantineRun, QuarantineStore, QuarantineStoreError, RunRead,
@@ -33,14 +39,24 @@ use atp_notification::{
     TriggerKind,
 };
 
-/// Every data-quarantine summary starts with this, followed by the run id and a colon. It is how
-/// a stored event names its run.
+/// Every data-quarantine summary starts with this, followed by the run id and a colon.
 pub const RUN_SUMMARY_PREFIX: &str = "quarantine run ";
 
-/// How long a `PENDING` run may be an ingest still in progress before it is alerted anyway.
+/// How long a `PENDING` run may be an ingest still in progress before it is alerted provisionally.
 pub const PENDING_GRACE_MILLIS: u64 = 5 * 60 * 1000;
 
-/// What one pass did with one due run.
+/// The settlement markers' directory, inside the notification store directory.
+pub const SETTLED_DIRNAME: &str = "quarantine_settled";
+/// A settlement marker's extension; the stem is the run id.
+pub const SETTLED_EXTENSION: &str = "settled";
+/// A settlement marker's magic header.
+pub const SETTLED_MAGIC: &str = "ATP-QUARANTINE-SETTLED";
+/// The settlement marker format version this build writes.
+pub const SETTLED_SCHEMA_VERSION: i64 = 1;
+
+static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// What one pass did with one run it had to act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunAlert {
     /// Dispatched and durably stored. The event carries each channel's outcome.
@@ -66,19 +82,22 @@ pub enum RunAlert {
 /// One pass over the quarantine store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotifyReport {
-    /// What happened to each run that was due or waiting, oldest first.
+    /// What happened to each run that had to be acted on, oldest first.
     pub alerts: Vec<RunAlert>,
-    /// Runs examined this pass that a stored event had already alerted.
-    pub already_alerted: usize,
-    /// Runs examined this pass that quarantined nothing.
-    pub clean: usize,
-    /// Runs this pass read: every run after the watermark it started from.
+    /// Unsettled runs examined this pass.
     pub examined: usize,
-    /// The watermark after this pass: every run up to and including it is settled.
-    pub watermark: Option<String>,
-    /// The new watermark could not be saved. Nothing is lost — the next pass re-examines from the
-    /// old one, and runs already alerted are not alerted again — but the operator should know.
-    pub cursor_not_saved: Option<String>,
+    /// Runs settled this pass because their final state had already been alerted.
+    pub already_alerted: usize,
+    /// Runs settled this pass because they finished without quarantining anything.
+    pub clean: usize,
+    /// Runs settled this pass, of every kind.
+    pub settled_now: usize,
+    /// Runs left unsettled with nothing to send now (pending, or a provisional / unreadable state
+    /// already alerted).
+    pub waiting: usize,
+    /// Settlement markers that could not be written. Nothing is lost — the run stays unsettled
+    /// and its alerted state is not sent again — but the operator should know.
+    pub settle_errors: Vec<String>,
 }
 
 /// Why a pass could not run at all.
@@ -86,10 +105,10 @@ pub struct NotifyReport {
 pub enum NotifyError {
     /// The quarantine store could not be read (a missing SSD primary included).
     Quarantine(QuarantineStoreError),
-    /// The notification audit store could not be read, so which runs were alerted is unknown.
+    /// The notification audit store could not be read, so what was alerted is unknown.
     NotificationStore(NotificationStoreError),
-    /// The scan watermark file exists but cannot be read, so where the scan stands is unknown.
-    Cursor { context: &'static str },
+    /// The settlement markers could not be listed, so which runs are settled is unknown.
+    Settlement { context: &'static str },
 }
 
 impl std::fmt::Display for NotifyError {
@@ -97,20 +116,16 @@ impl std::fmt::Display for NotifyError {
         match self {
             Self::Quarantine(err) => write!(f, "{err}"),
             Self::NotificationStore(err) => write!(f, "notification store unreadable: {err}"),
-            Self::Cursor { context } => write!(f, "quarantine alert cursor unreadable: {context}"),
+            Self::Settlement { context } => {
+                write!(f, "quarantine settlement markers unreadable: {context}")
+            }
         }
     }
 }
 
 /// One pass: alert every due quarantine run beside `ssd_dir` through `channels`, storing each
-/// event in the notification store at `store_dir`. `now_millis` is the dispatch instant.
-///
-/// The pass reads every run after the scan watermark kept in `store_dir`
-/// ([`CURSOR_FILENAME`]), oldest first, then advances the watermark over the leading runs that
-/// are settled — alerted with a channel that got out, or finished clean. A run that is not
-/// settled (its alert reached no channel, was not stored, or it is still in its grace period)
-/// holds the watermark, so it is examined again on every pass until it is: no run can fall out of
-/// view, however many runs follow it.
+/// event in the notification store at `store_dir`, and settle every run that is done.
+/// `now_millis` is the dispatch instant.
 pub fn notify_quarantined_runs(
     ssd_dir: &Path,
     store_dir: &Path,
@@ -122,43 +137,45 @@ pub fn notify_quarantined_runs(
     let ids = quarantine.run_ids().map_err(NotifyError::Quarantine)?;
     let audit = NotificationEventStore::load_from_path(store_dir)
         .map_err(NotifyError::NotificationStore)?;
-    let alerted = alerted_run_ids(audit.events());
-    let start = read_watermark(store_dir)?;
+    let alerted = alerted_states(audit.events());
+    let settled = settled_run_ids(store_dir)?;
 
     let mut report = NotifyReport {
         alerts: Vec::new(),
+        examined: 0,
         already_alerted: 0,
         clean: 0,
-        examined: 0,
-        watermark: start.clone(),
-        cursor_not_saved: None,
+        settled_now: 0,
+        waiting: 0,
+        settle_errors: Vec::new(),
     };
-    let mut settled_so_far = true;
     // Oldest first, so alerts reach the operator in the order the runs happened.
-    for run_id in ids
-        .iter()
-        .filter(|id| start.as_deref().is_none_or(|mark| id.as_str() > mark))
-    {
+    for run_id in ids.iter().filter(|id| !settled.contains(*id)) {
         report.examined += 1;
         let run = quarantine.read(run_id);
-        let settled = match decide(&run, &alerted, now_millis) {
-            Due::AlreadyAlerted => {
-                report.already_alerted += 1;
+        let settle = match decide(&run, &alerted, now_millis) {
+            Due::Settle { clean } => {
+                if clean {
+                    report.clean += 1;
+                } else {
+                    report.already_alerted += 1;
+                }
                 true
             }
-            Due::Clean => {
-                report.clean += 1;
-                true
-            }
-            Due::InProgress => {
-                report.alerts.push(RunAlert::InProgress {
-                    run_id: run_id.clone(),
-                });
+            Due::Wait { in_progress } => {
+                if in_progress {
+                    report.alerts.push(RunAlert::InProgress {
+                        run_id: run_id.clone(),
+                    });
+                } else {
+                    report.waiting += 1;
+                }
                 false
             }
             Due::Alert {
                 summary,
                 detected_at_millis,
+                settles,
             } => {
                 let alert = dispatch_and_store(
                     run_id,
@@ -169,21 +186,16 @@ pub fn notify_quarantined_runs(
                     channels,
                     now_millis,
                 );
-                let settled = matches!(&alert, RunAlert::Stored { event, .. }
+                let got_out = matches!(&alert, RunAlert::Stored { event, .. }
                     if event.deliveries().iter().any(|d| reached_out(d.outcome())));
                 report.alerts.push(alert);
-                settled
+                settles && got_out
             }
         };
-        settled_so_far &= settled;
-        if settled_so_far {
-            report.watermark = Some(run_id.clone());
-        }
-    }
-    if report.watermark != start {
-        if let Some(mark) = &report.watermark {
-            if let Err(err) = write_watermark(store_dir, mark) {
-                report.cursor_not_saved = Some(err.to_string());
+        if settle {
+            match mark_settled(store_dir, run_id) {
+                Ok(()) => report.settled_now += 1,
+                Err(err) => report.settle_errors.push(format!("{run_id}: {err}")),
             }
         }
     }
@@ -219,59 +231,74 @@ fn dispatch_and_store(
     }
 }
 
-/// What one pass does with one run.
+/// What one pass does with one unsettled run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Due {
-    /// A stored event already alerted it.
-    AlreadyAlerted,
-    /// It quarantined nothing.
-    Clean,
-    /// `PENDING` within the grace period: an ingest may still be adding to it.
-    InProgress,
-    /// Alert it with this summary, detected at this instant.
+    /// Final, and nothing more to tell the operator: settle it. `clean` when it quarantined
+    /// nothing; otherwise its final state was already alerted.
+    Settle { clean: bool },
+    /// Nothing to send now, and not settled. `in_progress` within the grace period; otherwise a
+    /// pending or unreadable run whose current state was already alerted, or a pending run that
+    /// has quarantined nothing yet.
+    Wait { in_progress: bool },
+    /// Send this summary. `settles` when the run is final, so a delivered alert settles it.
     Alert {
         summary: String,
         detected_at_millis: u64,
+        settles: bool,
     },
 }
 
-/// Decide what to do with `run`, given the runs already alerted and the current instant.
+/// Decide what to do with an unsettled `run`, given the alerted states and the current instant.
 pub fn decide(run: &RunRead, alerted: &BTreeSet<String>, now_millis: u64) -> Due {
     match run {
         RunRead::Readable(run) => {
-            if alerted.contains(&run.run_id) {
-                Due::AlreadyAlerted
-            } else if run.primary == PrimaryWrite::Pending
-                && now_millis.saturating_sub(run.recorded_at_millis) < PENDING_GRACE_MILLIS
-            {
-                // Checked before "clean": conflicts can still be added to an in-progress run.
-                Due::InProgress
-            } else if run.quarantined_total() == 0 {
-                Due::Clean
-            } else {
-                Due::Alert {
-                    summary: describe(run),
-                    detected_at_millis: run.recorded_at_millis,
-                }
+            let pending = run.primary == PrimaryWrite::Pending;
+            if pending && now_millis.saturating_sub(run.recorded_at_millis) < PENDING_GRACE_MILLIS {
+                return Due::Wait { in_progress: true };
+            }
+            if run.quarantined_total() == 0 {
+                // A pending run with nothing yet can still gain conflicts: never settle it.
+                return if pending {
+                    Due::Wait { in_progress: false }
+                } else {
+                    Due::Settle { clean: true }
+                };
+            }
+            let summary = describe(run);
+            if alerted.contains(&summary) {
+                return if pending {
+                    Due::Wait { in_progress: false }
+                } else {
+                    Due::Settle { clean: false }
+                };
+            }
+            Due::Alert {
+                summary,
+                detected_at_millis: run.recorded_at_millis,
+                settles: !pending,
             }
         }
         RunRead::Unreadable { run_id, error } => {
-            if alerted.contains(run_id) {
-                return Due::AlreadyAlerted;
+            let summary = format!(
+                "{RUN_SUMMARY_PREFIX}{run_id}: UNREADABLE ({error}) — the count and nature of its \
+                 quarantined records cannot be reported; inspect the quarantine store"
+            );
+            if alerted.contains(&summary) {
+                return Due::Wait { in_progress: false };
             }
             Due::Alert {
-                summary: format!(
-                    "{RUN_SUMMARY_PREFIX}{run_id}: UNREADABLE ({error}) — the count and nature of \
-                     its quarantined records cannot be reported; inspect the quarantine store"
-                ),
+                summary,
                 detected_at_millis: recorded_at_from_run_id(run_id).unwrap_or(now_millis),
+                settles: false,
             }
         }
     }
 }
 
 /// The operator-facing summary of a run: its count and the nature (every reason that occurred,
-/// with its count), and what happened to the rest of the batch. Non-secret by construction.
+/// with its count), and what happened to the rest of the batch. Non-secret by construction, and a
+/// pure function of the run, so it identifies the state it describes.
 pub fn describe(run: &QuarantineRun) -> String {
     let reasons: Vec<String> = run
         .per_reason()
@@ -283,7 +310,7 @@ pub fn describe(run: &QuarantineRun) -> String {
         PrimaryWrite::Written { records } => format!("WRITTEN ({records} valid records stored)"),
         PrimaryWrite::Refused => "REFUSED (nothing stored)".to_string(),
         PrimaryWrite::Failed => "FAILED (nothing stored)".to_string(),
-        PrimaryWrite::Pending => "outcome UNKNOWN (the run never finished)".to_string(),
+        PrimaryWrite::Pending => "outcome UNKNOWN (the run has not finished)".to_string(),
     };
     format!(
         "{RUN_SUMMARY_PREFIX}{}: {} of {} records quarantined — {}; primary write {primary}",
@@ -301,9 +328,9 @@ pub fn run_id_in_summary(summary: &str) -> Option<&str> {
     parse_run_id(candidate)
 }
 
-/// Runs a stored event has alerted: a `DATA_QUARANTINE` event naming the run, with at least one
-/// channel that got out. An event whose every channel failed does not count — the run is retried.
-fn alerted_run_ids(events: &[NotificationEvent]) -> BTreeSet<String> {
+/// The run states a stored event has alerted: the summary of every `DATA_QUARANTINE` event with
+/// at least one channel that got out. An event whose every channel failed does not count.
+fn alerted_states(events: &[NotificationEvent]) -> BTreeSet<String> {
     events
         .iter()
         .filter(|event| event.trigger_kind() == TriggerKind::DataQuarantine)
@@ -313,7 +340,7 @@ fn alerted_run_ids(events: &[NotificationEvent]) -> BTreeSet<String> {
                 .iter()
                 .any(|delivery| reached_out(delivery.outcome()))
         })
-        .filter_map(|event| run_id_in_summary(event.summary()).map(str::to_string))
+        .map(|event| event.summary().to_string())
         .collect()
 }
 
@@ -332,82 +359,69 @@ fn recorded_at_from_run_id(run_id: &str) -> Option<u64> {
 }
 
 // --------------------------------------------------------------------------- //
-// The scan watermark: one small checksummed file beside the notification store.
+// Settlement markers
 // --------------------------------------------------------------------------- //
 
-/// The scan watermark's file, in the notification store directory.
-pub const CURSOR_FILENAME: &str = "quarantine_alert.cursor";
-/// Its magic header.
-pub const CURSOR_MAGIC: &str = "ATP-QUARANTINE-ALERT-CURSOR";
-/// The cursor format version this build writes and reads.
-pub const CURSOR_SCHEMA_VERSION: i64 = 1;
-
-/// The saved watermark: `None` when no pass has saved one yet (every run is examined). A file
-/// that exists but cannot be read is an error — where the scan stands is then unknown, and
-/// starting over would hide nothing but would not be what the operator configured either.
-pub fn read_watermark(store_dir: &Path) -> Result<Option<String>, NotifyError> {
-    let text = match std::fs::read_to_string(store_dir.join(CURSOR_FILENAME)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+/// The runs settled so far: every published `<run_id>.settled` marker. A marker is published by
+/// atomic rename, so its name proves it is whole. No markers directory yet means none settled.
+pub fn settled_run_ids(store_dir: &Path) -> Result<BTreeSet<String>, NotifyError> {
+    let listing = match std::fs::read_dir(store_dir.join(SETTLED_DIRNAME)) {
+        Ok(listing) => listing,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(_) => {
-            return Err(NotifyError::Cursor {
-                context: "the cursor file could not be read",
+            return Err(NotifyError::Settlement {
+                context: "the markers directory could not be listed",
             })
         }
     };
-    let corrupt = |context| NotifyError::Cursor { context };
-    let mut lines = text.split('\n');
-    if lines.next() != Some(CURSOR_MAGIC) {
-        return Err(corrupt("bad magic header"));
+    let mut settled = BTreeSet::new();
+    for entry in listing {
+        let entry = entry.map_err(|_| NotifyError::Settlement {
+            context: "a markers directory entry could not be read",
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if let Some(id) = name
+            .strip_suffix(&format!(".{SETTLED_EXTENSION}"))
+            .and_then(parse_run_id)
+        {
+            settled.insert(id.to_string());
+        }
     }
-    let stored: u64 = lines
-        .next()
-        .and_then(|line| line.parse().ok())
-        .ok_or(corrupt("bad checksum line"))?;
-    let body = lines.collect::<Vec<_>>().join("\n");
-    if fnv1a(body.as_bytes()) != stored {
-        return Err(corrupt("checksum mismatch"));
-    }
-    let mut fields = body.split('\n');
-    if fields.next() != Some(&CURSOR_SCHEMA_VERSION.to_string()[..]) {
-        return Err(corrupt("unknown cursor schema version"));
-    }
-    let mark = fields.next().ok_or(corrupt("missing watermark"))?;
-    if fields.next() != Some("") || fields.next().is_some() {
-        return Err(corrupt("trailing data"));
-    }
-    parse_run_id(mark)
-        .map(|id| Some(id.to_string()))
-        .ok_or(corrupt("the watermark is not a run id"))
+    Ok(settled)
 }
 
-/// Atomically save `mark` as the watermark: unique scratch file, fsync, rename, directory fsync.
-pub fn write_watermark(store_dir: &Path, mark: &str) -> std::io::Result<()> {
+/// Publish `run_id`'s settlement marker: a per-call unique scratch file (exclusive create),
+/// fsync, atomic rename, directory fsync. Safe to call concurrently for the same run.
+pub fn mark_settled(store_dir: &Path, run_id: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let body = format!("{CURSOR_SCHEMA_VERSION}\n{mark}\n");
-    let text = format!("{CURSOR_MAGIC}\n{}\n{body}", fnv1a(body.as_bytes()));
-    let scratch = store_dir.join(format!(".{CURSOR_FILENAME}.{}.scratch", std::process::id()));
+    let dir = store_dir.join(SETTLED_DIRNAME);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::File::open(store_dir)?.sync_all()?;
+    }
+    let scratch = dir.join(format!(
+        ".scratch-{}-{}",
+        std::process::id(),
+        SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let result = (|| {
-        let mut file = std::fs::File::create(&scratch)?;
-        file.write_all(text.as_bytes())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&scratch)?;
+        file.write_all(
+            format!("{SETTLED_MAGIC}\n{SETTLED_SCHEMA_VERSION}\n{run_id}\n").as_bytes(),
+        )?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&scratch, store_dir.join(CURSOR_FILENAME))?;
-        std::fs::File::open(store_dir)?.sync_all()
+        std::fs::rename(&scratch, dir.join(format!("{run_id}.{SETTLED_EXTENSION}")))?;
+        std::fs::File::open(&dir)?.sync_all()
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&scratch);
     }
     result
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 #[cfg(test)]
@@ -432,7 +446,7 @@ mod tests {
         assert_eq!(recorded_at_from_run_id(id), Some(1_792_383_193_180));
     }
 
-    fn run(primary: PrimaryWrite, recorded_at_millis: u64, quarantined: usize) -> RunRead {
+    fn run(primary: PrimaryWrite, recorded_at_millis: u64, quarantined: usize) -> QuarantineRun {
         let record =
             atp_data::ingestion_validation::mixed_validation_fixture(1_700_000_000).remove(0);
         let submission = record.ingestion_submission();
@@ -442,81 +456,133 @@ mod tests {
             record_hash: submission.record_hash,
             record,
         };
-        RunRead::Readable(QuarantineRun {
+        QuarantineRun {
             run_id: format!("{recorded_at_millis:020}-0000000001-000000"),
             recorded_at_millis,
             observed_at_seconds: 1,
             records_in: 10,
             primary,
             entries: vec![entry; quarantined],
-        })
+        }
     }
 
+    const T: u64 = 1_000_000;
+    const LATE: u64 = T + PENDING_GRACE_MILLIS;
+
     #[test]
-    fn a_pending_run_waits_out_the_grace_period_then_alerts_as_unknown() {
-        let recorded = 1_000_000;
+    fn a_pending_run_waits_out_the_grace_period_then_alerts_provisionally() {
         let none = BTreeSet::new();
-        let young = run(PrimaryWrite::Pending, recorded, 2);
+        let young = RunRead::Readable(run(PrimaryWrite::Pending, T, 2));
         assert_eq!(
-            decide(&young, &none, recorded + PENDING_GRACE_MILLIS - 1),
-            Due::InProgress
+            decide(&young, &none, LATE - 1),
+            Due::Wait { in_progress: true }
         );
-        let Due::Alert { summary, .. } = decide(&young, &none, recorded + PENDING_GRACE_MILLIS)
+        let Due::Alert {
+            summary, settles, ..
+        } = decide(&young, &none, LATE)
         else {
             panic!("a pending run past the grace period is alerted");
         };
+        assert!(!settles, "a pending run is never settled");
         assert!(summary.contains("outcome UNKNOWN"), "{summary}");
         assert!(summary.contains("2 of 10 records quarantined"), "{summary}");
-        assert!(summary.contains("NEGATIVE_VOLUME=2"), "{summary}");
-    }
-
-    #[test]
-    fn a_pending_run_with_no_rejects_yet_is_in_progress_not_clean() {
-        // A conflict can still be added to it under the writer lock: it must hold the watermark.
-        let recorded = 1_000_000;
-        let none = BTreeSet::new();
-        let pending_empty = run(PrimaryWrite::Pending, recorded, 0);
-        assert_eq!(decide(&pending_empty, &none, recorded + 1), Due::InProgress);
+        // Its provisional state, once alerted, waits — re-examined, not re-sent.
+        let alerted: BTreeSet<String> = [summary].into();
         assert_eq!(
-            decide(&pending_empty, &none, recorded + PENDING_GRACE_MILLIS),
-            Due::Clean
+            decide(&young, &alerted, LATE),
+            Due::Wait { in_progress: false }
         );
     }
 
     #[test]
-    fn the_watermark_round_trips_and_a_damaged_one_is_refused() {
-        let dir = std::env::temp_dir().join(format!("atp-qcursor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read_watermark(&dir).unwrap(), None);
-        let mark = "00000001792383193180-0000008791-000000";
-        write_watermark(&dir, mark).unwrap();
-        assert_eq!(read_watermark(&dir).unwrap().as_deref(), Some(mark));
-        let path = dir.join(CURSOR_FILENAME);
-        let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, text.replace("193180", "193181")).unwrap();
+    fn a_run_that_changes_after_a_provisional_alert_is_alerted_again() {
+        // Review L2 r2: conflicts can arrive after the grace period; the final state must still
+        // reach the operator even though a provisional alert went out.
+        let provisional = describe(&run(PrimaryWrite::Pending, T, 1));
+        let alerted: BTreeSet<String> = [provisional].into();
+        let grown = RunRead::Readable(run(PrimaryWrite::Pending, T, 3));
         assert!(matches!(
-            read_watermark(&dir),
-            Err(NotifyError::Cursor { .. })
+            decide(&grown, &alerted, LATE),
+            Due::Alert { settles: false, .. }
         ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let finished = RunRead::Readable(run(PrimaryWrite::Written { records: 7 }, T, 3));
+        let Due::Alert {
+            summary, settles, ..
+        } = decide(&finished, &alerted, LATE)
+        else {
+            panic!("the final state is alerted");
+        };
+        assert!(settles);
+        assert!(
+            summary.contains("WRITTEN (7 valid records stored)"),
+            "{summary}"
+        );
     }
 
     #[test]
-    fn a_finished_run_alerts_at_once_and_a_clean_or_alerted_one_never() {
-        let recorded = 1_000_000;
-        let finished = run(PrimaryWrite::Written { records: 8 }, recorded, 2);
+    fn a_pending_run_with_nothing_quarantined_is_never_settled() {
+        let none = BTreeSet::new();
+        let empty = RunRead::Readable(run(PrimaryWrite::Pending, T, 0));
+        assert_eq!(
+            decide(&empty, &none, T + 1),
+            Due::Wait { in_progress: true }
+        );
+        assert_eq!(
+            decide(&empty, &none, LATE),
+            Due::Wait { in_progress: false }
+        );
+    }
+
+    #[test]
+    fn a_final_run_alerts_once_and_settles_and_a_clean_one_settles_at_once() {
+        let finished = run(PrimaryWrite::Written { records: 8 }, T, 2);
+        let summary = describe(&finished);
+        let finished = RunRead::Readable(finished);
         assert!(matches!(
-            decide(&finished, &BTreeSet::new(), recorded),
-            Due::Alert { detected_at_millis, .. } if detected_at_millis == recorded
+            decide(&finished, &BTreeSet::new(), T),
+            Due::Alert { settles: true, detected_at_millis, .. } if detected_at_millis == T
         ));
-        let clean = run(PrimaryWrite::Written { records: 10 }, recorded, 0);
-        assert_eq!(decide(&clean, &BTreeSet::new(), recorded), Due::Clean);
-        let RunRead::Readable(r) = &finished else {
-            unreachable!()
-        };
-        let alerted: BTreeSet<String> = [r.run_id.clone()].into();
-        assert_eq!(decide(&finished, &alerted, recorded), Due::AlreadyAlerted);
+        let alerted: BTreeSet<String> = [summary].into();
+        assert_eq!(decide(&finished, &alerted, T), Due::Settle { clean: false });
+        let clean = RunRead::Readable(run(PrimaryWrite::Refused, T, 0));
+        assert_eq!(
+            decide(&clean, &BTreeSet::new(), T),
+            Due::Settle { clean: true }
+        );
+    }
+
+    #[test]
+    fn concurrent_settlements_of_one_run_publish_one_whole_marker() {
+        // Review L2 r2: two saves sharing one scratch name could interleave and corrupt the file.
+        let dir = std::env::temp_dir().join(format!("atp-qsettle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "00000001792383193180-0000008791-000000";
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| mark_settled(&dir, id).unwrap());
+            }
+        });
+        assert_eq!(
+            settled_run_ids(&dir).unwrap(),
+            BTreeSet::from([id.to_string()])
+        );
+        let markers = dir.join(SETTLED_DIRNAME);
+        let names: Vec<String> = std::fs::read_dir(&markers)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec![format!("{id}.{SETTLED_EXTENSION}")],
+            "no scratch left"
+        );
+        let text = std::fs::read_to_string(markers.join(&names[0])).unwrap();
+        assert_eq!(
+            text,
+            format!("{SETTLED_MAGIC}\n{SETTLED_SCHEMA_VERSION}\n{id}\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

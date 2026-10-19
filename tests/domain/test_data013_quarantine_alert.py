@@ -44,10 +44,11 @@ def _cargo() -> str:
         "an_alert_that_reached_no_channel_is_retried",
         "an_unreadable_run_is_alerted_as_unreadable",
         "an_unreadable_store_is_an_error_not_nothing_due",
-        # Review L2 r1: no run falls out of view, however many runs follow it.
+        # Review L2 r1-r2: no run falls out of view — however many runs follow it, or however
+        # late it is published.
         "an_old_quarantine_run_behind_200_clean_runs_is_still_alerted",
         "a_failed_alert_is_retried_however_many_runs_follow_it",
-        "a_corrupt_watermark_fails_closed_before_any_send",
+        "a_run_published_after_newer_runs_settled_is_still_alerted",
     ],
 )
 def test_rust_quarantine_alert_behaviour(rust_test: str) -> None:
