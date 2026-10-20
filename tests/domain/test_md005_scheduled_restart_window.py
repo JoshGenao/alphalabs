@@ -842,6 +842,57 @@ impl<T: HasWidth<{ 1 + 1 }>> RestartWindowGate for BracedOpenWindow<T> {
     check_restart_window_gate_implementors(config, "")
 
 
+def test_a_nested_comment_cannot_hide_a_second_implementor() -> None:
+    """Adversarial review r28 [high], planted in the REAL tree, through the FULL gate.
+
+    Rust block comments nest. The scan's lexer closed one at its first `*/`, so in
+    `/* outer /* inner */ " */` it read the last `"` as a string opener and blanked
+    the always-admitting implementor after it. The reviewer ran it through
+    `assert_connectivity_static`: all 13 checks passed, reporting exactly one
+    approved implementor. The lexer now counts comment depth, tokenizes nothing
+    inside a comment, and refuses any span it cannot close.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub struct CommentedOpenWindow;
+/* outer /* inner */ " */
+impl RestartWindowGate for CommentedOpenWindow {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+// "
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="CommentedOpenWindow"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
 def test_the_resume_proof_labels_its_readiness_scope() -> None:
     """A reachable probe means the endpoint accepted TCP.
 

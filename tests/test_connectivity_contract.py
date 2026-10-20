@@ -27,6 +27,8 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from connectivity_check import (  # noqa: E402
     ConnectivityCheckError,
+    _code_only,
+    _mask_non_code,
     _without_test_module,
     assert_connectivity_static,
     check_brokerage_connectivity_port,
@@ -897,6 +899,89 @@ class TestModuleStripperTest(unittest.TestCase):
         self.assertIn("unterminated", str(ctx.exception))
 
 
+class RustLexerTest(unittest.TestCase):
+    """The one lexer every scan reads through, held to Rust's actual rules.
+
+    Adversarial review r28 [high]: block comments NEST in Rust, and the lexer
+    closed one at its first `*/`. In `/* outer /* inner */ " */` the remaining
+    `"` was then read as a string opener, which blanked the always-admitting
+    implementor after it, and all 13 static checks passed. Every form below is a
+    way to make the lexer disagree with rustc about where code is; each one is
+    pinned here, and a span the lexer cannot close is refused, never guessed.
+    """
+
+    def test_a_nested_block_comment_closes_where_rustc_closes_it(self) -> None:
+        src = '/* outer /* inner */ " */ impl Gate for Evil {}'
+        masked = _mask_non_code(src)
+        self.assertEqual(len(masked), len(src))
+        self.assertIn("impl Gate for Evil {}", masked)
+        self.assertNotIn('"', masked)
+
+    def test_a_comment_is_not_lexed_for_strings_or_chars(self) -> None:
+        # rustc does not tokenize inside a comment, so neither may this.
+        for label, src in {
+            "a quote": '/* " */ impl Gate for Evil {}',
+            "a raw-string opener": '/* r#" */ impl Gate for Evil {}',
+            "a char opener": "/* ' */ impl Gate for Evil {}",
+        }.items():
+            with self.subTest(shape=label):
+                self.assertIn("impl Gate for Evil {}", _mask_non_code(src))
+
+    def test_an_escaped_quote_char_literal_is_one_token(self) -> None:
+        # `'\''` closed on the ESCAPED quote, leaving a stray `'` in the code.
+        for literal in ("'\\''", "'\\\\'", "'\\u{7b}'", "'\\x7b'", "'\"'", "'{'"):
+            with self.subTest(literal=literal):
+                src = f"let c = {literal}; impl Gate for Evil {{}}"
+                masked = _mask_non_code(src)
+                self.assertEqual(
+                    masked.strip(), f"let c = {' ' * len(literal)}; impl Gate for Evil {{}}".strip()
+                )
+
+    def test_a_lifetime_is_code_not_a_literal(self) -> None:
+        src = "fn g<'a>(x: &'a str) -> &'static str { x }"
+        self.assertEqual(_mask_non_code(src), src)
+
+    def test_a_span_that_never_closes_is_refused(self) -> None:
+        """Unreadable is not empty (CLAUDE.md rule 3).
+
+        Each of these used to blank to end of file or fall through to a guess,
+        and either way the scan went on to report what it could still see.
+        """
+        for label, src in {
+            "block comment": "pub fn a() {}\n/* never closed\nimpl Gate for Evil {}\n",
+            "nested block comment": "/* outer /* inner */ still open\nimpl Gate for Evil {}\n",
+            "string": 'pub const S: &str = "never closed;\nimpl Gate for Evil {}\n',
+            "raw string": 'pub const S: &str = r#"never closed";\nimpl Gate for Evil {}\n',
+            "char literal": "let c = '\\u{7b;\nimpl Gate for Evil {}\n",
+        }.items():
+            with self.subTest(shape=label):
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    _mask_non_code(src)
+                self.assertIn("unterminated", str(ctx.exception))
+
+    def test_code_only_keeps_code_after_a_block_comment_closes(self) -> None:
+        """`_code_only` deleted every line starting with `//`.
+
+        Inside a block comment that line is still comment text up to its `*/`,
+        and the code after it is real: `/*\n// */ impl Gate for Evil {}` compiles
+        to an implementor, and the line-dropping stripper hid it from every scan
+        that read through it - including the implementor enumeration.
+        """
+        src = "/*\n// */ impl Gate for Evil {}\n// a real line comment: impl Gate for Fake\n"
+        code = _code_only(src)
+        self.assertIn("impl Gate for Evil {}", code)
+        self.assertNotIn("Fake", code)
+        self.assertEqual(len(code), len(src))
+
+    def test_code_only_keeps_string_contents(self) -> None:
+        # The forbidden-token scans read string literals as code on purpose; only
+        # comments are prose.
+        self.assertIn(
+            "to_socket_addrs", _code_only('let s = "to_socket_addrs"; // to_socket_addrs')
+        )
+        self.assertEqual(_code_only('let s = "x"; // y').count("y"), 0)
+
+
 class GateImplementorScanTest(unittest.TestCase):
     """The scan that makes the port unforgeable, tested against real bypasses.
 
@@ -1361,6 +1446,52 @@ macro_rules! gen {
         with self.assertRaises(ConnectivityCheckError) as ctx:
             check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("end of file", str(ctx.exception))
+
+    def test_a_comment_the_lexer_misreads_does_not_hide_an_implementor(self) -> None:
+        """Adversarial review r28 [high] - the reviewer's reproducer, and its kin.
+
+        The reviewer's shape passed all 13 static checks with exactly one approved
+        implementor reported. Each shape here makes a comment end somewhere other
+        than where the old lexer thought it did.
+        """
+        shapes = {
+            "nested comment, then a quote": '/* outer /* inner */ " */',
+            "nested comment, then a raw-string opener": '/* outer /* inner */ r#" */',
+            "a `//` line inside a block comment": "/*\n// */",
+        }
+        for label, comment in shapes.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    f"""
+pub struct AlwaysOpen;
+{comment}
+impl atp_market_data::RestartWindowGate for AlwaysOpen {{
+    fn admission(&self) -> MarketDataAdmission {{
+        MarketDataAdmission::Admitted
+    }}
+}}
+// "
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_nested_comment_that_closes_properly_is_not_an_implementor(self) -> None:
+        # The legal direction: commented-out code is not code, at any depth.
+        self._inject(
+            "atp-orchestrator",
+            """
+/* outer /* inner */
+impl atp_market_data::RestartWindowGate for Commented {}
+*/
+pub struct Real;
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+        self.assertNotIn("Commented", evidence)
 
     def test_legal_code_that_only_MENTIONS_the_gate_is_not_an_implementor(self) -> None:
         """The other direction: a walker that cries wolf is deleted by the next reader.

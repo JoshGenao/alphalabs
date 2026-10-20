@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
@@ -70,22 +71,26 @@ def types_source(config: dict, root: Path = ROOT) -> str:
 
 
 def _code_only(source: str) -> str:
-    """Strip `//` line comments so a guard tests CODE, not the prose about it.
+    """`source` with every comment blanked, so a guard tests CODE, not the prose about it.
 
     Without this, a doc comment that says "never `to_socket_addrs`" trips the
     check that forbids `to_socket_addrs` — the guard fires on the sentence
     explaining why the guard exists, and a check that flags its own
     documentation is one people learn to route around.
 
-    It strips ONLY `//`, never a leading `*`. An earlier version also dropped
-    lines whose first non-space character was `*`, meaning to catch block-comment
-    continuations — and deleted every deref-assignment with it, so
-    `*self.subscribers.entry(k).or_default() = vec![s];` disappeared from the
-    scanned source and an ungated admission point was invisible. A stripper that
-    removes real code is worse than the false positive it was added for, and the
-    codebase uses no `/* */` blocks.
+    String literals are KEPT: the forbidden-token scans read them as code.
+
+    It reads through `_mask_non_code`, the one lexer. It used to drop every
+    line whose first non-space characters were `//`, which deleted real code
+    twice. Dropping lines starting `*` (meant for block-comment continuations)
+    removed every deref-assignment, so an ungated
+    `*self.subscribers.entry(k).or_default() = vec![s];` was invisible. And
+    inside a block comment a `//` line is still comment text only up to its
+    `*/`: `/*\n// */ impl Gate for Evil {}` compiles to an implementor that the
+    line-dropper hid from the enumeration (r28). A stripper that removes real
+    code is worse than the false positive it was added for.
     """
-    return "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("//"))
+    return _mask_non_code(source, strings=False)
 
 
 def _fn_body_any(source: str, fn_name: str) -> str:
@@ -480,81 +485,137 @@ def _all_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
-def _mask_non_code(source: str) -> str:
-    """`source` with every string, raw string, char literal and comment blanked.
+def _mask_non_code(source: str, *, strings: bool = True) -> str:
+    """`source` with every comment - and, by default, every literal - blanked.
 
     Same length, newlines kept, so an index into the result is an index into the
     source. Every scan that counts brackets reads THIS, not the raw text: a brace
-    or angle bracket inside a literal or a comment is not code.
+    or angle bracket inside a literal or a comment is not code. `strings=False`
+    blanks comments only, for the scans that read literals as code on purpose.
 
-    Rust has five ways to hide a bracket from a naive counter, and the real tree
-    uses them: a string literal, a raw string (`r#"{"id":1}"#`, 46 of them in one
-    adapter), a line comment, a block comment and a char literal. A lifetime
-    (`'a`) is not a char literal, and reading one as an open quote swallowed the
-    rest of the file. There is exactly one copy of these rules: the test-module
-    stripper and the implementor walker both read through it, so a fix to one
-    cannot miss the other.
+    It follows rustc's lexical rules, not a likeness of them, because every place
+    this lexer disagrees with the compiler about where code is, is a place to
+    hide code. Rust has five ways to hide a bracket from a naive counter, and the
+    real tree uses them: a string literal, a raw string (`r#"{"id":1}"#`, 46 of
+    them in one adapter), a line comment, a block comment and a char literal.
+    The rules that were got wrong, each of them once:
+
+    - A block comment NESTS (`/* a /* b */ c */` is one comment). Closing at the
+      first `*/` let `/* outer /* inner */ " */` read the last `"` as a string
+      opener and blank the implementor after it; all 13 checks passed (r28).
+    - Nothing is tokenized inside a comment: a `"`, `r#"` or `'` there opens
+      nothing.
+    - A lifetime (`'a`) is not a char literal; reading one as an open quote
+      swallowed the rest of the file.
+    - A char escape is a unit: `'\\''` is one literal, not `'\\'` plus a stray `'`.
+
+    A comment, string or char literal that never closes is REFUSED, never blanked
+    to end of file or guessed at: what the lexer cannot bound, no scan built on
+    it can call clean (CLAUDE.md rule 3). There is exactly one copy of these
+    rules; every scan in this file reads through it.
     """
     out = list(source)
+    size = len(source)
 
     def blank(a: int, b: int) -> None:
-        for k in range(a, min(b, len(out))):
+        for k in range(a, b):
             if out[k] != "\n":
                 out[k] = " "
 
     cursor = 0
-    while cursor < len(source):
-        char = source[cursor]
+    while cursor < size:
         two = source[cursor : cursor + 2]
         if two == "//":
             nl = source.find("\n", cursor)
-            stop = len(source) if nl == -1 else nl
+            stop = size if nl == -1 else nl
             blank(cursor, stop)
             cursor = stop
             continue
         if two == "/*":
-            close = source.find("*/", cursor + 2)
-            stop = len(source) if close == -1 else close + 2
-            blank(cursor, stop)
-            cursor = stop
+            depth, probe = 1, cursor + 2
+            while depth:
+                if probe >= size:
+                    _refuse(source, cursor, "block comment")
+                pair = source[probe : probe + 2]
+                if pair == "/*":
+                    depth, probe = depth + 1, probe + 2
+                elif pair == "*/":
+                    depth, probe = depth - 1, probe + 2
+                else:
+                    probe += 1
+            blank(cursor, probe)
+            cursor = probe
             continue
-        if char == "r" and source[cursor + 1 : cursor + 2] in ("#", '"'):
-            hashes = 0
-            probe = cursor + 1
-            while source[probe : probe + 1] == "#":
-                hashes += 1
-                probe += 1
-            if source[probe : probe + 1] == '"':
-                close = source.find('"' + "#" * hashes, probe + 1)
-                if close != -1:
-                    blank(cursor, close + 1 + hashes)
-                    cursor = close + 1 + hashes
-                    continue
-        if char == '"':
-            probe = cursor + 1
-            while probe < len(source):
-                if source[probe] == "\\":
-                    probe += 2
-                    continue
-                if source[probe] == '"':
-                    break
-                probe += 1
-            blank(cursor, probe + 1)
-            cursor = probe + 1
+        literal_end = _literal_end(source, cursor)
+        if literal_end is None:
+            cursor += 1
             continue
-        if char == "'":
-            if source[cursor + 1 : cursor + 2] == "\\":
-                close = source.find("'", cursor + 2)
-                if close != -1:
-                    blank(cursor, close + 1)
-                    cursor = close + 1
-                    continue
-            elif source[cursor + 2 : cursor + 3] == "'":
-                blank(cursor, cursor + 3)
-                cursor += 3
-                continue
-        cursor += 1
+        # A literal is always skipped whole, so a `//` or `/*` inside one is never
+        # read as a comment; `strings=False` keeps its text.
+        if strings:
+            blank(cursor, literal_end)
+        cursor = literal_end
     return "".join(out)
+
+
+# A char literal's escape and its closing quote: `\u{..}` (hex digits and `_`),
+# `\x` and two hex digits, or the backslash and any one character.
+_CHAR_ESCAPE = re.compile(r"\\(?:u\{[0-9A-Fa-f_]{1,8}\}|x[0-9A-Fa-f]{2}|.)'", re.S)
+
+
+def _refuse(source: str, at: int, what: str) -> NoReturn:
+    line = source.count("\n", 0, at) + 1
+    raise ConnectivityCheckError(
+        f"unterminated {what} at line {line} of a scanned Rust source; this scan "
+        "cannot tell where code resumes, so it cannot bound what follows"
+    )
+
+
+def _literal_end(source: str, cursor: int) -> int | None:
+    """The index just past the string, raw string or char literal at `cursor`.
+
+    None when `cursor` does not open one (a lifetime, a raw identifier, code).
+    A prefix (`b"`, `c"`, `br#"`) needs no case of its own: the prefix letter is
+    code, and the literal is found at its quote or its `r`.
+    """
+    size = len(source)
+    char = source[cursor]
+    if char == "r" and source[cursor + 1 : cursor + 2] in ("#", '"'):
+        if cursor and (source[cursor - 1].isalnum() or source[cursor - 1] == "_"):
+            if source[cursor - 1] not in "bc" or (
+                cursor > 1 and (source[cursor - 2].isalnum() or source[cursor - 2] == "_")
+            ):
+                return None  # the tail of an identifier, not a raw-string prefix
+        hashes, probe = 0, cursor + 1
+        while source[probe : probe + 1] == "#":
+            hashes, probe = hashes + 1, probe + 1
+        if source[probe : probe + 1] != '"':
+            return None  # a raw identifier (`r#type`)
+        close = source.find('"' + "#" * hashes, probe + 1)
+        if close == -1:
+            _refuse(source, cursor, "raw string")
+        return close + 1 + hashes
+    if char == '"':
+        probe = cursor + 1
+        while probe < size:
+            if source[probe] == "\\":
+                probe += 2
+            elif source[probe] == '"':
+                return probe + 1
+            else:
+                probe += 1
+        _refuse(source, cursor, "string literal")
+    if char == "'":
+        if source[cursor + 1 : cursor + 2] == "\\":
+            # An escape is a unit, in exactly rustc's forms; the literal must
+            # close right after it.
+            escaped = _CHAR_ESCAPE.match(source, cursor + 1)
+            if escaped is None:
+                _refuse(source, cursor, "char literal")
+            return escaped.end()
+        if source[cursor + 2 : cursor + 3] == "'" and source[cursor + 1 : cursor + 2] != "\n":
+            return cursor + 3
+    return None
 
 
 def _without_test_module(source: str) -> str:
