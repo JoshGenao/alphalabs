@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 25 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 26 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 25 - the loop has not reached APPROVE.** The feature first
+  standing at round 26 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 25 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 26 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -632,7 +632,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 25**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 26**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer
@@ -650,14 +650,18 @@ the code moved. TWO things stand between here and green:
 
    Once the judgment layer approves, from the PRIMARY checkout:
 
-       python3 tools/adversarial_review.py <pre-feature-base>   # until APPROVE
+       python3 tools/adversarial_review.py      # until APPROVE
        python3 tools/evidence.py critic SRS-MD-005 --layer judgment \
-           --verdict approve --reviewer <who>
+           --verdict approve --reviewer <who> --rounds <N>
        python3 tools/close_feature.py SRS-MD-005 --verified --attested-by operator
 
-   Omitting `--rounds` is correct: `cmd_critic` reads the count from
-   `review.jsonl`, which the approving round has just appended to. It falls back
-   to the previous stamp only when that ledger is missing or unreadable.
+   Run the review with no base argument. Its default, `origin/main`, is PR #18's
+   diff, because the feature itself is already on `main`; a pre-feature base would
+   also pull in every later `main` commit. Pass `--rounds N` explicitly, where N is
+   the number of verdict-bearing rounds in `review.jsonl`: `cmd_critic` neither
+   reads that ledger nor carries a previous stamp forward, so an omitted
+   `--rounds` is simply dropped. An earlier version of this block said the
+   opposite; it described the evidence-harness `cmd_critic` that was reverted.
 
 Nothing is outstanding for the acceptance criterion itself. The four items in
 `connectivity_contract.restart_window.deferred[]` are follow-on scope owned by
