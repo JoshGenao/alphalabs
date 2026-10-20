@@ -10,7 +10,7 @@
 
 ## Outstanding
 
-- deterministic critic approved at 7af1b26d, but 3 non-evidence path(s) have changed since (tests/domain/test_md005_scheduled_restart_window.py, tests/test_connectivity_contract.py, tools/connectivity_check.py) — the approval describes code this close would not ship. Re-run the deterministic review.
+- deterministic critic approved at 7af1b26d, but 5 non-evidence path(s) have changed since (docs/playbooks/adversarial-precheck.md, docs/verification-queue.md, tests/domain/test_md005_scheduled_restart_window.py…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
 
 ## Acceptance criterion

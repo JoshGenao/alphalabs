@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 28 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 29 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 28 - the loop has not reached APPROVE.** The feature first
+  standing at round 29 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 28 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 29 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -594,6 +594,31 @@ count.
       comments with the non-nesting regex `/\*.*?\*/`. They guard other
       features' contracts, are outside this diff, and are recorded for their
       owners; the playbook rule below names the class.
+  r29 block/1  - 2026-10-20, at 8dc24b5. Codex, one high finding, in the alias
+      finder: it matched a braced use group up to its first `}`, so a NESTED
+      group hid the rename - `use atp_market_data::{RestartWindowGate as G,
+      live_feed::{LiveFeedLoop}};` bound no alias and `impl G for AlwaysOpen`
+      left all 13 checks green. Fixed by reading the rename PAIRS, not the tree
+      shape: a rename can only sit inside a use declaration, which ends at its
+      first `;`, so every `X as Y` in that span counts at any depth. `self as
+      Y` resolves to the segment its group hangs from (`Trait::{self as G}`,
+      found while writing the fix), and a rename through a macro metavariable
+      is refused.
+
+      Three rounds in a row found a different way to hide an implementor from
+      this one scan, so the round also swept for the next one rather than
+      waiting for it. Two more routes were live, and both are now refused:
+      code the scan never READS (`#[path]`, `include!`, a build script, a Cargo
+      target outside `src/`, a proc-macro crate, a workspace member outside
+      `crates/` or a root package - none used by the tree), and a macro HANDED
+      the gate's name (`#[delegate(RestartWindowGate)]`, `gen!(Gate, X)`), whose
+      expansion no source scan sees. Each guard was then attacked in turn
+      before shipping: `path =` is refused anywhere in an attribute (it hides
+      in `cfg_attr`), `include` as a word (`use std::include as splice;`), and
+      the name is searched with strings kept (`#[delegate(target = "Gate")]`).
+      The real tree passes all 13 checks;
+      every new guard is mutation-verified, and two domain tests plant the
+      shapes in the real tree and run the full gate.
 
 ## Playbook updates
 
@@ -671,7 +696,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 28**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 29**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

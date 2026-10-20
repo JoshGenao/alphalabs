@@ -101,6 +101,16 @@ Three corollaries worth having before you write the guard:
   lines starting `//`) is a second lexer with its own disagreements: inside a
   block comment, `// */ code` ends the comment. The repo-wide sweep found the
   non-nesting regex `/\*.*?\*/` in four other check tools. `(SRS-MD-005 r28)`
+- **A closed-set claim covers what is COMPILED, not what you read.** An
+  enumeration that says "exactly one implementor" is only as wide as its file
+  list and its view of each file. r29 hid a rename in a nested use group; the
+  sweep after it found two more routes no reviewer had tried yet: code the scan
+  never reads (`#[path]`, `include!`, build scripts, targets outside `src/`,
+  proc-macro crates, members outside the scanned directory) and a macro handed
+  the trait's name, whose expansion no source scan sees. Enumerate every route
+  by which the compiler can see code you do not, and refuse each one the tree
+  does not use. When rounds keep finding new shapes of one hole, stop answering
+  the round and sweep for the next shape yourself. `(SRS-MD-005 r29)`
 
 `(SRS-MD-005)`
 
