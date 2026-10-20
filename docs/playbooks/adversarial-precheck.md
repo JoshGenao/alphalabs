@@ -90,6 +90,17 @@ Three corollaries worth having before you write the guard:
   with one lexer every scan shares; bound each header by bracket depth; fail on
   any header you cannot bound. A backstop that shares the strict pattern's
   assumptions shares its blind spot. `(SRS-MD-005 r27)`
+- **A lexer is a claim about the compiler's rules: copy them, never a likeness.**
+  The one lexer r27 introduced closed a block comment at its first `*/`, but Rust
+  comments nest, so `/* a /* b */ " */` left a phantom `"` that blanked the
+  implementor after it and all 13 checks passed (r28). Every point where your
+  lexer and the compiler disagree about where code is, is a place to hide code.
+  Check each rule against the language reference - comment nesting, nothing
+  tokenized inside a comment, the exact escape forms - and REFUSE any span that
+  never closes instead of blanking to end of file. A line-based shortcut (drop
+  lines starting `//`) is a second lexer with its own disagreements: inside a
+  block comment, `// */ code` ends the comment. The repo-wide sweep found the
+  non-nesting regex `/\*.*?\*/` in four other check tools. `(SRS-MD-005 r28)`
 
 `(SRS-MD-005)`
 
