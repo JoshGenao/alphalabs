@@ -480,6 +480,83 @@ def _all_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
+def _mask_non_code(source: str) -> str:
+    """`source` with every string, raw string, char literal and comment blanked.
+
+    Same length, newlines kept, so an index into the result is an index into the
+    source. Every scan that counts brackets reads THIS, not the raw text: a brace
+    or angle bracket inside a literal or a comment is not code.
+
+    Rust has five ways to hide a bracket from a naive counter, and the real tree
+    uses them: a string literal, a raw string (`r#"{"id":1}"#`, 46 of them in one
+    adapter), a line comment, a block comment and a char literal. A lifetime
+    (`'a`) is not a char literal, and reading one as an open quote swallowed the
+    rest of the file. There is exactly one copy of these rules: the test-module
+    stripper and the implementor walker both read through it, so a fix to one
+    cannot miss the other.
+    """
+    out = list(source)
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, len(out))):
+            if out[k] != "\n":
+                out[k] = " "
+
+    cursor = 0
+    while cursor < len(source):
+        char = source[cursor]
+        two = source[cursor : cursor + 2]
+        if two == "//":
+            nl = source.find("\n", cursor)
+            stop = len(source) if nl == -1 else nl
+            blank(cursor, stop)
+            cursor = stop
+            continue
+        if two == "/*":
+            close = source.find("*/", cursor + 2)
+            stop = len(source) if close == -1 else close + 2
+            blank(cursor, stop)
+            cursor = stop
+            continue
+        if char == "r" and source[cursor + 1 : cursor + 2] in ("#", '"'):
+            hashes = 0
+            probe = cursor + 1
+            while source[probe : probe + 1] == "#":
+                hashes += 1
+                probe += 1
+            if source[probe : probe + 1] == '"':
+                close = source.find('"' + "#" * hashes, probe + 1)
+                if close != -1:
+                    blank(cursor, close + 1 + hashes)
+                    cursor = close + 1 + hashes
+                    continue
+        if char == '"':
+            probe = cursor + 1
+            while probe < len(source):
+                if source[probe] == "\\":
+                    probe += 2
+                    continue
+                if source[probe] == '"':
+                    break
+                probe += 1
+            blank(cursor, probe + 1)
+            cursor = probe + 1
+            continue
+        if char == "'":
+            if source[cursor + 1 : cursor + 2] == "\\":
+                close = source.find("'", cursor + 2)
+                if close != -1:
+                    blank(cursor, close + 1)
+                    cursor = close + 1
+                    continue
+            elif source[cursor + 2 : cursor + 3] == "'":
+                blank(cursor, cursor + 3)
+                cursor += 3
+                continue
+        cursor += 1
+    return "".join(out)
+
+
 def _without_test_module(source: str) -> str:
     """Drop every `#[cfg(test)] mod .. { .. }` BLOCK, keeping the rest.
 
@@ -489,72 +566,24 @@ def _without_test_module(source: str) -> str:
     this, including the one that enumerates who may implement the admission
     gate. A stripper that removes real code is the same defect as the `*` rule
     that hid a deref-assignment, one file along.
+
+    Braces are counted in `_mask_non_code`'s output. Counting them in the raw text
+    meant a test module containing `let s = "{";` never closed, so the stripper
+    swallowed the whole rest of the file - and every scan built on it, including
+    the implementor enumeration, then read an empty tail as a clean, closed set.
     """
+    masked = _mask_non_code(source)
     out: list[str] = []
     index = 0
-    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", source):
+    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", masked):
         if match.start() < index:
             continue
         out.append(source[index : match.start()])
-        # Braces inside STRING and CHAR literals are not braces. Counting them
-        # meant a test module containing `let s = "{";` never closed, so the
-        # stripper swallowed the whole rest of the file - and every scan built
-        # on it, including the completeness backstop, then read an empty tail
-        # and reported a clean, closed set.
-        # Braces only count when they are CODE. Rust has four ways to hide one,
-        # and the real tree uses all of them: a string literal, a raw string
-        # (`r#"{"id":1}"#`, 46 of them in one adapter), a line comment, and a
-        # block comment. A lifetime (`'a`) is not a char literal either, and
-        # reading one as an open quote swallowed the rest of the file.
-        #
-        # Counting naively meant a test module never closed and the stripper ate
-        # every production line after it - which every scan built on this then
-        # read as an empty, clean tree.
         depth, cursor = 1, match.end()
-        while cursor < len(source) and depth:
-            char = source[cursor]
-            two = source[cursor : cursor + 2]
-            if two == "//":
-                nl = source.find("\n", cursor)
-                cursor = len(source) if nl == -1 else nl + 1
-                continue
-            if two == "/*":
-                close = source.find("*/", cursor + 2)
-                cursor = len(source) if close == -1 else close + 2
-                continue
-            if char == "r" and source[cursor + 1 : cursor + 2] in ("#", '"'):
-                hashes = 0
-                probe = cursor + 1
-                while source[probe : probe + 1] == "#":
-                    hashes += 1
-                    probe += 1
-                if source[probe : probe + 1] == '"':
-                    close = source.find('"' + "#" * hashes, probe + 1)
-                    if close != -1:
-                        cursor = close + 1 + hashes
-                        continue
-            if char == '"':
-                probe = cursor + 1
-                while probe < len(source):
-                    if source[probe] == "\\":
-                        probe += 2
-                        continue
-                    if source[probe] == '"':
-                        break
-                    probe += 1
-                cursor = probe + 1
-                continue
-            if char == "'":
-                if source[cursor + 1 : cursor + 2] == "\\":
-                    close = source.find("'", cursor + 2)
-                    cursor = close + 1 if close != -1 else cursor + 1
-                    continue
-                if source[cursor + 2 : cursor + 3] == "'":
-                    cursor += 3
-                    continue
-            if char == "{":
+        while cursor < len(masked) and depth:
+            if masked[cursor] == "{":
                 depth += 1
-            elif char == "}":
+            elif masked[cursor] == "}":
                 depth -= 1
             cursor += 1
         if depth:
@@ -1001,23 +1030,167 @@ def _fn_declarations(source: str, name: str) -> list[str]:
 def _strip_generic_args(text: str) -> str:
     """Drop `<...>` spans so type PARAMETERS are not read as type names.
 
-    `ScheduledRestartConnectivity<P, C>` must yield one name, not three.
+    `ScheduledRestartConnectivity<P, C>` must yield one name, not three. Reads
+    masked text (`_mask_non_code`).
+
+    NOT the `>` of a `->`: closing on it made depth fall to 0 inside
+    `Wrapper<fn() -> EpochNanos>`, so ` EpochNanos` was emitted at depth 0 and
+    reported as an undeclared production implementor. And not a `>` inside a
+    const-generic BRACE either: `Wrapper<{ N > 1 }>` closes nothing until its
+    braces do (review r27).
     """
-    out, depth, prev = [], 0, ""
+    out, angle, brace, prev = [], 0, 0, ""
     for ch in text:
-        if ch == "<":
-            depth += 1
-        elif ch == ">" and prev != "-":
-            # NOT the `>` of a `->`. Closing on it made depth fall to 0 inside
-            # `Wrapper<fn() -> EpochNanos>`, so ` EpochNanos` was emitted at
-            # depth 0 and reported as an undeclared production implementor: the
-            # guard failing on a legal shape. Fourth arrow-versus-bracket defect
-            # in this feature.
-            depth = max(0, depth - 1)
-        elif depth == 0:
+        if angle and ch == "{":
+            brace += 1
+        elif brace and ch == "}":
+            brace -= 1
+        elif not brace and ch == "<":
+            angle += 1
+        elif not brace and ch == ">" and prev != "-":
+            angle = max(0, angle - 1)
+        elif angle == 0:
             out.append(ch)
         prev = ch
     return "".join(out)
+
+
+def _impl_headers(masked: str) -> list[str]:
+    """The header of every `impl` ITEM in `masked`: the text between `impl` and `{`/`;`.
+
+    Bounded by bracket DEPTH, not by a pattern (adversarial review r27). Two
+    regexes - a strict match and a "loose" backstop - both assumed no `{` could
+    precede the trait name. Rust permits one inside a const-generic argument,
+    `impl<T: HasWidth<{ 1 + 1 }>> RestartWindowGate for AlwaysOpen<T>`, so both
+    missed it, their counts agreed, and the backstop never fired. Seven earlier
+    defects in this scan were the same shape: a pattern that did not anticipate
+    a legal header. A walker has no shapes to anticipate: an impl's header ends
+    at the first `{` or `;` with every `<`, `(`, `[` closed, and a brace opened
+    INSIDE one of those is a const expression, counted until it closes.
+
+    An `impl` that closes a bracket it never opened is `impl Trait` in a TYPE
+    position (`fn f(x: impl Gate, y: u8)` meets the `)`), not an impl item. A
+    top-level `,` is NOT that signal: a where clause has them (`where P: X, C: Y`).
+    A header that runs to end of file cannot be bounded, so it fails.
+    """
+    headers: list[str] = []
+    for match in re.finditer(r"\bimpl\b", masked):
+        angle = paren = bracket = brace = 0
+        prev, end, item = "", None, True
+        j = match.end()
+        while j < len(masked):
+            ch = masked[j]
+            if brace:
+                if ch == "{":
+                    brace += 1
+                elif ch == "}":
+                    brace -= 1
+            elif ch in "{;" and angle == paren == bracket == 0:
+                end = j
+                break
+            elif ch == "{":
+                brace += 1
+            elif ch == "<":
+                angle += 1
+            elif ch == ">" and prev != "-":
+                angle -= 1
+            elif ch == "(":
+                paren += 1
+            elif ch == ")":
+                paren -= 1
+            elif ch == "[":
+                bracket += 1
+            elif ch == "]":
+                bracket -= 1
+            if min(angle, paren, bracket) < 0:
+                item = False
+                break
+            prev = ch
+            j += 1
+        if not item:
+            continue
+        if end is None:
+            fail(
+                "an `impl` header runs to end of file without a `{` or `;` this scan can "
+                "bound; a header it cannot bound is one it cannot classify"
+            )
+        headers.append(masked[match.end() : end])
+    return headers
+
+
+def _top_level_keyword(text: str, word: str) -> int:
+    """Index of `word` as a whole word OUTSIDE every bracket in `text`, or -1."""
+    angle = paren = bracket = brace = 0
+    prev = ""
+    for k, ch in enumerate(text):
+        if brace:
+            brace += {"{": 1, "}": -1}.get(ch, 0)
+        elif ch == "{":
+            brace += 1
+        elif ch == "<":
+            angle += 1
+        elif ch == ">" and prev != "-":
+            angle -= 1
+        elif ch == "(":
+            paren += 1
+        elif ch == ")":
+            paren -= 1
+        elif ch == "[":
+            bracket += 1
+        elif ch == "]":
+            bracket -= 1
+        elif (
+            angle == paren == bracket == 0
+            and text.startswith(word, k)
+            and (k == 0 or not (text[k - 1].isalnum() or text[k - 1] == "_"))
+            and not (
+                text[k + len(word) : k + len(word) + 1].isalnum()
+                or text[k + len(word) : k + len(word) + 1] == "_"
+            )
+        ):
+            return k
+        prev = ch
+    return -1
+
+
+def _split_impl_header(header: str) -> tuple[str, str] | None:
+    """`(trait, target)` for a trait impl header; None for an inherent impl.
+
+    The impl's own generic list is skipped by depth, then the header splits at
+    the first TOP-LEVEL `for`. A `for` inside a bound (`for<'a> Fn(&'a u8)`) is
+    inside brackets, and one after a top-level `where` belongs to the where
+    clause, so neither is the split.
+    """
+    text = header.lstrip()
+    if text.startswith("<"):
+        angle, brace, prev, close = 0, 0, "", -1
+        for index, ch in enumerate(text):
+            if brace:
+                brace += {"{": 1, "}": -1}.get(ch, 0)
+            elif ch == "{":
+                brace += 1
+            elif ch == "<":
+                angle += 1
+            elif ch == ">" and prev != "-":
+                angle -= 1
+                if angle == 0:
+                    close = index
+                    break
+            prev = ch
+        if close < 0:
+            # An impl generic list that never closes. Skipping the header would
+            # be the fail-open this walker replaced; refuse instead.
+            fail(f"cannot find the end of the impl generic list in `impl{header.rstrip()}`")
+        text = text[close + 1 :]
+    for_at = _top_level_keyword(text, "for")
+    where_at = _top_level_keyword(text, "where")
+    if for_at < 0 or 0 <= where_at < for_at:
+        return None
+    target = text[for_at + 3 :]
+    target_where = _top_level_keyword(target, "where")
+    if target_where >= 0:
+        target = target[:target_where]
+    return text[:for_at], target
 
 
 def check_restart_window_gate_implementors(config: dict, _unused: str, root: Path = ROOT) -> str:
@@ -1054,7 +1227,7 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     # Aliases are collected across the WHOLE tree first, because a rename can be
     # two hops: `pub use RestartWindowGate as Gate;` in one module, then
     # `use crate::gates::Gate; impl Gate for AlwaysOpen` in another. Reading
-    # only the file being scanned found neither the strict nor the loose match,
+    # only the file being scanned found no implementor under the alias,
     # and reported a clean set - while the playbook recorded the rename class as
     # closed.
     crate_aliases: set[str] = set()
@@ -1085,90 +1258,41 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             "implementor set until it settles"
         )
     for path, source in sources.items():
-        # `[^{};]*?` for the generic list, NOT `[^>]*`: that character class
-        # terminates on the `>` of a `->` return arrow, so
-        # `impl<C: Fn() -> i64> RestartWindowGate for AlwaysOpen` slipped
-        # through the guard whose whole purpose is that nothing slips
-        # through it. Excluding `{`/`}`/`;` instead keeps the match inside
-        # one impl header while permitting arrows, lifetimes and where-less
-        # bounds.
-        # The impl TARGET is a type, not an identifier. Requiring `(\w+)`
-        # after `for` meant `impl Gate for &AlwaysOpen`,
-        # `impl<'a> Gate for &'a AlwaysOpen` and `impl Gate for (AlwaysOpen, u8)`
-        # all returned no match, so the "closed set" stayed open to exactly
-        # the always-admitting production gate it exists to forbid. Take the
-        # whole target span, strip its generic arguments (or `P` and `C` in
-        # `ScheduledRestartConnectivity<P, C>` would each read as a type),
-        # and collect every type name left.
-        # The trait may be RENAMED at the use site:
-        # `use atp_market_data::RestartWindowGate as Gate;` then
-        # `impl Gate for AlwaysOpen`. Keying on the literal spelling made
-        # that produce no match at all, while the check went on printing
-        # "this enumeration is what makes it unforgeable". Collect the local
-        # aliases first and search for every name the trait answers to.
+        # The trait may be RENAMED at the use site, in this file or two hops
+        # away: `use atp_market_data::RestartWindowGate as Gate; impl Gate for
+        # AlwaysOpen`. Search for every name the trait answers to.
         names = {spec["trait"], *crate_aliases, *_local_aliases(source, spec["trait"])}
-        alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
-        # How many impls of this trait EXIST in the file, by the loosest
-        # possible reading. The strict pattern below must account for every
-        # one of them; if it matches fewer, some shape slipped past it and
-        # the enumeration is not closed. This is the backstop for every
-        # "the regex did not anticipate that" defect at once - five of them
-        # so far, each found by a reviewer rather than by the check.
-        # WIDER than the strict pattern in the TARGET, identical in the trait
-        # POSITION. Allowing anything between the trait name and `for` made an
-        # ordinary bound - `impl<W: RestartWindowGate> SomeOtherTrait for
-        # Manager<W>` - count as an expected implementor header the strict pass
-        # could never match, so the whole connectivity gate `fail()`ed on legal
-        # code. A backstop that cries wolf is deleted by the next person who
-        # meets it, which makes it as dead as one that never fires.
-        #
-        # Still wider where it matters, deliberately. The first version
-        # bounded this with `[^;]` - the same boundary the strict pattern
-        # used - so any shape a `;` defeated defeated BOTH, giving
-        # expected == matched == 0 and a clean report. A backstop that
-        # shares the blind spot it backs up is not a backstop. Braces are
-        # the only delimiter an impl header genuinely cannot contain.
-        expected = len(
-            re.findall(
-                rf"\bimpl\b[^{{}}]*?\b(?:{alternation})\s*(?:<[^{{}};]*>)?\s+for\b",
-                source,
-                re.S,
-            )
-        )
-        matched = 0
-        for match in re.finditer(
-            rf"\bimpl\b[^{{}};]*?\s+(?:\w+::)*(?:{alternation})"
-            # The TRAIT may itself carry generics or an associated-type binding:
-            # `impl Gate<Clock = SystemClock> for X`. Requiring a bare name
-            # before `for` made the strict pattern AND the backstop miss it, so
-            # expected == matched == 0 and the scan reported a clean, closed set.
-            r"\s*(?:<[^{};]*>)?\s+for\s+([^{;]+?)(?:\bwhere\b|\{)",
-            source,
-            re.S,
-        ):
-            matched += 1
-            target = _strip_generic_args(match.group(1))
-            names = re.findall(r"\b([A-Z]\w*)", target)
-            if not names:
+        for header in _impl_headers(_mask_non_code(source)):
+            split = _split_impl_header(header)
+            if split is None:
+                continue
+            trait_part, target = split
+            if "$" in trait_part:
+                # A macro that takes the trait as an argument can implement the
+                # gate under a name no scan of the definition can see.
+                fail(
+                    f"{path.relative_to(root)} has a macro-generated impl whose trait is "
+                    f"a metavariable (`impl{header.rstrip()}`); this scan cannot tell "
+                    f"whether it implements `{spec['trait']}`, so it cannot bound the set"
+                )
+            idents = re.findall(r"[A-Za-z_]\w*", _strip_generic_args(trait_part))
+            if not idents or idents[-1] not in names:
+                continue
+            type_names = re.findall(r"\b([A-Z]\w*)", _strip_generic_args(target))
+            if not type_names:
                 # An impl target with no uppercase identifier - a primitive
-                # (`impl Gate for i64`), a lowercase type alias, a bare
-                # `[u8; 4]` - collected NOTHING, so the "closed set" stayed
-                # open while the check reported a clean tree. Unnameable is
-                # not absent (CLAUDE.md rule 3): report the raw span.
+                # (`impl Gate for i64`), a lowercase type alias, a macro's `$t` -
+                # collected NOTHING, so the "closed set" stayed open while the
+                # check reported a clean tree. Unnameable is not absent
+                # (CLAUDE.md rule 3): report the raw span.
                 fail(
                     f"`{spec['trait']}` is implemented for `{target.strip()}` in "
                     f"{path.relative_to(root)}, whose type this scan cannot name. "
                     "An implementor it cannot name is one it cannot bound, so this "
                     "fails rather than reporting a closed set"
                 )
-            for name in names:
+            for name in type_names:
                 found[name] = str(path.relative_to(root))
-        if matched < expected:
-            fail(
-                f"{path.relative_to(root)} contains {expected} `impl ... {spec['trait']} "
-                f"... for` header(s) but this scan could parse only {matched}. A shape it "
-                "cannot parse is one it cannot bound, so the enumeration is not closed"
-            )
     if not found:
         fail(
             f"no production type implements `{spec['trait']}` — either the producer was "

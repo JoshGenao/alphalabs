@@ -792,6 +792,56 @@ impl RestartWindowGate for AlwaysOpenWindow {
     check_restart_window_gate_implementors(config, "")
 
 
+def test_a_const_generic_brace_cannot_hide_a_second_implementor() -> None:
+    """Adversarial review r27 [high], planted in the REAL tree.
+
+    Rust permits a `{` inside a const-generic argument. The scan's two regexes
+    both assumed no brace before the trait name, so this implementor - which the
+    reviewer type-checked - was invisible to both, and the guard went on
+    reporting exactly one approved implementor while an always-admitting gate
+    bypassed the SYS-75(a) suspension. The scan now bounds each impl header by
+    bracket depth.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_restart_window_gate_implementors,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    check_restart_window_gate_implementors(config, "")  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub trait HasWidth<const N: usize> {}
+pub struct BracedOpenWindow<T>(T);
+impl<T: HasWidth<{ 1 + 1 }>> RestartWindowGate for BracedOpenWindow<T> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="BracedOpenWindow"):
+            check_restart_window_gate_implementors(config, "")
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    check_restart_window_gate_implementors(config, "")
+
+
 def test_the_resume_proof_labels_its_readiness_scope() -> None:
     """A reachable probe means the endpoint accepted TCP.
 

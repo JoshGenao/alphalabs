@@ -1173,8 +1173,11 @@ impl atp_market_data::RestartWindowGate for {target} {{
                     msg,
                 )
 
-    def test_the_backstop_does_not_share_the_blind_spot_it_backs_up(self) -> None:
+    def test_a_semicolon_in_the_header_does_not_hide_an_implementor(self) -> None:
         """A backstop bounded like the pattern it backs up is not a backstop.
+
+        History: the regex pair this pinned was replaced by a depth walker in r27.
+        The shape stays pinned because the walker must still catch it.
 
         The completeness count was written with `[^;]`, the same boundary the
         strict pattern used, so any shape a `;` defeated defeated BOTH and the
@@ -1231,8 +1234,8 @@ impl Gate for AlwaysOpen {
             check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("AlwaysOpen", str(ctx.exception))
 
-    def test_the_backstop_does_not_fire_on_an_ordinary_generic_bound(self) -> None:
-        """The false-positive direction of the completeness backstop.
+    def test_an_ordinary_generic_bound_is_not_an_implementor(self) -> None:
+        """The false-positive direction (first found in the r24 regex backstop).
 
         Counting any `impl ... Trait ... for` span made `impl<W:
         RestartWindowGate> SomeOtherTrait for Manager<W>` - a perfectly ordinary
@@ -1293,6 +1296,101 @@ impl<W: atp_market_data::RestartWindowGate> SomeOtherTrait for Manager<W> {
         (empty / "crates").mkdir()
         with self.assertRaises(ConnectivityCheckError):
             check_restart_window_gate_implementors(self.config, "", root=empty)
+
+    def test_a_brace_inside_the_generics_does_not_hide_an_implementor(self) -> None:
+        """Adversarial review r27 [high] - the reviewer's own reproducer, and its kin.
+
+        Rust permits a `{` inside a const-generic argument. Both regex scans - the
+        strict match and the backstop - assumed no brace could precede the trait
+        name, so both missed the impl, their counts agreed at zero, and the scan
+        reported exactly one approved implementor. The reviewer type-checked the
+        first shape below. The walker bounds a header by bracket depth instead.
+        """
+        shapes = {
+            "const generic in a bound": (
+                "impl<T: HasWidth<{ 1 + 1 }>> atp_market_data::RestartWindowGate "
+                "for AlwaysOpen<T> {"
+            ),
+            "a `>` inside the const brace": (
+                "impl<T: HasWidth<{ 2 > 1 }>> atp_market_data::RestartWindowGate "
+                "for AlwaysOpen<T> {"
+            ),
+            "const generic in the target": (
+                "impl atp_market_data::RestartWindowGate for AlwaysOpen<{ 1 + 1 }> {"
+            ),
+        }
+        for label, header in shapes.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    f"""
+pub struct AlwaysOpen<T>(T);
+
+{header}
+    fn admission(&self) -> MarketDataAdmission {{
+        MarketDataAdmission::Admitted
+    }}
+}}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_macro_that_takes_the_trait_as_an_argument_fails_closed(self) -> None:
+        # `gen!(atp_market_data::RestartWindowGate, AlwaysOpen)` would implement the
+        # gate under a name no scan of the macro's definition can see.
+        self._inject(
+            "atp-orchestrator",
+            """
+macro_rules! gen {
+    ($tr:path, $t:ty) => {
+        impl $tr for $t {
+            fn admission(&self) -> MarketDataAdmission { MarketDataAdmission::Admitted }
+        }
+    };
+}
+""",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("metavariable", str(ctx.exception))
+
+    def test_a_header_that_never_ends_fails_closed(self) -> None:
+        self._inject("atp-orchestrator", "impl<T> atp_market_data::RestartWindowGate for X<T>")
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("end of file", str(ctx.exception))
+
+    def test_legal_code_that_only_MENTIONS_the_gate_is_not_an_implementor(self) -> None:
+        """The other direction: a walker that cries wolf is deleted by the next reader.
+
+        Each shape is legal production code that names the gate without
+        implementing it: text in a string literal, `impl Trait` in an argument
+        position next to a where clause's commas, and a return-position
+        `impl Trait`. None may count, and none may fail the scan.
+        """
+        self._inject(
+            "atp-orchestrator",
+            """
+pub const DOC: &str = "impl RestartWindowGate for Fake {";
+
+pub fn takes(gate: impl atp_market_data::RestartWindowGate, n: u8) -> u8
+where
+    u8: Copy,
+    u16: Copy,
+{
+    n
+}
+
+pub fn gives<'a>() -> impl Fn() -> u8 + 'a {
+    || 1
+}
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+        self.assertNotIn("Fake", evidence)
 
 
 if __name__ == "__main__":
