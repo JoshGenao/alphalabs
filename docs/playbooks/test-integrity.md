@@ -427,3 +427,11 @@ Read this whenever you write a test, and before you believe a green one.
     answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
     arrived. Found on the guard's own first mutation run, which is the only reason it was
     found at all. `(SRS-MD-005 r16)`
+49. **Renaming a test silently shrinks every `-k` selection that names it.** The round-27
+    fix renamed `test_the_backstop_does_not_share_the_blind_spot_it_backs_up`; a domain
+    test that shells the contract suite with `-k "... or backstop_does_not_share or ..."`
+    then ran two tests instead of three. pytest exits 0 on a smaller selection, so only the
+    shelling test's `assert "3 passed"` turned it red - and only in the full re-run, after
+    the commit. Before renaming a test, `grep -rn <old name fragment> tests/`; and a test
+    that shells a `-k` selection must assert the exact count, never just the exit code.
+    `(SRS-MD-005 r27 re-run)`

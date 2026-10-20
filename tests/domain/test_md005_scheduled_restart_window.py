@@ -1233,7 +1233,7 @@ def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
             str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
             "-q",
             "-k",
-            "semicolon_inside_a_generic_bound or backstop_does_not_share or two_hop_rename",
+            "semicolon_inside_a_generic_bound or semicolon_in_the_header or two_hop_rename",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
