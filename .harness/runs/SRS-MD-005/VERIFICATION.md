@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was run at commit `3585315`. The commit that adds this document changes
+block was run at commit `7af1b26`. The commit that adds this document changes
 only files under `.harness/runs/SRS-MD-005/`, so the code it certifies is the
 code it ships with. It is a re-verification, not a replay of the session that
 built the feature.
@@ -12,13 +12,14 @@ reported 101 collected where the same command then collected 110. Re-running is
 the only honest repair for that, so the whole transcript is re-run rather than
 its numbers edited. It was re-run again on 2026-10-19, after `origin/main` was
 merged into this branch: the previous capture certified `20bf2f1`, which was no
-longer the head. Sections 4 and 5 capture a DELIBERATELY BROKEN tree; each
-mutation was applied and reverted around its own command, and the tree was
-checked clean after each revert.
+longer the head. It was re-run once more on 2026-10-20, after the round-27
+fix: the capture before this one certified `3585315`. Sections 4 and 5 capture
+a DELIBERATELY BROKEN tree; each mutation was applied and reverted around its
+own command, and the tree was checked clean after each revert.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 26 rounds**. This feature integrated
+The judgment critic sits at **`block` after 27 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason - see Section 6. If
 that section said `approve`, this document would be lying.
@@ -53,7 +54,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-35853150db33e6156084c0471726b8963896efbb
+7af1b26dd50cc5cfdfb4a081d47e7346b53be93b
 [exit 0]
 
 $ git log --oneline --reverse origin/main --grep='SRS-MD-005' | head -14 | cat
@@ -189,13 +190,13 @@ print("deterministic critic:", det["verdict"], "@", det["head"][:8])
 j = d["critic"]["judgment"]
 print("judgment critic    :", j["verdict"], "| rounds:", j.get("rounds"), "| reviewer:", j["reviewer"])
 PY
-step 1: PASS | exit=0 | @35853150 | ./init.sh
-step 2: PASS | exit=0 | @35853150 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
-step 3: PASS | exit=0 | @35853150 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
-step 4: PASS | exit=0 | @35853150 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
+step 1: PASS | exit=0 | @7af1b26d | ./init.sh
+step 2: PASS | exit=0 | @7af1b26d | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
+step 3: PASS | exit=0 | @7af1b26d | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
+step 4: PASS | exit=0 | @7af1b26d | .venv/bin/python -m pytest tests/integration/test_md005_restart_
 
-deterministic critic: approve @ 35853150
-judgment critic    : block | rounds: 26 | reviewer: claude-fallback
+deterministic critic: approve @ 7af1b26d
+judgment critic    : block | rounds: 27 | reviewer: codex
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -205,9 +206,9 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the certified commit, straight from GitHub ===
 
-$ gh run list --commit 35853150db33e6156084c0471726b8963896efbb --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
-success	ci
+$ gh run list --commit 7af1b26dd50cc5cfdfb4a081d47e7346b53be93b --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
 success	security
+success	ci
 skipped	integration
 [exit 0]
 
@@ -240,7 +241,7 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-129 passed, 17 subtests passed in 258.86s (0:04:18)
+134 passed, 20 subtests passed in 93.70s (0:01:33)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
