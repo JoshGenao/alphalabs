@@ -37,7 +37,7 @@
 //! later retry is SRS-RESV-004's (see `hot_swap_promotion_contract.deferred[]`).
 
 use atp_execution::designation::LiveDesignationConfirmation;
-use atp_orchestrator::cooldown::{ManualCooldownAcknowledgement, SwapCompletion};
+use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
     CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
@@ -735,10 +735,10 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         (None, None) => "not-configured",
     };
     println!("promotion-recorded:{recorded}");
-    // The swap COMPLETED and its SYS-49e window did not start. The automatic
-    // triggers are therefore NOT suppressed, which is a fail-open on a safety
-    // path — it cannot be undone here (the designation has moved and the book is
-    // flat, so rolling back over an unwritable file would be strictly worse), so it
+    // The swap COMPLETED and its SYS-49e window did not start. Unless another window
+    // is in force, the automatic triggers are NOT suppressed, which is a fail-open on
+    // a safety path. It cannot be undone here (the designation has moved and the book
+    // is flat, so rolling back over an unwritable file would be strictly worse), so it
     // is made loud instead: an explicit sentence and a non-zero exit.
     if outcome_facts.is_some() {
         if let Some(CooldownWindowOutcome::NotStarted {
@@ -767,12 +767,24 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
                          timestamp to give you and will not guess one"
                     .to_string(),
             };
+            // Whether THIS swap's window started and whether ANY window is in force are
+            // different facts, and the automatic triggers follow the second. The usual
+            // way here is a newer completion already on file (`KeptNewer`), which is in
+            // force and suppressing; this used to say "THE COOL-DOWN IS NOT IN EFFECT"
+            // in that case too. So re-read the store and say which it is: suppressed by
+            // a window in force, held because the window is unreadable (fail-closed),
+            // or genuinely clear - the only case that is the SYS-49e fail-open.
+            let reread_at = match args.now {
+                Some(now) => Some(now),
+                None => wall_clock_seconds().ok(),
+            };
+            let in_force = reread_at.map(|now| store.resolve_window(now));
+            let consequence = not_started_consequence(in_force.as_ref());
             eprintln!(
-                "SRS-RESV-006: `{}` was promoted live but the SyRS SYS-49e cool-down window \
-                 did NOT start ({reason}). THE COOL-DOWN IS NOT IN EFFECT — automatic swap \
-                 triggers are not suppressed. Repair the cool-down state file, then {repair}, \
-                 or disable the automatic triggers with resv003_hot_swap_trigger_cli until \
-                 you have.",
+                "SRS-RESV-006: `{}` was promoted live but its own SyRS SYS-49e cool-down \
+                 window did NOT start ({reason}). {consequence} Repair the cool-down state \
+                 file, then {repair}, or disable the automatic triggers with \
+                 resv003_hot_swap_trigger_cli until you have.",
                 candidate.as_str()
             );
             return Ok(false);
@@ -791,6 +803,38 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     Ok(outcome_facts.is_some())
+}
+
+/// What a swap whose own SYS-49e window did NOT start means for the automatic triggers,
+/// given the window in force when it is re-read (`None`: no clock to read it against).
+///
+/// The triggers fire only on a window PROVEN clear, so three of the four answers are
+/// "still suppressed" or "held", and only a proven-clear window is the fail-open. Saying
+/// "THE COOL-DOWN IS NOT IN EFFECT" for all of them contradicted the gate whenever a newer
+/// window was on file, which is the usual way a window fails to start.
+fn not_started_consequence(in_force: Option<&CooldownState>) -> String {
+    match in_force {
+        Some(state) if state.proven_clear() => {
+            "THE COOL-DOWN IS NOT IN EFFECT - automatic swap triggers are not suppressed."
+                .to_string()
+        }
+        Some(state) => match state.degraded_reason() {
+            Some(why) => format!(
+                "The cool-down window cannot be read ({why}), so the automatic swap triggers \
+                 are HELD (fail-closed) until it can; no readable window protects this swap."
+            ),
+            None => format!(
+                "A cool-down IS still in effect (expires at {} epoch-s): the window on file, \
+                 not this swap's, so the automatic swap triggers stay suppressed until then.",
+                state
+                    .expires_at_seconds()
+                    .map_or_else(|| "an unknown instant".to_string(), |e| e.to_string())
+            ),
+        },
+        None => "Whether any cool-down is in effect cannot be told (no clock to read the \
+                 window against): treat the automatic swap triggers as armed."
+            .to_string(),
+    }
 }
 
 fn cmd_status(rest: &[String]) -> Result<(), String> {
@@ -1265,4 +1309,41 @@ fn parse_strategy_id(value: &str, flag: &str) -> Result<StrategyId, String> {
         ));
     }
     Ok(StrategyId::new(trimmed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::not_started_consequence;
+    use atp_orchestrator::cooldown::CooldownState;
+
+    #[test]
+    fn only_a_proven_clear_window_is_reported_as_not_in_effect() {
+        let clear = not_started_consequence(Some(&CooldownState::NeverSwapped));
+        assert!(clear.contains("THE COOL-DOWN IS NOT IN EFFECT"), "{clear}");
+        let expired = not_started_consequence(Some(&CooldownState::Expired {
+            started_at_seconds: 1,
+            expires_at_seconds: 2,
+        }));
+        assert!(expired.contains("NOT IN EFFECT"), "{expired}");
+
+        let active = not_started_consequence(Some(&CooldownState::Active {
+            started_at_seconds: 10,
+            expires_at_seconds: 604_810,
+            remaining_seconds: 5,
+        }));
+        assert!(active.contains("IS still in effect"), "{active}");
+        assert!(active.contains("604810"), "names when it ends: {active}");
+        assert!(!active.contains("NOT IN EFFECT"), "{active}");
+
+        let unreadable = not_started_consequence(Some(&CooldownState::unknown("torn write")));
+        assert!(unreadable.contains("HELD (fail-closed)"), "{unreadable}");
+        assert!(unreadable.contains("torn write"), "{unreadable}");
+        assert!(!unreadable.contains("NOT IN EFFECT"), "{unreadable}");
+
+        let no_clock = not_started_consequence(None);
+        assert!(
+            no_clock.contains("treat the automatic swap triggers as armed"),
+            "{no_clock}"
+        );
+    }
 }

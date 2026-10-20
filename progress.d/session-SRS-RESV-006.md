@@ -178,7 +178,8 @@ concretely for whoever picks this up:
 
 ## Adversarial rounds
 
-Adversarial rounds: 28 — every one a block, every finding real, none disputed.
+Adversarial rounds: 29 - rounds 1-28 every one a block, every finding real, none disputed;
+round 29 (session 2, below) approved with zero findings.
 
 * **r1 `block`** — `meta:critic-self-modification`. Structural refusal of any diff touching
   `tools/critic_check.py`. Class: reviewer refusal, not a code finding. (Prior session.)
@@ -571,8 +572,9 @@ Notes for whoever comes next:
 
 === SESSION SRS-RESV-006 (2) - fix review round 28, 2026-10-19 ===
 
-Outcome: in progress (round 29 pending). Operator granted 3 more review budgets
-(24 rounds) on 2026-10-19; the grant records are commit 053283e.
+Outcome: round 29 APPROVED (codex, zero findings); two screenshot defects then fixed,
+round 30 pending. Operator granted 3 more review budgets (24 rounds) on 2026-10-19; the
+grant records are commit 053283e.
 
 ## What round 28 found, and what was wrong underneath it
 
@@ -639,10 +641,52 @@ Round 29 uses the default base, `origin/main`, which is exactly this session's f
 `durable-writes.md` 39 (a compare-and-swap is one locked call, and the caller must not
 decide first) and 40 (a derived id is unique per process, not per history).
 
+## Round 29
+
+`approve`, reviewer codex, zero findings: "The comparison and clear occur under one lock,
+and cleanup callers preserve the original attempt record." Its sandbox was read-only, so
+it ran static checks and three focused tests but not the Rust or domain suites; those
+ran here (see "What was verified") and run again in the CI mirror.
+
+## Defects found in the evidence screenshots, after round 29
+
+Reading the re-captured step-2 screenshots (not any test) found two defects on this
+feature's own surfaces. Both were already in the August captures. The operator chose to
+fix both before the close.
+
+1. **A false alarm.** In the r24 scenario (a newer window already on file, so this swap's
+   own window is `KeptNewer` -> NOT_STARTED), the pane said "THE COOL-DOWN IS NOT IN
+   EFFECT: the automatic triggers are armed" beside a dial correctly reading ACTIVE. The
+   triggers fire only on a window PROVEN clear, so a window in force, or an unreadable one
+   (held fail-closed), both suppress them. The same sentence was in the promote CLI and in
+   `record-completion`'s unreadable-readback path. All three now derive the consequence
+   from the re-read window: in force (names when it ends), unreadable (HELD fail-closed),
+   proven clear (the alarm), or unknown. The pane's wording moved to
+   `hotSwapCooldownNotStarted` in `hotswap.js` (unit-tested under node, all three states);
+   the promote CLI's to `not_started_consequence` (unit-tested, all four); the cool-down
+   CLI's to `unreadable_readback_error` (unit-tested: that path needs the state file to
+   break between the write and the re-read, which no end-to-end test can arrange). The e2e
+   and the domain test asserted the false sentence; both now pin the true one.
+   Mutation-verified: each of the three reverted to the old sentence turns its unit test
+   red, and the promote CLI's also turns the domain test red.
+2. **The dial's sub-line overflowed its ring** on every state: a full ISO instant at 9px is
+   ~150px and the ring's inner chord ~117px. `hotSwapDialSub` gives one short fact per line
+   (`since 10-20 04:51Z`), and the full sentence moved to the dial's `title` and
+   `aria-label` (the dial is `role="img"`, so assistive tech never read the sub-line).
+   Mutation-verified: returning the full sentence as the short form turns the width test
+   red.
+
+Not fixed here, for its owner: after a swap the fixture keeps naming the newly-live
+strategy as the promotion candidate, so the pane shows `reservoir-b -> reservoir-b` with
+an armable Promote control. The candidate comes from SRS-RESV-002's ranking (deferred) and
+the pane from UI-5 / SRS-RESV-005; the store already refuses a same-strategy completion.
+Recorded here so it is not lost.
+
+`honest-surfaces.md` 44 and 45 carry both lessons.
+
 ## Resume / next
 
-1. Round 29: `ATP_FEATURE_ID=SRS-RESV-006 python3 tools/adversarial_review.py` (default
-   base). Fix what it finds as a class.
+1. Round 29 approved the r28 fix. The screenshot fixes above need round 30.
 2. Re-run the WHOLE gated e2e directory, solo (`ATP_RUN_E2E=1 pytest tests/e2e/`;
    test-integrity 35: naming files is how a broken sibling e2e hid for four rounds),
    then the evidence steps and the CI mirror; stamp both critics with `--rounds N`.

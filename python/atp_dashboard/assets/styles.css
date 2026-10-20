@@ -1174,7 +1174,11 @@ body {
 .hs__dial[data-state="expired"] .hs__dial-value { color: var(--ok); }
 .hs__dial-sub {
   font-family: var(--mono); font-size: 9px; color: var(--ink-faint);
-  max-width: 152px; text-align: center; line-height: 1.3; overflow-wrap: anywhere;
+  /* The ring's inner chord where these lines sit is ~117px; 152px let every sub-line run
+     under the ring. The text is one short fact per line (hotSwapDialSub), so pre-line
+     breaks where the content does rather than mid-timestamp. */
+  max-width: 112px; text-align: center; line-height: 1.3; white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 /* --------------------------------------------------------- control column */

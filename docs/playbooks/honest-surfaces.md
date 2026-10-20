@@ -213,6 +213,21 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     value on the READ surface so it comes from the same look. Never default it: a default
     picks on the operator's behalf, which is the decision the command exists to ask them
     for. `(RESV-006 r25 — the same defect as r18, one layer out)`
+44. **"This attempt's safety window did not start" is not "no safety window is in force".**
+    RESV-006's pane, its promote CLI and its record CLI all turned a NOT_STARTED outcome
+    into "THE COOL-DOWN IS NOT IN EFFECT: the triggers are armed". The usual way a window
+    fails to start is that a NEWER one is already on file, which is in force, and the dial
+    beside the alarm correctly read ACTIVE. Derive the consequence from the same source the
+    instrument reads (the store's in-force answer), and say which of the cases it is: in
+    force, unreadable (held fail-closed), or proven clear. Only the last is the alarm.
+    Found by looking at the evidence screenshot, not by any test: the e2e asserted the
+    false sentence. `(RESV-006 session 2)`
+45. **A fixed-size instrument needs a short form; the full fact goes in title and
+    aria-label.** The cool-down dial put a full ISO instant (~150px at 9px) into a ring
+    whose inner chord is ~117px, so every state's sub-line ran under the ring, and its
+    `role="img"` meant assistive tech never read the sub-line at all. One fact per line,
+    sized to the chord; the unabridged sentence on the element's accessible name.
+    `(RESV-006 session 2)`
 
 ## A hand-off to something YOU operate is not a delivery (NOTIF-001 r15)
 

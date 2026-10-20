@@ -607,23 +607,31 @@ fn cmd_record_completion(rest: &[String]) -> Result<(), String> {
         println!("reread-cooldown-expires-at-seconds:{expires}");
     }
     // "The write returned Ok" is not "the window is readable". If the bytes that landed
-    // cannot be classified, the swap happened and NOTHING suppresses — the same fail-open
-    // as a failed write, reached by a different route, so it gets the same non-zero exit
-    // and the same explicit sentence. Verifying the published artefact rather than the
-    // intent is CLAUDE.md rule 5.
+    // cannot be classified, no readable window protects the swap: a non-zero exit and an
+    // explicit sentence. Verifying the published artefact rather than the intent is
+    // CLAUDE.md rule 5. The sentence says what an unreadable window DOES: it is Unknown,
+    // which is not proven clear, so the automatic triggers are HELD (fail-closed). It
+    // used to say "THE COOL-DOWN IS NOT IN EFFECT", which the gate contradicts.
     if let Some(reason) = state.degraded_reason() {
         println!("cooldown-window-started:false");
-        return Err(format!(
-            "the completion was written but the window it produced is NOT readable: \
-             {reason}\n\
-             THE COOL-DOWN IS NOT IN EFFECT. Repair the state file and re-run, or disable \
-             the automatic triggers with resv003_hot_swap_trigger_cli until it is."
-        ));
+        return Err(unreadable_readback_error(reason));
     }
     // The single emission, and it is a claim about the VERIFIED window: the completion
     // was written and the bytes that landed classify.
     println!("cooldown-window-started:true");
     Ok(())
+}
+
+/// The record-completion error when the window it just wrote reads back as unreadable.
+/// Its own function so the sentence is unit-tested: the path needs the state file to
+/// break between the write and the re-read, which no end-to-end test can arrange.
+fn unreadable_readback_error(reason: &str) -> String {
+    format!(
+        "the completion was written but the window it produced is NOT readable: {reason}\n\
+         No readable window protects this swap. The automatic triggers are HELD while it \
+         stays unreadable (fail-closed), and every surface reports the cool-down as \
+         UNKNOWN. Repair the state file and re-run."
+    )
 }
 
 fn parse_strategy_id(value: &str, flag: &str) -> Result<StrategyId, String> {
@@ -678,4 +686,21 @@ fn take_value<'a>(
     iter.next()
         .cloned()
         .ok_or_else(|| format!("{flag} expects a value\n\n{USAGE}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unreadable_readback_error;
+
+    // An unreadable window is Unknown, and Unknown holds the automatic triggers. The
+    // sentence used to say "THE COOL-DOWN IS NOT IN EFFECT", which told the operator the
+    // triggers were armed while the gate was holding them.
+    #[test]
+    fn an_unreadable_readback_says_the_triggers_are_held() {
+        let message = unreadable_readback_error("truncated record");
+        assert!(message.contains("truncated record"), "{message}");
+        assert!(message.contains("HELD"), "{message}");
+        assert!(message.contains("UNKNOWN"), "{message}");
+        assert!(!message.contains("NOT IN EFFECT"), "{message}");
+    }
 }

@@ -407,6 +407,11 @@ def test_a_promoted_swap_whose_window_failed_says_so_in_the_browser(binaries, li
     AHEAD of the swap's own clock is legitimately in force, so the swap runs and
     publishes — and then phase two is refused by the monotonicity rule (a cool-down only
     moves forward), which is exactly `NotStarted`.
+
+    And because that newer window IS in force, the pane must not say the cool-down is
+    not in effect. It did: "THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are
+    armed", beside a dial correctly reading ACTIVE. The message now follows the store's
+    in_effect, the dial's own source, so the two cannot contradict each other.
     """
     url, cooldown = live_dashboard
     now = _now_seconds()
@@ -432,7 +437,7 @@ def test_a_promoted_swap_whose_window_failed_says_so_in_the_browser(binaries, li
 
         page.wait_for_function(
             "() => (document.getElementById('hs-status')||{}).textContent"
-            ".includes('COOL-DOWN IS NOT IN EFFECT')",
+            ".includes('its own cool-down window is NOT_STARTED')",
             timeout=15_000,
         )
         # Then wait for the durable refresh that shows the candidate LIVE. That render
@@ -447,18 +452,24 @@ def test_a_promoted_swap_whose_window_failed_says_so_in_the_browser(binaries, li
             timeout=15_000,
         )
         reported = page.inner_text("#hs-status")
-        assert "COOL-DOWN IS NOT IN EFFECT" in reported, reported
+        # The newer window is in force, and the pane and the dial agree on it.
+        assert _dial_state(page) == "active"
+        assert "COOL-DOWN IS STILL IN EFFECT" in reported, reported
+        assert "NOT IN EFFECT" not in reported, reported
+        assert "armed against" not in reported, reported
+        assert page.get_attribute("#hs-status", "data-tone") == "armed"
         # The swap SUCCEEDED — the operator must not be told it was blocked...
         assert "NOT promoted" not in reported, reported
-        assert "PROMOTED" in reported, reported
-        # ...and must be sent to the cool-down repair, not to SRS-RESV-004's.
+        assert "PROMOTED" in reported and "NOT_STARTED" in reported, reported
+        # ...and must be sent to the cool-down owner, not to SRS-RESV-004's.
         assert "SRS-RESV-006" in reported and "SYS-49e" in reported, reported
-        assert "record-completion" in reported, reported
+        assert "resv006_hot_swap_cooldown_cli status" in reported, reported
         assert "SRS-RESV-004" not in reported, reported
         cap.shot(
             page,
-            "A swap that PROMOTED but could not open its SYS-49e window: the pane says "
-            "the candidate is live AND that nothing is suppressing the automatic "
-            "triggers, and names the repair command (adversarial review r24)",
+            "A swap that PROMOTED but whose own SYS-49e window did not start, because a "
+            "newer window was already on file: the pane says the candidate is live, that "
+            "this swap's window is NOT_STARTED, and that the newer window shown on the "
+            "dial is still suppressing the automatic triggers (adversarial review r24)",
             element="#hs",
         )

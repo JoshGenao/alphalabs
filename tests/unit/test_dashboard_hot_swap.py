@@ -151,3 +151,71 @@ def _iso(epoch_ms: int) -> str:
     import time
 
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_ms / 1000))
+
+
+def _eval_json(expr: str) -> object:
+    return json.loads(_eval(f"JSON.stringify({expr})"))
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_a_swap_whose_own_window_did_not_start_names_the_window_in_force() -> None:
+    """The NOT_STARTED message follows the STORE's answer for the window in force.
+
+    It used to say "THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are armed"
+    for every NOT_STARTED swap, including the usual case: a newer completion already on
+    file (or phase one's provisional marker) still in force, which the dial beside it
+    correctly showed as ACTIVE. An alarm that contradicts the instrument next to it.
+    """
+    args = '"sw-1", "reservoir-b", "NOT_STARTED"'
+    in_force = _eval_json(f"h.hotSwapCooldownNotStarted({args}, true)")
+    assert in_force["tone"] == "armed"
+    assert "STILL IN EFFECT" in in_force["text"]
+    assert "NOT IN EFFECT" not in in_force["text"]
+    assert "armed against" not in in_force["text"]
+
+    none = _eval_json(f"h.hotSwapCooldownNotStarted({args}, false)")
+    assert none["tone"] == "error"
+    assert "THE COOL-DOWN IS NOT IN EFFECT" in none["text"]
+    assert "record-completion" in none["text"]
+
+    unknown = _eval_json(f"h.hotSwapCooldownNotStarted({args}, null)")
+    assert unknown["tone"] == "error", "unknown is never the reassuring tone"
+    assert "UNKNOWN" in unknown["text"]
+    assert "STILL IN EFFECT" not in unknown["text"]
+
+    for message in (in_force, none, unknown):
+        text = message["text"]
+        assert "swap sw-1 PROMOTED reservoir-b" in text
+        assert "SRS-RESV-006" in text and "SYS-49e" in text
+        assert "SRS-RESV-004" not in text, "the cool-down repair, not the demotion one"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_the_dial_sub_line_fits_the_ring_and_loses_nothing() -> None:
+    """Short lines inside the ring; the unabridged fact in the title and aria-label.
+
+    A full ISO instant at the dial's 9px is ~150px and the ring's inner chord is ~117px,
+    so the old single sentence ran under the ring on every state.
+    """
+    started, expires = "2026-10-20T04:51:52Z", "2026-10-27T04:51:52Z"
+    active = _eval_json(f'h.hotSwapDialSub("active", false, "{started}", "{expires}")')
+    assert active["short"].split("\n") == ["since 10-20 04:51Z", "expires 10-27 04:51Z"]
+    assert started in active["full"] and expires in active["full"]
+
+    provisional = _eval_json(f'h.hotSwapDialSub("active", true, "{started}", "{expires}")')
+    assert provisional["short"].split("\n")[0] == "PROVISIONAL"
+    assert "interrupted" in provisional["full"]
+
+    deferred = _eval_json('h.hotSwapDialSub("deferred", false, null, null)')
+    assert "UNKNOWN" in deferred["short"] and "UNKNOWN" in deferred["full"]
+    expired = _eval_json('h.hotSwapDialSub("expired", false, null, null)')
+    assert "triggers may fire" in expired["short"]
+
+    # The budget the CSS gives each line (112px at 9px mono, ~5.4px per glyph).
+    for sub in (active, provisional, deferred, expired):
+        for line in sub["short"].split("\n"):
+            assert len(line) <= 20, f"{line!r} is wider than the ring's chord"
+
+    # An instant in a shape the shortener does not know is shown as it is, never guessed.
+    odd = _eval_json('h.hotSwapDialSub("active", false, null, "next tuesday")')
+    assert odd["short"] == "expires next tuesday"

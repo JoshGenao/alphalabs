@@ -988,7 +988,13 @@ def test_a_failed_window_write_tells_the_operator_the_right_instant(
     assert "record-completion --completed-at" in result.stderr, result.stderr
     assert "the instant this swap COMPLETED" in result.stderr, result.stderr
     assert "do not substitute the time the attempt started" in result.stderr, result.stderr
-    assert "THE COOL-DOWN IS NOT IN EFFECT" in result.stderr, result.stderr
+    # The newer window that made this swap's own window NotStarted IS in force, so the
+    # triggers are suppressed. Saying "THE COOL-DOWN IS NOT IN EFFECT" here contradicted
+    # the gate; the sentence now follows the re-read window (the other answers are pinned
+    # in the promote CLI's unit test, since a real swap cannot reach them).
+    assert "A cool-down IS still in effect" in result.stderr, result.stderr
+    assert f"expires at {AFTER + 10_000 + 7 * 86_400} epoch-s" in result.stderr, result.stderr
+    assert "NOT IN EFFECT" not in result.stderr, result.stderr
 
 
 def test_an_interrupted_swap_leaves_a_window_that_still_suppresses(swap_binaries, tmp_path) -> None:

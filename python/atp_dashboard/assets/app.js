@@ -2638,14 +2638,12 @@
   let hotLiveStrategy = null;
 
   function hsBtn() { return $("hs-btn"); }
-  // ONE wording for the SYS-49e fail-open, shared by the swap response and the durable
-  // confirmation that follows it, so the two cannot drift apart.
-  function cooldownNotInEffectMessage(swapId, candidate, cooldownWindow) {
-    return "swap " + swapId + " PROMOTED " + candidate + " — but its cool-down window is " +
-      cooldownWindow + ". THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are " +
-      "armed against a strategy that just went live. Repair it with " +
-      "resv006_hot_swap_cooldown_cli record-completion, or disable the automatic " +
-      "triggers until you have (SRS-RESV-006 · SYS-49e)";
+  // The wording lives in hotswap.js (hotSwapCooldownNotStarted) so it is unit-tested under
+  // node, and it depends on whether a window is in force (review: the alarm contradicted
+  // the dial when a newer window was on file).
+  function hsCooldownNotStarted(swapId, candidate, cooldownWindow, inEffect) {
+    const m = hotSwapCooldownNotStarted(swapId, candidate, cooldownWindow, inEffect);
+    hsStatus(m.text, m.tone);
   }
 
   function hsStatus(text, tone) {
@@ -2813,11 +2811,11 @@
           cooldownWindow: cooldownNeedsRepair ? cooldownWindow : null,
         };
         if (cooldownNeedsRepair) {
-          // Loud, and pointed at the RIGHT owner. The swap succeeded and the cool-down
-          // did not start, so nothing is suppressing the automatic triggers against a
-          // strategy that just went live — the SYS-49e fail-open, which is reported
-          // rather than swallowed precisely so it can be repaired.
-          hsStatus(cooldownNotInEffectMessage(swapId, candidate, cooldownWindow), "error");
+          // Pointed at the RIGHT owner. The swap succeeded and its own window did not
+          // start. Whether ANOTHER window is in force is not known from this response:
+          // the dial's last read predates the swap. So this says UNKNOWN, loudly, and the
+          // durable confirmation below replaces it with the store's answer.
+          hsCooldownNotStarted(swapId, candidate, cooldownWindow, null);
         } else if (promoted) {
           hsStatus("swap " + swapId + " reported PROMOTED — verifying live strategy is " +
             candidate + "…", "pending");
@@ -2955,23 +2953,23 @@
     if (dial) dial.dataset.state = dialState;
     if (arc) arc.style.strokeDashoffset = String(dialState === "active" ? HS_DIAL_CIRC * (1 - c.fraction) : 0);
     if (valueEl) valueEl.textContent = dialState === "active" ? c.label : dialState === "expired" ? "READY" : c.label;
-    if (subEl) {
-      subEl.textContent = dialState === "deferred"
-        // NOT "awaiting SRS-RESV-006" any more — that producer landed. Deferred here now
-        // means the runtime has no cool-down window mounted (ATP_HOT_SWAP_COOLDOWN_STATE
-        // unset) or the one it has could not be read, and either way the pane cannot say
-        // whether a swap is inside a window. Stale prose outliving its producer is its own
-        // defect: it tells an operator to wait for something that already shipped.
-        ? "cool-down state UNKNOWN — no readable SRS-RESV-006 window on this runtime; promotion is held"
-        : dialState === "expired"
-          ? "no active cool-down — automatic triggers may fire"
-          // A PROVISIONAL window (r13) was opened before its swap became durable and
-          // never confirmed — the process died in between. It suppresses exactly like
-          // a real one, which is the safe direction, but an operator who cannot tell
-          // the two apart cannot resolve it: only they can check whether the candidate
-          // is actually live. So the pane says which kind it is looking at.
-          : (hotSwapCellBool(cd.completion_provisional) === true ? "PROVISIONAL — a swap was interrupted before it could confirm this window · " : "")
-            + (typeof started === "string" && started ? "since " + started + " · " : "") + "expires " + expires;
+    // Short form inside the ring, full form in the tooltip and the accessible name: see
+    // hotSwapDialSub. "deferred" here means the runtime has no readable cool-down window
+    // (ATP_HOT_SWAP_COOLDOWN_STATE unset, or unreadable); it is NOT "awaiting
+    // SRS-RESV-006", which landed - stale prose outliving its producer is its own defect.
+    const sub = hotSwapDialSub(
+      dialState,
+      hotSwapCellBool(cd.completion_provisional) === true,
+      typeof started === "string" && started ? started : null,
+      typeof expires === "string" && expires ? expires : null
+    );
+    if (subEl) subEl.textContent = sub.short;
+    if (dial) {
+      dial.title = sub.full;
+      dial.setAttribute(
+        "aria-label",
+        "Hot-Swap cool-down window (SYS-49e): " + (valueEl ? valueEl.textContent : "") + ". " + sub.full
+      );
     }
     return inEffect;
   }
@@ -3011,10 +3009,16 @@
   function hsUnknown(reason, tone) {
     hsTrackClear("UNKNOWN", "not observed");
     const dial = $("hs-dial");
-    if (dial) dial.dataset.state = "deferred";
+    const unreadable = "cool-down state UNKNOWN - the whole pane is unreadable";
+    if (dial) {
+      dial.dataset.state = "deferred";
+      dial.title = unreadable;
+      dial.setAttribute("aria-label", "Hot-Swap cool-down window (SYS-49e): " + unreadable);
+    }
     const arc = $("hs-dial-arc"); if (arc) arc.style.strokeDashoffset = "0";
     const cv = $("hs-cooldown-value"); if (cv) cv.textContent = "— —";
-    const cs = $("hs-cooldown-sub"); if (cs) cs.textContent = "cool-down state UNKNOWN — the whole pane is unreadable";
+    // Short form inside the ring (see hotSwapDialSub); the sentence is the title above.
+    const cs = $("hs-cooldown-sub"); if (cs) cs.textContent = "state UNKNOWN\npane unreadable";
     hsSlot("hs-live", "hs-live-src", null, "SRS-RESV-005");
     hsSlot("hs-candidate", "hs-candidate-src", null, "SRS-RESV-002");
     renderTriggers({});
@@ -3104,10 +3108,11 @@
       if (hotLiveStrategy === want) {
         // The candidate IS live now — the swap promoted, whatever the response said
         // (covers an ambiguous timeout whose swap actually completed). Confirming it
-        // must not clear a cool-down that never started: the promotion is real AND
-        // the automatic triggers are still armed against it.
+        // must not clear a window that never started. `hotCooldownActive` was just
+        // re-read from this same snapshot, so the message can say whether ANY window is
+        // in force rather than asserting that none is.
         if (hotPendingSwap.cooldownWindow) {
-          hsStatus(cooldownNotInEffectMessage(sw, want, hotPendingSwap.cooldownWindow), "error");
+          hsCooldownNotStarted(sw, want, hotPendingSwap.cooldownWindow, hotCooldownActive);
         } else {
           hsStatus("promoted " + want + " live · swap " + sw, "fired");
         }
