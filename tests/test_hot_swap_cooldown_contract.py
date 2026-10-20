@@ -41,7 +41,9 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from hot_swap_cooldown_check import (  # noqa: E402
     HotSwapCooldownCheckError,
+    _fn_bodies,
     check_every_swap_path_is_gated,
+    check_no_caller_decides_from_an_unguarded_read,
     check_resolver_is_the_only_producer,
     check_store_durability,
     check_the_contract_names_nothing_that_moved,
@@ -488,10 +490,6 @@ def _any_fn(source: str, name: str) -> str:
     return source[start : index - 1]
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ContractDriftTest(unittest.TestCase):
     """The registry may not describe symbols that moved (adversarial review r14).
 
@@ -730,3 +728,93 @@ fn cmd_pretend(_rest: &[String]) -> Result<(), String> {
                 entry["reason"].strip(),
                 f"{entry['subcommand']} is exempt with no stated reason",
             )
+
+
+class UnguardedCallerReadTest(unittest.TestCase):
+    """No CLI decides from a store read and then calls a guarded writer (review r28).
+
+    ``clear-provisional`` loaded the marker, matched it against the operator's values
+    outside the store's lock, and then asked ``abandon_provisional`` to clear. A marker
+    replaced in between was cleared on the strength of a match against a different
+    one. The behavioural regression lives in the store tests; this catches the SHAPE,
+    in every function of both CLIs, including ones nobody has written yet.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.guard = self.config["hot_swap_cooldown_contract"]["guard"]
+
+    def _tree_with_cli(self, scratch: Path, edit) -> Path:
+        root = Path(scratch)
+        for key in ("cooldown_cli", "promote_cli"):
+            relative = self.guard[key]
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(ROOT / relative, root / relative)
+        cli = root / self.guard["cooldown_cli"]
+        cli.write_text(edit(cli.read_text(encoding="utf-8")), encoding="utf-8")
+        return root
+
+    def test_the_shipped_clis_pass(self) -> None:
+        evidence = check_no_caller_decides_from_an_unguarded_read(self.config, ROOT)
+        self.assertIn("decide nothing from a read", evidence)
+
+    def test_the_r28_shape_is_caught(self) -> None:
+        # The defect itself: read the marker, then clear.
+        anchor = "    let outcome = cooldown_store::abandon_provisional(path, &named, &attempt_id)"
+
+        def reintroduce(source: str) -> str:
+            self.assertEqual(source.count(anchor), 1, "anchor drifted")
+            return source.replace(anchor, "    let _peek = cooldown_store::load(path);\n" + anchor)
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = self._tree_with_cli(scratch, reintroduce)
+            with self.assertRaises(HotSwapCooldownCheckError) as caught:
+                check_no_caller_decides_from_an_unguarded_read(self.config, root)
+        self.assertIn("cmd_clear_provisional", str(caught.exception))
+        self.assertIn("cooldown_store::load(", str(caught.exception))
+
+    def test_a_NEW_function_with_the_shape_is_caught(self) -> None:
+        # Nothing in the contract names this function; the scan discovers it.
+        def append(source: str) -> str:
+            return source + (
+                "\nfn sneaky(path: &Path, c: &SwapCompletion) {\n"
+                "    if cooldown_store::resolve(Some(path), 0).proven_clear() {\n"
+                "        let _ = cooldown_store::record_completion(path, c);\n"
+                "    }\n}\n"
+            )
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = self._tree_with_cli(scratch, append)
+            with self.assertRaises(HotSwapCooldownCheckError) as caught:
+                check_no_caller_decides_from_an_unguarded_read(self.config, root)
+        self.assertIn("sneaky", str(caught.exception))
+        self.assertIn("cooldown_store::resolve(", str(caught.exception))
+
+    def test_a_read_AFTER_the_write_is_allowed(self) -> None:
+        # The other direction: verifying the artefact decides nothing about what was
+        # written. `clear-provisional` and `configure` both re-read after writing, and a
+        # check that flagged them would be deleted by the next person who met it.
+        for subcommand in ("cmd_clear_provisional", "cmd_configure"):
+            source = (ROOT / self.guard["cooldown_cli"]).read_text(encoding="utf-8")
+            body = next(b for name, b in _fn_bodies(source) if name == subcommand)
+            write = body.find("cooldown_store::")
+            self.assertNotEqual(write, -1)
+            self.assertIn("cooldown_store::load(", body[write:], f"{subcommand} anchor drifted")
+        check_no_caller_decides_from_an_unguarded_read(self.config, ROOT)
+
+    def test_a_scan_that_finds_no_writer_call_fails_rather_than_passing(self) -> None:
+        config = load_config()
+        config["hot_swap_cooldown_contract"]["cooldown_store"]["guarded_writers"] = [
+            "a_writer_that_does_not_exist"
+        ]
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_no_caller_decides_from_an_unguarded_read(config, ROOT)
+        self.assertIn("vacuously", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

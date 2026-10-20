@@ -858,10 +858,6 @@ fn record_completion_inner(
     Ok(CompletionOutcome::Recorded { previous })
 }
 
-/// Two records describe the same swap when they name the same pair of strategies.
-///
-/// Identity, not equality: phase one stamps the ATTEMPT instant and phase two rewrites
-/// it with the completion instant, so the timestamps deliberately differ.
 /// The completion the stored window actually runs from — the LATER of the two slots.
 ///
 /// One definition, used by every writer's monotonicity check and mirrored by
@@ -885,6 +881,12 @@ fn governing(record: &Option<CooldownRecord>) -> Option<&SwapCompletion> {
     }
 }
 
+/// Two records describe the same swap when they name the same pair of strategies.
+///
+/// Identity, not equality: phase one stamps the ATTEMPT instant and phase two rewrites
+/// it with the completion instant, so the timestamps deliberately differ. That is why
+/// this is right for phase two retiring phase one, and wrong for deciding which ATTEMPT
+/// a marker belongs to: [`abandon_provisional`] compares the whole record instead.
 fn is_same_swap(left: &SwapCompletion, right: &SwapCompletion) -> bool {
     left.demoted_strategy_id == right.demoted_strategy_id
         && left.promoted_strategy_id == right.promoted_strategy_id
@@ -1022,39 +1024,75 @@ pub fn begin_provisional(
     })
 }
 
+/// What [`abandon_provisional`] found under the guard, and what it did about it.
+///
+/// Returned rather than swallowed so an operator surface can report the marker that was
+/// ACTUALLY compared. A report built from a read taken before the guard describes a
+/// marker that may already have been replaced (adversarial review r28).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbandonOutcome {
+    /// The named attempt was the one recorded, and its marker is gone.
+    Cleared,
+    /// There is no window at this path at all: no file, or no directory for one. Kept
+    /// apart from [`AbandonOutcome::NothingInFlight`] because a mistyped path is not a
+    /// window with nothing to clear (CLAUDE.md rule 3). Nothing was created.
+    NoWindow,
+    /// A window is recorded, but no unconfirmed marker is. Nothing changed.
+    NothingInFlight,
+    /// A marker is recorded but it is not the one named, so it was left in place. This
+    /// is that marker, read under the same guard that declined to clear it.
+    NotOurs(ProvisionalAttempt),
+}
+
 /// Clear a provisional window whose swap never became durable.
 ///
 /// Touches ONLY the provisional slot. The confirmed completion is never disturbed —
 /// a swap that failed must not retire the cool-down of the last one that succeeded,
 /// which is exactly what adversarial review r15 found the shared-slot draft doing.
 /// A provisional record belonging to a DIFFERENT swap is also left alone.
+///
+/// The match and the clear are ONE locked read-modify-write (adversarial review r28).
+/// A caller must not decide from its own read and then ask this to clear: the marker can
+/// be replaced in between, and the decision would then retire a record nobody compared.
 pub fn abandon_provisional(
     path: &Path,
     completion: &SwapCompletion,
     attempt_id: &str,
-) -> Result<(), CooldownStoreError> {
-    let _guard = ExclusiveGuard::acquire_creating(path).map_err(|e| from_lock_error(e, path))?;
+) -> Result<AbandonOutcome, CooldownStoreError> {
+    // Never creates a directory: an operator's mistyped `--state` must not manufacture
+    // one. With no parent directory there is no file, so no writer can hold it and there
+    // is nothing to serialise.
+    let Some(_guard) =
+        ExclusiveGuard::acquire_if_parent_exists(path).map_err(|e| from_lock_error(e, path))?
+    else {
+        return Ok(AbandonOutcome::NoWindow);
+    };
     let Some(record) = load(path)? else {
-        return Ok(());
+        return Ok(AbandonOutcome::NoWindow);
+    };
+    let Some(stored) = record.provisional else {
+        return Ok(AbandonOutcome::NothingInFlight);
     };
     // An attempt clears exactly the record it wrote, or nothing — the invariant reviews
     // r18 and r25 both landed on, from the failure arm and from the operator surface.
     //
-    // The ATTEMPT ID is the proof, not the timestamp — adversarial review r26. Seconds
-    // resolution is not identity: two attempts at the same swap starting in the same
-    // second (or under a pinned `--now`) matched each other, so the second one's cleanup
-    // retired the first one's marker — and the first may already have published its live
-    // designation. The pair is checked too, as a consistency assertion rather than as
-    // the proof: a record whose id matches but whose swap does not is corruption, and
-    // clearing on it would be acting on a record we cannot explain.
-    let ours = record.provisional.as_ref().is_some_and(|stored| {
-        stored.attempt_id == attempt_id && is_same_swap(&stored.completion, completion)
-    });
-    if !ours {
-        // Nothing in flight, not ours, or a newer attempt's. Leaving it alone is the
-        // safe direction: an over-suppressing marker is resolvable, an absent one is
-        // the fail-open.
-        return Ok(());
+    // The ATTEMPT ID is the primary proof - adversarial review r26. Seconds resolution
+    // is not identity: two attempts at the same swap starting in the same second (or
+    // under a pinned `--now`) matched each other, so the second one's cleanup retired
+    // the first one's marker - and the first may already have published its live
+    // designation.
+    //
+    // It is not the WHOLE proof - adversarial review r28. The id is a pid plus a
+    // process-local counter, and an operating system reuses pids, so a later process
+    // can mint the id of an earlier one. What tells those two attempts apart is the
+    // instant each one recorded. So the WHOLE completion must match, instant included,
+    // exactly as the caller names it. The pair is part of that, as before: a record
+    // whose id matches but whose swap does not is corruption, and clearing on it would
+    // be acting on a record we cannot explain.
+    if stored.attempt_id != attempt_id || stored.completion != *completion {
+        // Not ours, or a newer attempt's. Leaving it alone is the safe direction: an
+        // over-suppressing marker is resolvable, an absent one is the fail-open.
+        return Ok(AbandonOutcome::NotOurs(stored));
     }
     save(
         path,
@@ -1063,7 +1101,8 @@ pub fn abandon_provisional(
             last_completion: record.last_completion,
             provisional: None,
         },
-    )
+    )?;
+    Ok(AbandonOutcome::Cleared)
 }
 
 /// Whether the stored completion is still PROVISIONAL — phase one written, phase two

@@ -7,7 +7,7 @@
 
 use atp_orchestrator::cooldown::{CooldownPeriodDays, CooldownState, SwapCompletion};
 use atp_orchestrator::cooldown_store::{
-    self, CompletionOutcome, CooldownStoreError, ProvisionalAttempt,
+    self, AbandonOutcome, CompletionOutcome, CooldownStoreError, ProvisionalAttempt,
 };
 use atp_types::StrategyId;
 use std::fs;
@@ -1068,6 +1068,98 @@ fn resv_6_a_same_second_retry_cannot_clear_another_attempts_marker() {
     assert_eq!(
         cooldown_store::load(&path).unwrap().unwrap().provisional,
         None
+    );
+}
+
+#[test]
+fn resv_6_a_reused_attempt_id_cannot_clear_a_newer_marker() {
+    // Adversarial review r28 [high]. The attempt id is a pid plus a process-local
+    // counter, and an operating system reuses pids. So a later process can mint the
+    // id of an earlier one: attempt A (id `4242-0`) is interrupted at T1, and a retry
+    // of the same swap in a later process that drew the same pid writes `4242-0` again
+    // at T2. The instant is the only thing that tells them apart.
+    //
+    // The operator inspected A's marker (T1). The repair command used to compare the
+    // instant against its OWN read, outside the guard, and then ask the store to clear
+    // by id and pair alone; when the marker was replaced in between, the store cleared
+    // the T2 marker nobody had compared. The store now compares the whole record under
+    // its guard, so naming T1 cannot retire T2, however the two calls interleave.
+    let scratch = Scratch::new("r28-reused-id");
+    let path = scratch.path("cooldown.json");
+    let reused = "4242-0";
+
+    let inspected = completion_at(COMPLETED_AT);
+    cooldown_store::begin_provisional(&path, &inspected, reused).unwrap();
+    // The marker is replaced after the operator's read: same swap, same id, later.
+    let newer = completion_at(COMPLETED_AT + 1_000);
+    cooldown_store::begin_provisional(&path, &newer, reused).unwrap();
+
+    let outcome = cooldown_store::abandon_provisional(&path, &inspected, reused).unwrap();
+
+    let survivor = ProvisionalAttempt {
+        attempt_id: reused.to_string(),
+        completion: newer.clone(),
+    };
+    assert_eq!(
+        outcome,
+        AbandonOutcome::NotOurs(survivor.clone()),
+        "a request about the T1 marker must not clear the T2 one, and must report the \
+         marker the store actually compared"
+    );
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(survivor),
+        "the newer marker may be the only thing suppressing the automatic triggers"
+    );
+    assert!(
+        !cooldown_store::resolve(Some(&path), COMPLETED_AT + 1_060).proven_clear(),
+        "and the window it holds must still suppress"
+    );
+
+    // The non-vacuity control: naming what is actually there still clears it.
+    assert_eq!(
+        cooldown_store::abandon_provisional(&path, &newer, reused).unwrap(),
+        AbandonOutcome::Cleared
+    );
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        None
+    );
+}
+
+#[test]
+fn resv_6_clearing_at_a_path_with_no_window_says_so_and_creates_nothing() {
+    // A mistyped `--state` is not a window with nothing to clear (CLAUDE.md rule 3), and
+    // an operator repair command must not manufacture the directory it was pointed at.
+    let scratch = Scratch::new("r28-no-window");
+    let missing_dir = scratch.path("no-such-dir").join("cooldown.json");
+    assert_eq!(
+        cooldown_store::abandon_provisional(&missing_dir, &completion_at(COMPLETED_AT), ATTEMPT)
+            .unwrap(),
+        AbandonOutcome::NoWindow
+    );
+    assert!(
+        !scratch.path("no-such-dir").exists(),
+        "no directory may be created by a clear"
+    );
+
+    let missing_file = scratch.path("cooldown.json");
+    assert_eq!(
+        cooldown_store::abandon_provisional(&missing_file, &completion_at(COMPLETED_AT), ATTEMPT)
+            .unwrap(),
+        AbandonOutcome::NoWindow
+    );
+    assert!(
+        !missing_file.exists(),
+        "no window file may be created by a clear"
+    );
+
+    // A real window with no marker is the OTHER answer.
+    cooldown_store::record_completion(&missing_file, &completion_at(COMPLETED_AT)).unwrap();
+    assert_eq!(
+        cooldown_store::abandon_provisional(&missing_file, &completion_at(COMPLETED_AT), ATTEMPT)
+            .unwrap(),
+        AbandonOutcome::NothingInFlight
     );
 }
 

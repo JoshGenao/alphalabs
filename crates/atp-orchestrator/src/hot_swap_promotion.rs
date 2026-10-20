@@ -1319,8 +1319,9 @@ impl StrategyOrchestrator {
         // from a stranded marker. Same shape as SRS-RESV-004's engage-then-amend.
         //
         // The timestamp here is the ATTEMPT's; `confirm_window` rewrites it with the
-        // real completion instant, which is why the store matches on swap identity
-        // rather than on the whole record.
+        // real completion instant, which is why phase two retires this marker by swap
+        // identity rather than by the whole record. An abandon never rewrites it, so
+        // an abandon matches the WHOLE record, this instant included (review r28).
         let provisional = SwapCompletion {
             completed_at_seconds: observed_at_seconds,
             demoted_strategy_id: demoting.clone(),

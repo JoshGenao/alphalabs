@@ -1805,6 +1805,89 @@ def test_a_same_second_retry_defeats_a_stale_read_of_the_marker(tmp_path) -> Non
     assert _kv(cleared.stdout)["provisional-cleared"] == "true"
 
 
+def test_a_reused_attempt_id_at_a_newer_instant_is_not_cleared(tmp_path) -> None:
+    """Adversarial review r28 [high] - the instant has to reach the locked compare.
+
+    The attempt id is a pid plus a counter, and pids are reused, so a retry in a later
+    process can carry the SAME id as the interrupted attempt the operator inspected.
+    Only the instant tells them apart. The command used to compare that instant
+    against its own read, outside the store's lock, and the store then cleared by id
+    and pair alone. The store now compares every named value under its lock.
+
+    Through the real binary this pins what the operator sees: a refusal that names the
+    marker actually recorded, and a marker that survives. The interleaving itself
+    (replaced between the read and the clear) is pinned in the store test
+    ``resv_6_a_reused_attempt_id_cannot_clear_a_newer_marker``, because a subprocess
+    cannot be paused between two of its own reads.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _strand(state, completed_at=COMPLETED_AT)
+    inspected = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert inspected["cooldown-provisional-at-seconds"] == str(COMPLETED_AT)
+
+    # A later process drew the same pid: same swap, same attempt id, a newer instant.
+    _strand(state, completed_at=COMPLETED_AT + 1_000)
+    assert json.loads(state.read_text())["provisional_attempt_id"] == INTERRUPTED_ATTEMPT
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
+        "--confirm",
+    )
+    assert refused.returncode != 0, "a request about T1 must not clear the T2 marker"
+    assert "it MOVED between your read and this command" in refused.stderr, refused.stderr
+    report = _kv(refused.stdout)
+    assert report["provisional-at-seconds"] == str(COMPLETED_AT + 1_000), (
+        "the report names the marker the store compared, not the one the operator named"
+    )
+    assert report["provisional-cleared"] == "false"
+    marker = json.loads(state.read_text())
+    assert marker["provisional_completed_at_seconds"] == COMPLETED_AT + 1_000
+    assert (
+        _kv(_evaluate(state, log, COMPLETED_AT + 1_000 + 3_600).stdout)["cooldown-suppressed"]
+        == "true"
+    ), "the surviving marker still suppresses"
+
+
+def test_clearing_at_a_path_with_no_window_says_so_and_creates_nothing(tmp_path) -> None:
+    """A mistyped ``--state`` is not a window with nothing in flight (CLAUDE.md rule 3).
+
+    Both used to answer "there is no unconfirmed marker at this window", so an operator
+    who mistyped the path was told their window was clean. The command now says there is
+    no window at that path, and it creates nothing, not even the directory.
+    """
+    missing_dir = tmp_path / "no-such-dir"
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(missing_dir / "cd.json"),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
+        "--confirm",
+    )
+    assert refused.returncode != 0
+    assert "there is no cool-down window at" in refused.stderr, refused.stderr
+    assert "no unconfirmed marker" not in refused.stderr
+    assert _kv(refused.stdout)["provisional-found"] == "false"
+    assert not missing_dir.exists(), "a clear must never create the directory it names"
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

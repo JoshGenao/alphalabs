@@ -853,6 +853,82 @@ def check_resolver_is_the_only_producer(config: dict, root: Path) -> str:
     )
 
 
+#: The store's public READS. A caller that consults one of these and then calls a
+#: guarded writer has made its decision outside the writer's lock.
+STORE_READS = ("load", "resolve", "completion_is_provisional")
+
+
+def _fn_bodies(source: str) -> list[tuple[str, str]]:
+    """Every ``fn`` with a body, in source order: ``(name, body)``.
+
+    Every occurrence, not the first per name: two ``impl`` blocks can each declare a
+    ``fn new``, and a scan keyed by name would read one of them twice and the other
+    never. A trait declaration ends in ``;`` and has no body to read.
+    """
+    bodies: list[tuple[str, str]] = []
+    for match in re.finditer(r"\bfn\s+(\w+)\b[^{;]*\{", source):
+        start = match.end()
+        depth, index = 1, start
+        while index < len(source) and depth:
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+            index += 1
+        if depth:
+            fail(f"could not parse function body for `{match.group(1)}`")
+        bodies.append((match.group(1), source[start : index - 1]))
+    return bodies
+
+
+def check_no_caller_decides_from_an_unguarded_read(config: dict, root: Path) -> str:
+    """Adversarial review r28 [high] - a compare-and-swap is ONE locked operation.
+
+    ``check_store_durability`` holds every store writer to the rule that the function
+    which reads is the function that must hold the guard (r20). Round 28 found the same
+    defect one layer out, in a CALLER: ``clear-provisional`` loaded the marker, matched
+    it against the operator's values, and then asked ``abandon_provisional`` to clear.
+    The marker can be replaced between that read and the store's lock, so the match
+    described one record and the clear acted on another.
+
+    So no function in either cool-down CLI may consult the store and then call a guarded
+    writer. Whatever the writer must compare goes INTO the writer, which compares it
+    under its own guard and reports what it found. A read AFTER the write (verifying
+    the artefact) is allowed: it decides nothing about what was written.
+    """
+    block = contract_block(config)
+    writers = block["cooldown_store"]["guarded_writers"]
+    guard = block["guard"]
+    write_call = re.compile(r"cooldown_store::(?:" + "|".join(map(re.escape, writers)) + r")\s*\(")
+    read_call = re.compile(r"cooldown_store::(" + "|".join(map(re.escape, STORE_READS)) + r")\s*\(")
+    callers: list[str] = []
+    for key in ("cooldown_cli", "promote_cli"):
+        relative = guard[key]
+        name = Path(relative).name
+        for fn_name, body in _fn_bodies(_strip_comments(_read(root, relative))):
+            first_write = write_call.search(body)
+            if not first_write:
+                continue
+            callers.append(f"{name}::{fn_name}")
+            early_read = read_call.search(body, 0, first_write.start())
+            if early_read:
+                fail(
+                    f"{name}::{fn_name} calls cooldown_store::{early_read.group(1)}( before "
+                    "a guarded store writer - a decision made from a read outside the "
+                    "writer's lock can act on a record that was replaced in between. Pass "
+                    "what must be compared INTO the writer and report what it found"
+                )
+    if not callers:
+        fail(
+            "no caller of a guarded cool-down store writer was found in either CLI; this "
+            "check would pass vacuously"
+        )
+    return (
+        f"{len(callers)} CLI caller(s) of a guarded store writer decide nothing from a "
+        "read taken outside that writer's lock"
+    )
+
+
 def check_schema_registry_row(config: dict, root: Path) -> str:
     spec = contract_block(config)["cooldown_store"]
     registry = _read(root, "crates/atp-data/src/schema_registry.rs")
@@ -910,6 +986,7 @@ def assert_hot_swap_cooldown_static(config: dict, root: Path = ROOT) -> list[str
         check_evaluation_and_error_carry_the_state(config, orchestrator_src),
         check_store_durability(config, store_src),
         check_resolver_is_the_only_producer(config, root),
+        check_no_caller_decides_from_an_unguarded_read(config, root),
         check_schema_registry_row(config, root),
     ]
 

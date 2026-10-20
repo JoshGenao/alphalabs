@@ -21,7 +21,7 @@
 //! unknown / duplicate / valueless flags.
 
 use atp_orchestrator::cooldown::{CooldownPeriodDays, SwapCompletion, COOLDOWN_DAYS_DEFAULT};
-use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
+use atp_orchestrator::cooldown_store::{self, AbandonOutcome, CompletionOutcome};
 use atp_types::StrategyId;
 use std::env;
 use std::path::Path;
@@ -372,59 +372,53 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let demoted_id = parse_strategy_id(&demoted, "--demoted")?;
     let promoted_id = parse_strategy_id(&promoted, "--promoted")?;
     let path = Path::new(&state_path);
+    let named = SwapCompletion {
+        completed_at_seconds: at_seconds,
+        demoted_strategy_id: demoted_id,
+        promoted_strategy_id: promoted_id,
+    };
 
-    // Read BEFORE, so the report describes what was actually there rather than what the
-    // operator asked for. `abandon_provisional` is deliberately idempotent and silent
-    // about mismatches — the right shape for a best-effort call on a failure path, and
-    // the wrong shape for an operator surface, which must be able to say "nothing here
-    // matched what you named".
-    let found = cooldown_store::load(path)
-        .map_err(|error| format!("the cool-down window could not be read: {error}"))?
-        .and_then(|record| record.provisional);
-    // FULL equality — pair AND instant. Identity is not provenance (the r18 lesson,
-    // here at the operator surface): between an operator reading `status` and running
-    // this command, a retry of the SAME swap can replace the marker, and a pair-only
-    // match would retire the newer attempt's suppression on the strength of a request
-    // about the older one.
-    // The ATTEMPT ID is the identity; the pair and the instant are consistency checks
-    // on top of it (adversarial review r27). Matching without it and then clearing with
-    // the CURRENT marker's id — which is what this did — is not a compare-and-swap at
-    // all: it re-reads and clears whatever is there, which is the operation r25 set out
-    // to prevent.
-    let matched = found.as_ref().is_some_and(|stored| {
-        stored.attempt_id == attempt_id
-            && stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
-            && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str()
-            && stored.completion.completed_at_seconds == at_seconds
-    });
+    // ONE locked compare-and-clear - adversarial review r28. This used to read the
+    // marker here, match it against the operator's values, and then ask the store to
+    // clear. The marker can be replaced between that read and the store's lock, so the
+    // match described one record and the clear acted on another. Every value the
+    // operator named (the attempt id, the pair AND the instant) now reaches the store,
+    // which compares them under its exclusive guard and reports the marker it actually
+    // compared. Nothing below decides from a read taken outside that guard.
+    let outcome = cooldown_store::abandon_provisional(path, &named, &attempt_id)
+        .map_err(|error| format!("the marker could not be cleared: {error}"))?;
 
-    match &found {
-        Some(stored) => {
+    // The report describes what the store found, not what the operator asked for, so
+    // "nothing here matched what you named" stays distinguishable from "cleared".
+    let found = match &outcome {
+        AbandonOutcome::Cleared => Some((&named, attempt_id.as_str())),
+        AbandonOutcome::NotOurs(stored) => Some((&stored.completion, stored.attempt_id.as_str())),
+        AbandonOutcome::NoWindow | AbandonOutcome::NothingInFlight => None,
+    };
+    match found {
+        Some((completion, id)) => {
             println!("provisional-found:true");
             println!(
                 "provisional-demoted:{}",
-                stored.completion.demoted_strategy_id.as_str()
+                completion.demoted_strategy_id.as_str()
             );
             println!(
                 "provisional-promoted:{}",
-                stored.completion.promoted_strategy_id.as_str()
+                completion.promoted_strategy_id.as_str()
             );
-            println!(
-                "provisional-at-seconds:{}",
-                stored.completion.completed_at_seconds
-            );
-            println!("provisional-attempt-id:{}", stored.attempt_id);
+            println!("provisional-at-seconds:{}", completion.completed_at_seconds);
+            println!("provisional-attempt-id:{id}");
         }
         None => println!("provisional-found:false"),
     }
 
-    if !matched {
-        println!("provisional-cleared:false");
-        return Err(match &found {
-            Some(stored)
-                if stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
-                    && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str() =>
-            {
+    match outcome {
+        AbandonOutcome::Cleared => {}
+        AbandonOutcome::NotOurs(stored) => {
+            println!("provisional-cleared:false");
+            let same_swap = stored.completion.demoted_strategy_id == named.demoted_strategy_id
+                && stored.completion.promoted_strategy_id == named.promoted_strategy_id;
+            return Err(if same_swap {
                 format!(
                     "the marker for this swap is attempt {:?} at {}s, not the {:?} at {}s \
                      you named — it MOVED between your read and this command, which means \
@@ -436,26 +430,36 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
                     attempt_id,
                     at_seconds,
                 )
-            }
-            Some(stored) => format!(
-                "the unconfirmed marker here belongs to a DIFFERENT swap ({} -> {}); \
-                 refusing to clear it on the strength of a request naming {} -> {}. \
-                 Reconcile the swap that is actually recorded",
-                stored.completion.demoted_strategy_id.as_str(),
-                stored.completion.promoted_strategy_id.as_str(),
-                demoted_id.as_str(),
-                promoted_id.as_str(),
-            ),
-            None => "there is no unconfirmed marker at this window to clear. A CONFIRMED \
-                     completion is not clearable by this command — it is a real cool-down, \
-                     and it expires on its own"
-                .to_string(),
-        });
+            } else {
+                format!(
+                    "the unconfirmed marker here belongs to a DIFFERENT swap ({} -> {}); \
+                     refusing to clear it on the strength of a request naming {} -> {}. \
+                     Reconcile the swap that is actually recorded",
+                    stored.completion.demoted_strategy_id.as_str(),
+                    stored.completion.promoted_strategy_id.as_str(),
+                    named.demoted_strategy_id.as_str(),
+                    named.promoted_strategy_id.as_str(),
+                )
+            });
+        }
+        AbandonOutcome::NoWindow => {
+            println!("provisional-cleared:false");
+            return Err(format!(
+                "there is no cool-down window at {} - check --state. Nothing was cleared \
+                 and nothing was created",
+                path.display()
+            ));
+        }
+        AbandonOutcome::NothingInFlight => {
+            println!("provisional-cleared:false");
+            return Err(
+                "there is no unconfirmed marker at this window to clear. A CONFIRMED \
+                 completion is not clearable by this command - it is a real cool-down, \
+                 and it expires on its own"
+                    .to_string(),
+            );
+        }
     }
-
-    let attempt = found.expect("matched implies present");
-    cooldown_store::abandon_provisional(path, &attempt.completion, &attempt.attempt_id)
-        .map_err(|error| format!("the marker could not be cleared: {error}"))?;
 
     // Verify the artefact, not the intent (CLAUDE.md rule 5): re-read and say what the
     // window is NOW, because retiring suppression is exactly the moment an operator
