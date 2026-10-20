@@ -53,7 +53,9 @@ pub mod live_designation_store;
 // SRS-EXE-001: the live execution host - the production call site of route_order.
 pub mod live_host;
 pub mod live_market_data;
+pub mod operator_channels;
 pub mod order_routing_wiring;
+pub mod quarantine_notification;
 /// SRS-MD-005 — the scheduled IB Gateway restart-window connectivity producer:
 /// the decision `atp-notification`'s suppression seam and `atp-execution`'s
 /// live-order gate have both been waiting on.

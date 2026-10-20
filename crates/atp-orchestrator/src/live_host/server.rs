@@ -40,14 +40,15 @@ use atp_execution::{
 use atp_types::StrategyId;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Concurrent connections one strategy socket accepts. A strategy needs one; the
 /// bound stops a misbehaving container from exhausting host threads.
@@ -55,6 +56,11 @@ pub const MAX_CONNECTIONS_PER_STRATEGY: usize = 4;
 
 /// How long the host waits to write a reply before dropping the connection.
 pub const REPLY_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// After a refusal that ends a connection, the most the host reads and discards
+/// before closing, and for how long. See [`refuse_and_close`].
+pub const CLOSE_DRAIN_LIMIT_BYTES: u64 = 64 * 1024;
+pub const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The longest socket path the host binds. `sun_path` is 104 bytes on macOS and 108
 /// on Linux, including the terminating NUL; the smaller bound is portable.
@@ -304,7 +310,10 @@ fn accept_loop<B, C, E, F, S>(
                     strategy.as_str()
                 ),
             );
-            let _ = write_reply(&mut stream, &refusal);
+            // Inline, not on a new thread: the bound exists to cap threads. This
+            // holds only this strategy's accepts, for at most CLOSE_DRAIN_TIMEOUT,
+            // and only while that strategy is over its limit.
+            refuse_and_close(&mut stream, &refusal);
             continue;
         }
         let host = Arc::clone(&host);
@@ -376,19 +385,52 @@ fn serve_connection<B, C, E, F, S>(
                 "ProtocolError",
                 format!("frame is not newline-terminated within {MAX_FRAME_BYTES} bytes; closing"),
             );
-            let _ = write_reply(&mut writer, &refusal);
+            refuse_and_close(&mut writer, &refusal);
             return;
         }
         let reply = match std::str::from_utf8(&buffer) {
             Ok(frame) => host.handle_frame(strategy, frame),
             Err(_) => {
                 let refusal = host_refusal(host, "ProtocolError", "frame is not UTF-8".into());
-                let _ = write_reply(&mut writer, &refusal);
+                refuse_and_close(&mut writer, &refusal);
                 return;
             }
         };
         if write_reply(&mut writer, &reply).is_err() {
             return;
+        }
+    }
+}
+
+/// Send a refusal that ends the connection, and close so the peer can read it.
+///
+/// On Linux, closing a Unix socket that still holds bytes the peer sent resets the
+/// connection: the peer's next read fails with `ECONNRESET`, and the refusal queued
+/// ahead of it is lost. (macOS delivers the refusal, so this shows only on Linux.)
+/// So the host shuts its write side after the refusal, which gives the peer the
+/// refusal and then end-of-stream, and reads and discards the peer's input until the
+/// peer closes. [`CLOSE_DRAIN_LIMIT_BYTES`] and [`CLOSE_DRAIN_TIMEOUT`] bound that,
+/// so a peer that never stops writing cannot hold the thread.
+fn refuse_and_close(stream: &mut UnixStream, refusal: &Reply) {
+    if stream.set_write_timeout(Some(REPLY_WRITE_TIMEOUT)).is_err()
+        || write_reply(stream, refusal).is_err()
+        || stream.shutdown(Shutdown::Write).is_err()
+    {
+        return;
+    }
+    let deadline = Instant::now() + CLOSE_DRAIN_TIMEOUT;
+    let mut drained: u64 = 0;
+    let mut sink = [0u8; 4096];
+    while drained < CLOSE_DRAIN_LIMIT_BYTES {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return;
+        }
+        match stream.read(&mut sink) {
+            Ok(0) => return,
+            Ok(read) => drained += read as u64,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return,
         }
     }
 }

@@ -140,6 +140,13 @@ MD-003's dashboard watchdog took 9 rounds, all on this shape. Any future poll br
     closed without it. `(MD-003 r7)`
 32. **Shared-socket operations eat each other's frames** — two readers on one session
     consume each other's responses. `(MD-003 live)`
+33. **A refusal that ends a connection must drain before it closes, or Linux discards it.**
+    Closing a socket while the peer's bytes are still unread resets the connection on
+    Linux: the peer's next read fails with `ECONNRESET`, and the refusal queued ahead of it
+    is lost. macOS delivers the refusal, so the test is green locally and red only in CI.
+    Write the refusal, `shutdown(Write)`, read and discard to end-of-stream under a byte
+    AND a time bound, then close. Every refusal that ends a connection needs it, including
+    the accept loop's. `(EXE-001, red main 2026-10-10 to 2026-10-19)`
 
 ## Guards that read before they write (RESV-006 r20)
 

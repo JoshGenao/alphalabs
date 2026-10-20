@@ -25,6 +25,7 @@ pub mod eviction;
 pub mod fundamentals;
 pub mod ingestion_validation;
 mod normalization;
+pub mod quarantine_store;
 pub mod query;
 pub mod schema_registry;
 pub mod store;
@@ -56,17 +57,22 @@ pub use crate::eviction::{
 pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
 };
+pub use crate::quarantine_store::{
+    parse_run_id, LatestRuns, PrimaryWrite, QuarantineRun, QuarantineStore, QuarantineStoreError,
+    QuarantinedRecord, RunRead, RunReceipt, MAX_RUNS_READ, QUARANTINE_DIRNAME,
+};
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 pub use crate::schema_registry::{
     descriptor, entity_ids, supports_version, validate_registry, EvolutionPosture, RegistryError,
     SchemaDescriptor, PERSISTED_ENTITIES,
 };
 pub use crate::tiering::{
-    ArchiveOutcome, NasSyncStatus, RetentionReport, RetentionVerdict, TierConfig, TierError,
-    TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS, MIN_HOT_RETENTION_DAYS,
-    SECONDS_PER_DAY,
+    ArchiveOutcome, NasSyncStatus, OnConflict, RetentionReport, RetentionVerdict, ScreenedIngest,
+    TierConfig, TierError, TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS,
+    MIN_HOT_RETENTION_DAYS, SECONDS_PER_DAY,
 };
 
+use crate::quarantine_store::ReasonCapture;
 use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
 #[derive(Debug, Default)]
@@ -96,13 +102,14 @@ pub struct DataLayer;
 //     exactly the record that will be persisted.
 //
 //   * `IngestionValidationEventSink` — the structured-event publication
-//     channel. Concrete sinks (deferred to SRS-DATA-014 / SRS-DATA-015 +
-//     SRS-NOTIF-001) route events to the quarantine storage backend, the
-//     dashboard WebSocket alert pane, and the notification dispatcher
-//     per SyRS SYS-77's "alert the operator on the dashboard and
+//     channel. The gate emits one event per quarantined record;
+//     `QuarantineSummarySink` aggregates them into the counts and reasons
+//     of SyRS SYS-77's "alert the operator on the dashboard and
 //     notification subsystem with the count and nature of quarantined
-//     records" clause. The "count" half is the sink's aggregation
-//     responsibility; the gate emits one event per quarantined record.
+//     records" clause. The rejected payloads themselves are persisted by
+//     the primary-write paths in the quarantine store
+//     (`crate::quarantine_store`), which the dashboard pane and the
+//     operator notifier read (SRS-DATA-013).
 //
 // Both traits live in `atp-data` (not `atp-types`) because the consumer —
 // `DataLayer::ingest_record` — lives here. Placing them in `atp-types`
@@ -243,6 +250,8 @@ pub struct TieredIngestionOutcome {
     /// The tier write outcome: SSD insert/unchanged counts plus the NAS archival sync status
     /// (`Synced` / `Degraded` / `Failed`). The SSD write has committed by the time this exists.
     pub tier: TierIngestOutcome,
+    /// The SRS-DATA-013 quarantine run that recorded this batch (a clean run: zero quarantined).
+    pub quarantine: RunReceipt,
 }
 
 /// A failure of the idempotent market-record ingestion path: either the ERR-5 validation gate
@@ -254,6 +263,10 @@ pub struct TieredIngestionOutcome {
 pub enum MarketIngestError {
     /// The ERR-5 gate quarantined the record before any write.
     Rejected(StructuredIngestionError),
+    /// SRS-DATA-013: the batch could not be recorded in the quarantine store, so it was not
+    /// ingested. Raised BEFORE any primary write: a batch whose rejects nobody can see, or whose
+    /// run cannot be recorded, does not reach primary storage.
+    Quarantine(QuarantineStoreError),
     /// The store rejected the write (conflicting re-ingest, malformed record, or I/O failure).
     Store(StoreError),
     /// The generic market-data ingestion path refused a kind it does not own. Corporate-action
@@ -284,6 +297,12 @@ impl From<StructuredIngestionError> for MarketIngestError {
     }
 }
 
+impl From<QuarantineStoreError> for MarketIngestError {
+    fn from(error: QuarantineStoreError) -> Self {
+        Self::Quarantine(error)
+    }
+}
+
 impl From<StoreError> for MarketIngestError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
@@ -292,7 +311,12 @@ impl From<StoreError> for MarketIngestError {
 
 impl From<TierError> for MarketIngestError {
     fn from(error: TierError) -> Self {
-        Self::Tier(error)
+        match error {
+            // The tier refused to write because the conflicts could not be quarantined: that is a
+            // quarantine failure, reported as one.
+            TierError::ConflictsNotRecorded(unrecorded) => Self::Quarantine(unrecorded),
+            other => Self::Tier(other),
+        }
     }
 }
 
@@ -300,6 +324,10 @@ impl fmt::Display for MarketIngestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rejected(error) => write!(f, "ingestion record quarantined: {error}"),
+            Self::Quarantine(error) => write!(
+                f,
+                "batch not ingested: it could not be recorded in the quarantine store ({error})"
+            ),
             Self::Store(error) => write!(f, "market-data store write failed: {error}"),
             Self::UnsupportedKind { kind } => write!(
                 f,
@@ -386,6 +414,14 @@ impl DataLayer {
     /// (`Degraded` if unreachable, `Failed` if reachable-but-broken) is reported in the returned
     /// [`TieredIngestionOutcome::tier`]'s [`NasSyncStatus`], to be reconciled by a later
     /// [`TieredStore::sync_ssd_to_nas`].
+    ///
+    /// **Every batch is recorded in the SRS-DATA-013 quarantine store** beside the SSD primary
+    /// ([`QuarantineStore::beside`]). The WHOLE batch is validated (not just up to the first reject)
+    /// so the run carries every quarantined record and its reason; a batch with any reject is
+    /// recorded as `REFUSED` and then returned as [`MarketIngestError::Rejected`] (the first
+    /// reject's error). A clean batch is recorded as `PENDING` before the SSD write and finished with
+    /// the outcome. If the run cannot be recorded, nothing is written:
+    /// [`MarketIngestError::Quarantine`].
     pub fn ingest_market_records_tiered<V, S>(
         &self,
         tier: &TieredStore,
@@ -398,30 +434,92 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
+        // Every exit from here on records the batch as a run (see QuarantineStore::refuse), so a
+        // reject is never dropped with an error.
+        let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let records_in = batch.len() as u64;
+        let quarantine = QuarantineStore::beside(tier.config().ssd_dir());
+        // The tier is not a second path to a trusted coverage frontier — refuse it here too, so the
+        // tiered surface has EXACTLY the same trust boundary as ingest_market_record. The whole batch
+        // is refused before any record is validated.
+        if let Some(record) = batch
+            .iter()
+            .find(|r| r.key().kind == DatasetKind::CorporateActionCoverage)
+        {
+            let error = MarketIngestError::UnsupportedKind {
+                kind: record.key().kind.as_str(),
+            };
+            return Err(quarantine.refuse(observed_at_seconds, records_in, Vec::new(), error));
+        }
         // Validate the WHOLE batch read-only through the unchanged ERR-5 gate BEFORE any SSD write, so
         // an invalid batch fails closed without touching either tier (no partial primary write).
+        let capture = ReasonCapture::new(events);
         let mut validated: Vec<MarketDataRecord> = Vec::new();
-        for record in records {
-            // The tier is not a second path to a trusted coverage frontier — refuse it here too, so
-            // the tiered surface has EXACTLY the same trust boundary as ingest_market_record.
-            if record.key().kind == DatasetKind::CorporateActionCoverage {
-                return Err(MarketIngestError::UnsupportedKind {
-                    kind: record.key().kind.as_str(),
-                });
-            }
+        let mut quarantined: Vec<QuarantinedRecord> = Vec::new();
+        let mut first_reject: Option<StructuredIngestionError> = None;
+        for record in batch {
             // The gate derives the source+hash envelope from the record, binding validation to exactly
             // the record that will be persisted (no independent payload to forge).
-            self.ingest_record(&record, validator, events, observed_at_seconds)?;
-            validated.push(record);
+            match self.ingest_record(&record, validator, &capture, observed_at_seconds) {
+                Ok(_) => validated.push(record),
+                Err(error) => {
+                    // The gate emits exactly one event per reject; no event means the ERR-5
+                    // contract broke, and the batch fails closed on the gate's own error.
+                    let Some(reason) = capture.take() else {
+                        let error = MarketIngestError::Rejected(error);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            quarantined,
+                            error,
+                        ));
+                    };
+                    quarantined.push(QuarantinedRecord {
+                        reason,
+                        source: error.original_record.source.clone(),
+                        record_hash: error.original_record.record_hash.clone(),
+                        record,
+                    });
+                    first_reject.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = first_reject {
+            // Refused outright: record every reject durably, THEN report the refusal.
+            let error = MarketIngestError::Rejected(error);
+            return Err(quarantine.refuse(observed_at_seconds, records_in, quarantined, error));
         }
         let count = validated.len();
+        let mut run = quarantine.begin(
+            observed_at_seconds,
+            records_in,
+            Vec::new(),
+            PrimaryWrite::Pending,
+        )?;
         // SSD-FIRST durable write, THEN NAS sync — the tier owns the ordering and the SSD
         // single-writer lock. This is the ONLY durable market-data write in this method, and it is
         // tiered by construction.
-        let tier_outcome = tier.ingest(validated)?;
+        let screened = match tier.ingest(validated, OnConflict::RefuseBatch, |conflicts| {
+            run.record_conflicts(conflicts, events)
+        }) {
+            Ok(screened) => screened,
+            Err(error) => {
+                run.primary_write_failed(&error);
+                return Err(error.into());
+            }
+        };
+        // A conflicting re-ingest (same key, different content) passes the batch-scoped validator
+        // and is caught by the tier under its writer lock: refused, with its payload recorded.
+        let Some(tier_outcome) = screened.written else {
+            return Err(run.refuse_conflicts(&screened.conflicts));
+        };
+        let receipt = run.finish_receipt(PrimaryWrite::Written {
+            records: count as u64,
+        });
         Ok(TieredIngestionOutcome {
             validated: count,
             tier: tier_outcome,
+            quarantine: receipt,
         })
     }
 }

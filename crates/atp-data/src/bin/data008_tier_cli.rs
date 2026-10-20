@@ -146,6 +146,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         "nas_store_file:{}",
         tier.config().nas_dir().join(store_filename()).display()
     );
+    println!("quarantine_run_id:{}", outcome.quarantine.run_id);
+    println!("quarantine_run_finalized:{}", outcome.quarantine.finalized);
 
     // A reachable-but-broken archive (corrupt/conflicting NAS store, lock contention, or an SSD
     // alias) is an INTEGRITY failure: the SSD write committed, but NAS is not a superset. Exit
@@ -156,6 +158,13 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         return Err(format!(
             "NAS archival sync FAILED ({reason}): the SSD write committed but the archive is not a \
              superset — investigate the NAS store before relying on indefinite retention"
+        ));
+    }
+    if !outcome.quarantine.finalized {
+        return Err(format!(
+            "quarantine run {} could not be finalized: the SSD write committed but the run still \
+             reads PENDING",
+            outcome.quarantine.run_id
         ));
     }
     Ok(())

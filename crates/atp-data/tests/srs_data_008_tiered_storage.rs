@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use atp_data::store::{
     coverage_record, fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, STORE_FILENAME,
 };
-use atp_data::tiering::{NasSyncStatus, RetentionVerdict, TierConfig, TierError, TieredStore};
+use atp_data::tiering::{
+    NasSyncStatus, RetentionVerdict, TierConfig, TierError, TierIngestOutcome, TieredStore,
+};
 use atp_data::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
 use atp_types::{IngestionValidationEvent, QuarantineReason, RecordValidationOutcome};
 use std::cell::RefCell;
@@ -118,7 +120,7 @@ fn data008_post_config_symlink_alias_makes_every_nas_path_fail_closed() {
     // NAS is not an independent archive, so it is surfaced as Failed (not Synced, not Degraded).
     symlink(&ssd, &nas).unwrap();
     let cold = daily(NOW - 200 * DAY);
-    let outcome = tier.ingest(cold.clone()).unwrap();
+    let outcome = tier_ingest(&tier, cold.clone()).unwrap();
     assert!(outcome.nas_sync.is_failed());
     assert!(!outcome.nas_sync.is_synced());
     assert_eq!(load(&ssd).len(), cold.len());
@@ -150,7 +152,7 @@ fn data008_reachable_but_corrupt_nas_ingest_fails_not_degrades() {
     .unwrap();
     let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
 
-    let outcome = tier.ingest(daily(NOW)).unwrap();
+    let outcome = tier_ingest(&tier, daily(NOW)).unwrap();
     // SSD still committed; NAS surfaced as Failed (reachable but broken), NOT Degraded (offline).
     assert_eq!(outcome.ssd_inserted, 2);
     assert!(outcome.nas_sync.is_failed());
@@ -221,7 +223,7 @@ fn data008_ingest_writes_ssd_first_then_syncs_nas_superset() {
 
     let batch = daily(NOW - 5 * DAY);
     let n = batch.len();
-    let outcome = tier.ingest(batch.clone()).expect("ingest");
+    let outcome = tier_ingest(&tier, batch.clone()).expect("ingest");
 
     // SSD is the primary: every record inserted and the SSD store file exists with all records.
     assert_eq!(outcome.ssd_inserted, n);
@@ -257,9 +259,8 @@ fn data008_nas_unreachable_degrades_but_preserves_ssd_write_then_recovers() {
 
     let batch = daily(NOW - 3 * DAY);
     let n = batch.len();
-    let outcome = tier
-        .ingest(batch.clone())
-        .expect("ingest must succeed even with NAS down");
+    let outcome =
+        tier_ingest(&tier, batch.clone()).expect("ingest must succeed even with NAS down");
 
     // The SSD primary write STILL committed despite NAS being down (no data loss).
     assert_eq!(outcome.ssd_inserted, n);
@@ -292,7 +293,7 @@ fn data008_nas_unreachable_degrades_but_preserves_ssd_write_then_recovers() {
     // An explicit sync to an unreachable NAS is fatal (the operator asked for confirmation).
     let (ssd2, nas2) = tier_dirs("degraded_fatal");
     let tier2 = TieredStore::new(TierConfig::with_default_retention(&ssd2, &nas2).unwrap());
-    tier2.ingest(daily(NOW)).unwrap();
+    tier_ingest(&tier2, daily(NOW)).unwrap();
     assert!(matches!(tier2.sync_ssd_to_nas(), Err(TierError::Nas(_))));
 }
 
@@ -314,8 +315,8 @@ fn data008_hot_cold_classification_ssd_retains_full_hot_window() {
     let tier = TieredStore::new(cfg);
     let hot = daily(NOW - 10 * DAY);
     let cold = daily(NOW - 200 * DAY);
-    tier.ingest(hot.clone()).unwrap();
-    tier.ingest(cold.clone()).unwrap();
+    tier_ingest(&tier, hot.clone()).unwrap();
+    tier_ingest(&tier, cold.clone()).unwrap();
 
     let report = tier.retention_report(NOW).expect("report");
     assert_eq!(report.ssd_hot, hot.len());
@@ -338,8 +339,8 @@ fn data008_archive_cold_keeps_hot_on_ssd_and_nas_retains_indefinitely() {
 
     let hot = daily(NOW - 10 * DAY);
     let cold = daily(NOW - 200 * DAY);
-    tier.ingest(hot.clone()).unwrap(); // both ingests sync to NAS
-    tier.ingest(cold.clone()).unwrap();
+    tier_ingest(&tier, hot.clone()).unwrap(); // both ingests sync to NAS
+    tier_ingest(&tier, cold.clone()).unwrap();
 
     // Archive cold data off SSD — only what is confirmed on NAS is dropped.
     let archived = tier.archive_cold(NOW).expect("archive");
@@ -378,7 +379,7 @@ fn data008_archive_never_drops_a_record_absent_from_nas() {
     // Ingest cold data with NAS DOWN: SSD has it, NAS does not.
     let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
     let cold = daily(NOW - 200 * DAY);
-    let outcome = tier.ingest(cold.clone()).unwrap();
+    let outcome = tier_ingest(&tier, cold.clone()).unwrap();
     assert!(outcome.nas_sync.is_degraded());
 
     // Now NAS is reachable but EMPTY (the cold record was never synced).
@@ -403,8 +404,8 @@ fn data008_archive_with_nas_unreachable_archives_nothing() {
     let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
     let hot = daily(NOW - 10 * DAY);
     let cold = daily(NOW - 200 * DAY);
-    tier.ingest(hot.clone()).unwrap();
-    tier.ingest(cold.clone()).unwrap();
+    tier_ingest(&tier, hot.clone()).unwrap();
+    tier_ingest(&tier, cold.clone()).unwrap();
 
     let archived = tier
         .archive_cold(NOW)
@@ -429,10 +430,10 @@ fn data008_reingest_is_idempotent_across_both_tiers() {
 
     let batch = daily(NOW - 5 * DAY);
     let n = batch.len();
-    tier.ingest(batch.clone()).unwrap();
+    tier_ingest(&tier, batch.clone()).unwrap();
 
     // Re-ingest the SAME batch: no new SSD rows, nothing new to add to NAS.
-    let outcome = tier.ingest(batch.clone()).unwrap();
+    let outcome = tier_ingest(&tier, batch.clone()).unwrap();
     assert_eq!(outcome.ssd_inserted, 0);
     assert_eq!(outcome.ssd_unchanged, n);
     assert_eq!(outcome.nas_sync, NasSyncStatus::Synced { records_added: 0 });
@@ -451,6 +452,26 @@ fn data008_reingest_is_idempotent_across_both_tiers() {
 // --------------------------------------------------------------------------- //
 
 /// The DATA-013 (deferred) validator stand-in: accepts every record.
+/// The raw tier write (`TieredStore::ingest`) is crate-private: SRS-DATA-013 lets nothing reach the
+/// SSD primary without the ERR-5 gate and a quarantine run. These tests exercise the tier's own
+/// mechanics, so they drive it through the public validated surface with an accept-all validator.
+fn tier_ingest(
+    tier: &TieredStore,
+    records: Vec<MarketDataRecord>,
+) -> Result<TierIngestOutcome, TierError> {
+    match DataLayer.ingest_market_records_tiered(
+        tier,
+        records,
+        &AcceptAll,
+        &CollectingSink::default(),
+        NOW as u64,
+    ) {
+        Ok(outcome) => Ok(outcome.tier),
+        Err(MarketIngestError::Tier(error)) => Err(error),
+        Err(other) => panic!("an accept-all tiered ingest can only fail in the tier: {other:?}"),
+    }
+}
+
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
     fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
@@ -528,8 +549,9 @@ fn data008_tiered_surface_quarantined_record_fails_closed_before_any_ssd_write()
 
     // Fail-closed as a validation rejection — NOT a tier/SSD error.
     assert!(matches!(err, MarketIngestError::Rejected(_)), "got {err:?}");
-    // The ERR-5 event fired for the first (quarantined) record...
-    assert_eq!(sink.events.borrow().len(), 1);
+    // The ERR-5 event fired for EVERY quarantined record: the tiered surface validates the whole
+    // batch so the SRS-DATA-013 quarantine run carries every reject, not just the first...
+    assert_eq!(sink.events.borrow().len(), 2);
     // ...and NOTHING was written to either tier (no partial primary write).
     assert!(
         !store_file_exists(&ssd),
@@ -582,8 +604,7 @@ fn data008_best_effort_sync_degrades_when_nas_unreachable_then_syncs_when_ready(
     let (ssd, nas) = tier_dirs("best_effort_sync");
     // SSD committed first (the operator CLI's SSD-first write), NAS not yet provisioned.
     let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
-    tier.ingest(daily(NOW - 2 * DAY))
-        .expect("seed SSD (NAS down degrades)");
+    tier_ingest(&tier, daily(NOW - 2 * DAY)).expect("seed SSD (NAS down degrades)");
 
     // NAS unreachable -> best-effort sync DEGRADES (never errors), the SSD write is untouched.
     fs::remove_dir_all(&nas).ok();

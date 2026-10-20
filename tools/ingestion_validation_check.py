@@ -398,6 +398,94 @@ def check_cargo_test_smoke(config: dict) -> str:
     )
 
 
+def recorded_path_sources(config: dict, root: Path = ROOT) -> dict[str, str]:
+    """The source of every file named by ``recorded_write_paths``, keyed by file name."""
+    spec = contract_block(config)["recorded_write_paths"]
+    sources: dict[str, str] = {}
+    for entry in spec["paths"]:
+        path = root / spec["src_dir"] / entry["file"]
+        if not path.exists():
+            fail(f"recorded write path source missing: {path.relative_to(root)}")
+        sources[entry["file"]] = path.read_text(encoding="utf-8")
+    return sources
+
+
+def _strip_rust_comments(src: str) -> str:
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    return re.sub(r"//[^\n]*", "", src)
+
+
+def _rust_fn_body(src: str, fn_name: str) -> str:
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\b[^{{]*\{{", src)
+    if not match:
+        fail(f"recorded write path `{fn_name}` not found")
+    depth, index = 1, match.end()
+    while index < len(src) and depth:
+        depth += {"{": 1, "}": -1}.get(src[index], 0)
+        index += 1
+    if depth:
+        fail(f"could not parse the body of `{fn_name}`")
+    return src[match.end() : index - 1]
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def check_every_exit_is_recorded(config: dict, sources: dict[str, str]) -> str:
+    """SRS-DATA-013: no exit from a primary-write path drops the batch's rejects.
+
+    In each recorded write path, every ``return Err(`` must go through ``quarantine.refuse(``
+    (which records the batch, rejects included, as REFUSED) or be the ONE tier-failure exit that
+    first records the outcome via ``run.primary_write_failed``; and every ``?`` must sit on a
+    ``quarantine.begin(`` call (whose failure is the quarantine error itself). A batch the tier
+    refused for conflicting re-ingests returns through ``run.refuse_conflicts(``, which records the
+    conflicts on the already-begun run. An early return
+    added anywhere else would drop the rejects collected so far with the error.
+    """
+    spec = contract_block(config)["recorded_write_paths"]
+    refuse = _squash(spec["refuse_token"])
+    begin = _squash(spec["begin_token"])
+    tier_exit = _squash(spec["tier_failure_exit"])
+    run_refusal = _squash(spec["run_refusal_token"])
+    for entry in spec["paths"]:
+        name = entry["fn"]
+        body = _squash(_strip_rust_comments(_rust_fn_body(sources[entry["file"]], name)))
+        returns = body.count("returnErr(")
+        refused = body.count("returnErr(" + refuse)
+        tier_exits = body.count(tier_exit)
+        run_refusals = body.count("returnErr(" + run_refusal)
+        if refused < 2:
+            fail(
+                f"`{name}` must refuse through `{spec['refuse_token']}` (found {refused} -- is the scan reading it?)"
+            )
+        if tier_exits != 1:
+            fail(
+                f"`{name}` must record a failed primary write via `{spec['tier_failure_exit']}` exactly once"
+            )
+        if run_refusals != 1:
+            fail(
+                f"`{name}` must refuse a conflicting batch via `{spec['run_refusal_token']}` exactly once"
+            )
+        if returns != refused + tier_exits + run_refusals:
+            fail(
+                f"`{name}` has {returns - refused - tier_exits - run_refusals} early `return Err(` that bypass "
+                f"`{spec['refuse_token']}` -- that exit would drop the batch's rejects"
+            )
+        for statement in body.split(";"):
+            if "?" in statement and begin not in statement:
+                fail(
+                    f"`{name}` has a `?` outside `{spec['begin_token']}`: `{statement[-80:]}` -- an "
+                    "error propagated there skips the quarantine run"
+                )
+    names = ", ".join(entry["fn"] for entry in spec["paths"])
+    return (
+        f"every exit from the recorded write paths ({names}) records the batch: early errors go "
+        f"through {spec['refuse_token']}, a failed primary write through run.primary_write_failed, "
+        f"and `?` only on {spec['begin_token']}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Coverage and entry point
 # --------------------------------------------------------------------------- #
@@ -422,6 +510,7 @@ def run_checks() -> list[str]:
     for _, check, scope in _STATIC_CHECKS:
         source = types_src if scope == "types" else data_src
         evidence.append(check(config, source))
+    evidence.append(check_every_exit_is_recorded(config, recorded_path_sources(config)))
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
@@ -434,6 +523,7 @@ def assert_ingestion_validation_static(config: dict, root: Path = ROOT) -> list[
     for _, check, scope in _STATIC_CHECKS:
         source = types_src if scope == "types" else data_src
         evidence.append(check(config, source))
+    evidence.append(check_every_exit_is_recorded(config, recorded_path_sources(config, root)))
     return evidence
 
 

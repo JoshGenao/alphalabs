@@ -727,6 +727,20 @@ impl MarketDataStore {
         }
     }
 
+    /// Would upserting `record` conflict — its natural key already present with DIFFERENT content
+    /// (the [`StoreError::ConflictingContent`] case)? Read-only.
+    pub fn conflicts_with(&self, record: &MarketDataRecord) -> bool {
+        self.get(&record.key)
+            .is_some_and(|existing| existing.fields != record.fields)
+    }
+
+    /// The error [`upsert`](Self::upsert) raises for a conflicting `record`.
+    pub(crate) fn conflict_error(record: &MarketDataRecord) -> StoreError {
+        StoreError::ConflictingContent {
+            key: key_identity(&record.key),
+        }
+    }
+
     /// Serialize the whole store to the deterministic, dependency-free text form.
     ///
     /// Records are emitted in canonical order, variable-length strings are length-prefixed, and
@@ -868,11 +882,10 @@ impl MarketDataStore {
         })?;
 
         // fsync the directory so the rename (a directory-entry change) is itself durable.
-        let dir_handle =
-            fs::File::open(dir).map_err(|err| io_error("open store directory", &err))?;
+        let dir_handle = fs::File::open(dir).map_err(|err| io_error(CTX_OPEN_STORE_DIR, &err))?;
         dir_handle
             .sync_all()
-            .map_err(|err| io_error("sync store directory", &err))?;
+            .map_err(|err| io_error(CTX_SYNC_STORE_DIR, &err))?;
         Ok(())
     }
 
@@ -971,7 +984,7 @@ fn io_error(context: &'static str, _err: &io::Error) -> StoreError {
 // Record encode / decode
 // --------------------------------------------------------------------------- //
 
-fn encode_record(body: &mut String, record: &MarketDataRecord) {
+pub(crate) fn encode_record(body: &mut String, record: &MarketDataRecord) {
     push_i128(body, record.key.kind.tag());
     push_str(body, &record.key.symbol);
     push_str(body, &record.key.resolution);
@@ -984,7 +997,7 @@ fn encode_record(body: &mut String, record: &MarketDataRecord) {
     }
 }
 
-fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError> {
+pub(crate) fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError> {
     let kind = DatasetKind::from_tag(cursor.read_i64("dataset kind tag")?)?;
     let symbol = cursor.read_str("symbol")?;
     let resolution = cursor.read_str("resolution")?;
@@ -1020,26 +1033,26 @@ fn decode_record(cursor: &mut Cursor<'_>) -> Result<MarketDataRecord, StoreError
 // --------------------------------------------------------------------------- //
 
 /// Append `value` as its own line.
-fn push_line(out: &mut String, value: &str) {
+pub(crate) fn push_line(out: &mut String, value: &str) {
     out.push_str(value);
     out.push('\n');
 }
 
 /// Append a decimal integer as its own line.
-fn push_i128(out: &mut String, value: i128) {
+pub(crate) fn push_i128(out: &mut String, value: i128) {
     out.push_str(&value.to_string());
     out.push('\n');
 }
 
 /// Append a non-negative count as its own line.
-fn push_count(out: &mut String, value: usize) {
+pub(crate) fn push_count(out: &mut String, value: usize) {
     out.push_str(&value.to_string());
     out.push('\n');
 }
 
 /// Append a length-prefixed string: the byte length on one line, then the bytes followed by a
 /// newline — so any byte (spaces, an OCC option symbol, etc.) round-trips without escaping.
-fn push_str(out: &mut String, value: &str) {
+pub(crate) fn push_str(out: &mut String, value: &str) {
     out.push_str(&value.len().to_string());
     out.push('\n');
     out.push_str(value);
@@ -1224,13 +1237,13 @@ mod sha256 {
 /// A forward-only cursor over a serialized store's bytes. Reads are exact and fail closed: a missing
 /// newline, a malformed integer, a truncated length-prefixed string, or trailing garbage all
 /// surface as [`StoreError::CorruptRecord`].
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(serialized: &'a str) -> Self {
+    pub(crate) fn new(serialized: &'a str) -> Self {
         Self {
             bytes: serialized.as_bytes(),
             pos: 0,
@@ -1238,12 +1251,12 @@ impl<'a> Cursor<'a> {
     }
 
     /// The not-yet-consumed bytes (used to checksum the body after the header).
-    fn remaining(&self) -> &'a [u8] {
+    pub(crate) fn remaining(&self) -> &'a [u8] {
         &self.bytes[self.pos..]
     }
 
     /// Read up to (and consuming) the next `\n`, returning the line without it.
-    fn read_line(&mut self, context: &'static str) -> Result<&'a str, StoreError> {
+    pub(crate) fn read_line(&mut self, context: &'static str) -> Result<&'a str, StoreError> {
         let start = self.pos;
         while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
             self.pos += 1;
@@ -1256,20 +1269,20 @@ impl<'a> Cursor<'a> {
         std::str::from_utf8(line).map_err(|_| StoreError::CorruptRecord { context })
     }
 
-    fn read_i64(&mut self, context: &'static str) -> Result<i64, StoreError> {
+    pub(crate) fn read_i64(&mut self, context: &'static str) -> Result<i64, StoreError> {
         self.read_line(context)?
             .parse::<i64>()
             .map_err(|_| StoreError::CorruptRecord { context })
     }
 
-    fn read_u64(&mut self, context: &'static str) -> Result<u64, StoreError> {
+    pub(crate) fn read_u64(&mut self, context: &'static str) -> Result<u64, StoreError> {
         self.read_line(context)?
             .parse::<u64>()
             .map_err(|_| StoreError::CorruptRecord { context })
     }
 
     /// Read a non-negative count line (a `usize`).
-    fn read_count(&mut self, context: &'static str) -> Result<usize, StoreError> {
+    pub(crate) fn read_count(&mut self, context: &'static str) -> Result<usize, StoreError> {
         self.read_line(context)?
             .parse::<usize>()
             .map_err(|_| StoreError::CorruptRecord { context })
@@ -1277,7 +1290,7 @@ impl<'a> Cursor<'a> {
 
     /// Read a length-prefixed string: a byte-length line, then exactly that many bytes, then a
     /// terminating `\n`.
-    fn read_str(&mut self, context: &'static str) -> Result<String, StoreError> {
+    pub(crate) fn read_str(&mut self, context: &'static str) -> Result<String, StoreError> {
         let len = self.read_count(context)?;
         let end = self
             .pos
@@ -1294,7 +1307,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Confirm the cursor is exhausted; trailing bytes mean the blob is corrupt.
-    fn expect_end(&self) -> Result<(), StoreError> {
+    pub(crate) fn expect_end(&self) -> Result<(), StoreError> {
         if self.pos == self.bytes.len() {
             Ok(())
         } else {
@@ -1366,6 +1379,48 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+/// The two [`MarketDataStore::save_to_path`] failures that happen AFTER the atomic rename: the new
+/// store is already visible to readers, only its directory entry's durability is unconfirmed.
+pub(crate) const CTX_OPEN_STORE_DIR: &str = "open store directory";
+pub(crate) const CTX_SYNC_STORE_DIR: &str = "sync store directory";
+
+impl StoreError {
+    /// Could the failed save already have published the new store? `true` only for the
+    /// post-rename directory-sync failures: every other error is raised before the rename, so the
+    /// previous store is still the one on disk. A caller recording the outcome must treat `true`
+    /// as UNKNOWN, never as "nothing was written".
+    pub fn may_have_published(&self) -> bool {
+        matches!(self, Self::Io { context } if *context == CTX_OPEN_STORE_DIR || *context == CTX_SYNC_STORE_DIR)
+    }
+}
+
+/// `fs::create_dir_all`, then `fsync` every ancestor of `dir`, so the directory survives a power
+/// loss (each directory's entry lives in its parent).
+///
+/// The WHOLE ancestor chain is synced on EVERY call. Existence is not proof of durability: an
+/// earlier call may have created the directory and then failed before its parent's `fsync`, and a
+/// retry that trusted `is_dir()` would never repair that. A relative `dir` is resolved first, so
+/// its parent is a real directory rather than the empty path. The cost is a few directory
+/// `fsync`s per call, paid once per ingestion batch.
+pub(crate) fn create_dir_all_durably(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    for ancestor in ancestors_to_sync(dir)? {
+        fs::File::open(&ancestor)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// The directories [`create_dir_all_durably`] fsyncs for an existing `dir`: every ancestor of its
+/// canonical absolute path, nearest first, up to the filesystem root.
+pub(crate) fn ancestors_to_sync(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let absolute = dir.canonicalize()?;
+    Ok(absolute
+        .ancestors()
+        .skip(1)
+        .map(Path::to_path_buf)
+        .collect())
+}
 
 // --------------------------------------------------------------------------- //
 // Fixture ingestion sources (stand-ins for the four provider adapters)

@@ -109,7 +109,6 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::store::{MarketDataRecord, MarketDataStore, StoreError, StoreLock};
@@ -155,6 +154,24 @@ pub enum TierError {
     /// [`NasSyncStatus`] (`Degraded` if unreachable, `Failed` if reachable-but-broken) without losing
     /// the committed SSD write.
     Nas(StoreError),
+    /// SRS-DATA-013: the conflicting records this ingest set aside could not be recorded in the
+    /// quarantine store, so nothing was written (they are recorded BEFORE the primary save).
+    ConflictsNotRecorded(crate::quarantine_store::QuarantineStoreError),
+}
+
+impl TierError {
+    /// Could the failed [`TieredStore::ingest`] have committed the SSD primary anyway? `true` for an
+    /// SSD error raised after the store's atomic rename, and for any NAS error (NAS work only starts
+    /// once the SSD write has committed). Configuration errors precede every write.
+    pub fn may_have_published(&self) -> bool {
+        match self {
+            Self::Ssd(error) => error.may_have_published(),
+            Self::Nas(_) => true,
+            Self::HotRetentionBelowFloor { .. }
+            | Self::TiersNotDistinct { .. }
+            | Self::ConflictsNotRecorded(_) => false,
+        }
+    }
 }
 
 impl fmt::Display for TierError {
@@ -171,6 +188,10 @@ impl fmt::Display for TierError {
             ),
             Self::Ssd(err) => write!(f, "SSD (primary) tier error: {err}"),
             Self::Nas(err) => write!(f, "NAS (archival) tier error: {err}"),
+            Self::ConflictsNotRecorded(err) => write!(
+                f,
+                "conflicting records could not be quarantined, so nothing was written: {err}"
+            ),
         }
     }
 }
@@ -237,6 +258,28 @@ pub struct TierIngestOutcome {
     pub ssd_unchanged: usize,
     /// Whether the NAS archival sync succeeded or degraded.
     pub nas_sync: NasSyncStatus,
+}
+
+/// What [`TieredStore::ingest`] does with a record whose natural key is already present with
+/// DIFFERENT content (a conflicting re-ingest). Decided under the SSD single-writer lock, so a
+/// concurrent writer cannot slip a conflict past the caller's quarantine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnConflict {
+    /// Refuse the whole batch and write nothing (the fail-closed tiered path).
+    RefuseBatch,
+    /// Set the conflicting records aside and write the rest (the SYS-77 quarantine-and-continue
+    /// path).
+    SetAside,
+}
+
+/// The outcome of a [`TieredStore::ingest`]: the conflicting records it set aside, and the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenedIngest {
+    /// Records set aside because their key is already present with different content, in batch
+    /// order. Never upserted.
+    pub conflicts: Vec<MarketDataRecord>,
+    /// The write; `None` when [`OnConflict::RefuseBatch`] refused the batch and nothing was written.
+    pub written: Option<TierIngestOutcome>,
 }
 
 /// The outcome of an [`TieredStore::archive_cold`]: how many cold records were safely archived off
@@ -470,14 +513,31 @@ impl TieredStore {
     /// surfaces as [`NasSyncStatus::Degraded`] (the SSD write stands), to be reconciled by a later
     /// sync. The SSD lock is released after the SSD save; the NAS push reads a consistent SSD
     /// snapshot (the atomic-publish file), so it needs no SSD lock and cannot deadlock against it.
-    pub fn ingest(
+    ///
+    /// **Conflicts are decided under the lock** (SRS-DATA-013). A record whose key is already in
+    /// the SSD primary, in a readable NAS archive, or earlier in this batch with different content
+    /// is set aside, never
+    /// upserted, and returned in [`ScreenedIngest::conflicts`] so the caller can quarantine its
+    /// payload. Under [`OnConflict::RefuseBatch`] any conflict refuses the whole batch and nothing
+    /// is written; under [`OnConflict::SetAside`] the rest of the batch is written.
+    ///
+    /// `record_conflicts` is called with the conflicts while the lock is still held and BEFORE
+    /// anything is saved; if it fails, nothing is written ([`TierError::ConflictsNotRecorded`]).
+    /// So a save failure or a crash after this point can never lose a conflict's payload.
+    pub(crate) fn ingest(
         &self,
         records: impl IntoIterator<Item = MarketDataRecord>,
-    ) -> Result<TierIngestOutcome, TierError> {
+        on_conflict: OnConflict,
+        record_conflicts: impl FnOnce(
+            &[MarketDataRecord],
+        )
+            -> Result<(), crate::quarantine_store::QuarantineStoreError>,
+    ) -> Result<ScreenedIngest, TierError> {
         let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let mut conflicts: Vec<MarketDataRecord> = Vec::new();
 
         // --- SSD-FIRST: durable primary write under the single-writer lock. ------------------- //
-        fs::create_dir_all(&self.config.ssd_dir).map_err(|_| {
+        crate::store::create_dir_all_durably(&self.config.ssd_dir).map_err(|_| {
             TierError::Ssd(StoreError::Io {
                 context: "create SSD tier directory",
             })
@@ -486,13 +546,43 @@ impl TieredStore {
             let _lock = StoreLock::acquire(&self.config.ssd_dir).map_err(TierError::Ssd)?;
             let mut ssd =
                 MarketDataStore::load_from_path(&self.config.ssd_dir).map_err(TierError::Ssd)?;
+            // Archived records count too: a key moved off SSD by archive_cold is still stored, on
+            // NAS. A reachable NAS whose store reads is screened here, under the SSD lock and
+            // before any save. An unmounted NAS cannot be screened (the documented bound until the
+            // SRS-DATA-018 expected-key catalog), and neither can an unreadable one: SRS-DATA-008
+            // keeps the SSD write going through a NAS fault, and the NAS push below reports it as
+            // a Failed sync (the operator CLIs exit non-zero on it).
+            let archived = match self.nas_access() {
+                NasAccess::Ready => MarketDataStore::load_from_path(&self.config.nas_dir).ok(),
+                NasAccess::Unreachable | NasAccess::Aliased => None,
+            };
             let mut inserted = 0;
             let mut unchanged = 0;
             for record in batch {
+                // Checked against the store as it grows, so a conflict within the batch is caught
+                // as well as one against the persisted primary and the archive.
+                if ssd.conflicts_with(&record)
+                    || archived
+                        .as_ref()
+                        .is_some_and(|nas| nas.conflicts_with(&record))
+                {
+                    conflicts.push(record);
+                    continue;
+                }
                 match ssd.upsert(record).map_err(TierError::Ssd)? {
                     crate::store::UpsertOutcome::Inserted => inserted += 1,
                     crate::store::UpsertOutcome::UnchangedDuplicate => unchanged += 1,
                 }
+            }
+            if !conflicts.is_empty() {
+                record_conflicts(&conflicts).map_err(TierError::ConflictsNotRecorded)?;
+            }
+            if on_conflict == OnConflict::RefuseBatch && !conflicts.is_empty() {
+                // Refused: the in-memory upserts are discarded and nothing is saved.
+                return Ok(ScreenedIngest {
+                    conflicts,
+                    written: None,
+                });
             }
             // SSD is durable on disk HERE (unique scratch + fsync + atomic rename + dir fsync),
             // before a single byte is written to the archival tier.
@@ -520,10 +610,13 @@ impl TieredStore {
             },
         };
 
-        Ok(TierIngestOutcome {
-            ssd_inserted,
-            ssd_unchanged,
-            nas_sync,
+        Ok(ScreenedIngest {
+            conflicts,
+            written: Some(TierIngestOutcome {
+                ssd_inserted,
+                ssd_unchanged,
+                nas_sync,
+            }),
         })
     }
 

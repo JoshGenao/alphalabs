@@ -17,20 +17,23 @@
 //!      written SSD-first + NAS-synced through the SRS-DATA-008 tier, and the summary reports how many
 //!      were quarantined and why. Duplicate detection spans the batch AND the existing primary store.
 //!
-//! Out of scope (deferred, per `architecture/runtime_services.json` → `ingestion_validation_contract`):
-//! the durable *quarantine store* that persists rejected payloads (SRS-DATA-014 / DATA-015) and the
-//! dashboard/notification *display* fan-out (SRS-UI-001 / SRS-NOTIF-001). This module produces the
-//! structured counts-and-reasons those surfaces will consume; it does not render them.
+//! Every batch through this path is recorded in the durable quarantine store
+//! ([`crate::quarantine_store`]) beside the SSD primary: the rejected payloads, their reasons, and
+//! the batch outcome. The dashboard pane and the operator notification read that store; this module
+//! does not render anything.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use atp_types::{IngestionValidationEvent, QuarantineReason, RecordValidationOutcome};
 
+use crate::quarantine_store::{
+    PrimaryWrite, QuarantineStore, QuarantinedRecord, ReasonCapture, RunReceipt,
+};
 use crate::store::{
     DatasetKind, MarketDataRecord, MarketDataStore, MarketField, NaturalKey, STORE_FILENAME,
 };
-use crate::tiering::{TierIngestOutcome, TieredStore};
+use crate::tiering::{OnConflict, TierIngestOutcome, TieredStore};
 use crate::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
 
 /// The six SyRS SYS-77 rule categories in a fixed canonical order — the order the CLI prints counts
@@ -309,14 +312,14 @@ pub struct QuarantiningIngestionOutcome {
     /// Records that passed SYS-77 validation (and cross-store duplicate checks) and were handed to the
     /// tier for the primary write.
     pub written: usize,
-    /// The quarantined records themselves — never written to primary, but **returned rather than
-    /// silently dropped** so a caller (or the deferred SRS-DATA-014/015 quarantine store) can persist
-    /// the rejected payloads for inspection/recovery. `quarantined_records.len()` equals the paired
-    /// sink's `quarantined_total`. This crate does NOT persist them durably — that store is
-    /// SRS-DATA-014/015 (per the contract's `deferred[]`), which is why this feature stays serialized.
+    /// The quarantined records themselves — never written to primary. They are also persisted, with
+    /// their reasons, in the quarantine run named by [`quarantine`](Self::quarantine).
+    /// `quarantined_records.len()` equals the paired sink's `quarantined_total`.
     pub quarantined_records: Vec<MarketDataRecord>,
     /// The SSD-first durable write + NAS archival sync result for the valid subset.
     pub tier: TierIngestOutcome,
+    /// The quarantine run that recorded this batch.
+    pub quarantine: RunReceipt,
 }
 
 impl DataLayer {
@@ -326,9 +329,9 @@ impl DataLayer {
     /// fails the whole batch closed on the first invalid record), this path implements the SYS-77
     /// disposition: each record is validated read-only through the unchanged ERR-5 gate; a **quarantined
     /// record is set aside** (its structured event is emitted through `events` for the count-and-nature
-    /// summary, it is **never written to the primary tables**, and it is **returned** in
-    /// [`QuarantiningIngestionOutcome::quarantined_records`] rather than silently dropped so a caller or
-    /// the deferred SRS-DATA-014/015 quarantine store can persist it), while the batch **continues**; the
+    /// summary, it is **never written to the primary tables**, and it is persisted with its reason in
+    /// the durable quarantine store beside the SSD primary and returned in
+    /// [`QuarantiningIngestionOutcome::quarantined_records`]), while the batch **continues**; the
     /// **surviving valid subset** is then written through the SRS-DATA-008 tier (SSD-first durable write +
     /// NAS sync), so no valid record is lost and no invalid record reaches primary storage.
     ///
@@ -347,6 +350,11 @@ impl DataLayer {
     ///
     /// Pass a **fresh** [`Sys77RecordValidator`] per call so its within-batch duplicate detection
     /// (rule e) starts clean, and a [`QuarantineSummarySink`] to collect the counts and reasons.
+    ///
+    /// **Recorded before the primary write.** The run — every quarantined record with its reason —
+    /// is written to the quarantine store as `PENDING` BEFORE the SSD write, then finished with the
+    /// outcome. If it cannot be recorded, nothing is written ([`MarketIngestError::Quarantine`]): a
+    /// quarantine nobody can see is the failure SYS-77 exists to prevent.
     pub fn ingest_market_records_quarantining<V, S>(
         &self,
         tier: &TieredStore,
@@ -359,23 +367,52 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
+        // Every exit from here on records the batch as a run (see QuarantineStore::refuse), so a
+        // reject is never dropped with an error.
+        let batch: Vec<MarketDataRecord> = records.into_iter().collect();
+        let records_in = batch.len() as u64;
+        let quarantine = QuarantineStore::beside(tier.config().ssd_dir());
+        // Same trust boundary as ingest_market_record / ingest_market_records_tiered: the tier is
+        // not a second path to a trusted coverage frontier, so refuse COVERAGE here too — the whole
+        // batch, before any record is validated.
+        if let Some(record) = batch
+            .iter()
+            .find(|r| r.key().kind == DatasetKind::CorporateActionCoverage)
+        {
+            let error = MarketIngestError::UnsupportedKind {
+                kind: record.key().kind.as_str(),
+            };
+            return Err(quarantine.refuse(observed_at_seconds, records_in, Vec::new(), error));
+        }
+        let capture = ReasonCapture::new(events);
         let mut valid: Vec<MarketDataRecord> = Vec::new();
-        let mut quarantined_records: Vec<MarketDataRecord> = Vec::new();
-        for record in records {
-            // Same trust boundary as ingest_market_record / ingest_market_records_tiered: the tier is
-            // not a second path to a trusted coverage frontier, so refuse COVERAGE here too.
-            if record.key().kind == DatasetKind::CorporateActionCoverage {
-                return Err(MarketIngestError::UnsupportedKind {
-                    kind: record.key().kind.as_str(),
-                });
-            }
-            match self.ingest_record(&record, validator, events, observed_at_seconds) {
+        let mut entries: Vec<QuarantinedRecord> = Vec::new();
+        for record in batch {
+            match self.ingest_record(&record, validator, &capture, observed_at_seconds) {
                 // Valid → candidate for the primary write (subject to the cross-store check below).
                 Ok(_) => valid.push(record),
                 // Quarantined → the gate already emitted the structured IngestionValidationEvent
-                // through `events` (the counts-and-reasons aggregation). Keep the record (returned, not
-                // silently dropped) and CONTINUE the batch. This is the SYS-77 quarantine disposition.
-                Err(_) => quarantined_records.push(record),
+                // through `events` (the counts-and-reasons aggregation). Keep the record with its
+                // reason and CONTINUE the batch. This is the SYS-77 quarantine disposition. The gate
+                // emits exactly one event per reject; no event means the ERR-5 contract broke, so the
+                // batch fails closed on the gate's own error.
+                Err(error) => {
+                    let Some(reason) = capture.take() else {
+                        let error = MarketIngestError::Rejected(error);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            entries,
+                            error,
+                        ));
+                    };
+                    entries.push(QuarantinedRecord {
+                        reason,
+                        source: error.original_record.source,
+                        record_hash: error.original_record.record_hash,
+                        record,
+                    });
+                }
             }
         }
 
@@ -384,9 +421,10 @@ impl DataLayer {
         // duplicate — quarantine it as DuplicateRecord (emit the event + return the record) rather than
         // letting it abort the WHOLE tiered write as a StoreError::ConflictingContent. An IDENTICAL
         // existing record stays (the tier's idempotent upsert collapses it, SRS-DATA-016). The snapshot
-        // is read outside the tier's single-writer lock, so a concurrent conflicting write in the narrow
-        // window still fails closed at `tier.ingest`; a missing store (first ingest) reads as empty and
-        // a genuinely broken store surfaces at `tier.ingest`.
+        // is read outside the tier's single-writer lock; a conflicting write that lands in that window
+        // is set aside by `tier.ingest` under the lock and quarantined below (OnConflict::SetAside). A
+        // missing store (first ingest) reads as empty and a genuinely broken store surfaces at
+        // `tier.ingest`.
         //
         // The snapshot spans the WHOLE tiered view — SSD (hot primary) AND NAS (archival) — not just
         // SSD, so a re-ingest that conflicts with a COLD record archived off SSD (present only on NAS,
@@ -422,7 +460,13 @@ impl DataLayer {
                 // in that case the tier's NAS sync degrades and alerts.)
                 Err(err) => {
                     if dir.join(STORE_FILENAME).exists() {
-                        return Err(MarketIngestError::Store(err));
+                        let error = MarketIngestError::Store(err);
+                        return Err(quarantine.refuse(
+                            observed_at_seconds,
+                            records_in,
+                            entries,
+                            error,
+                        ));
                     }
                 }
             }
@@ -437,11 +481,16 @@ impl DataLayer {
                             QuarantineReason::DuplicateRecord,
                         ),
                         reason: QuarantineReason::DuplicateRecord,
-                        source: submission.source,
-                        record_hash: submission.record_hash,
+                        source: submission.source.clone(),
+                        record_hash: submission.record_hash.clone(),
                         observed_at_seconds,
                     });
-                    quarantined_records.push(record);
+                    entries.push(QuarantinedRecord {
+                        reason: QuarantineReason::DuplicateRecord,
+                        source: submission.source,
+                        record_hash: submission.record_hash,
+                        record,
+                    });
                     continue;
                 }
                 // Identical existing record → idempotent; let the tier dedup it (UnchangedDuplicate).
@@ -449,14 +498,43 @@ impl DataLayer {
             to_write.push(record);
         }
 
-        let written = to_write.len();
+        // Record the run — every quarantined record with its reason — BEFORE the primary write. If
+        // it cannot be recorded, nothing is written.
+        let mut quarantined_records: Vec<MarketDataRecord> =
+            entries.iter().map(|entry| entry.record.clone()).collect();
+        let mut run = quarantine.begin(
+            observed_at_seconds,
+            records_in,
+            entries,
+            PrimaryWrite::Pending,
+        )?;
         // Write ONLY the surviving valid subset — SSD-first durable, then NAS sync — through the
         // SRS-DATA-008 tier. Quarantined records are absent, so they never reach the primary tables.
-        let tier_outcome = tier.ingest(to_write)?;
+        // A conflict the pre-pass above could not see (a concurrent writer) is set aside by the
+        // tier under its writer lock and quarantined here with its payload.
+        let screened = match tier.ingest(to_write, OnConflict::SetAside, |conflicts| {
+            run.record_conflicts(conflicts, events)
+        }) {
+            Ok(screened) => screened,
+            Err(error) => {
+                run.primary_write_failed(&error);
+                return Err(error.into());
+            }
+        };
+        let Some(tier_outcome) = screened.written else {
+            return Err(run.refuse_conflicts(&screened.conflicts));
+        };
+        let written = tier_outcome.ssd_inserted + tier_outcome.ssd_unchanged;
+        // Already recorded on the run (under the tier's lock, before its save).
+        quarantined_records.extend(screened.conflicts);
+        let quarantine = run.finish_receipt(PrimaryWrite::Written {
+            records: written as u64,
+        });
         Ok(QuarantiningIngestionOutcome {
             written,
             quarantined_records,
             tier: tier_outcome,
+            quarantine,
         })
     }
 }

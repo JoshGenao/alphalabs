@@ -147,6 +147,9 @@ path = "src/bin/resv006_hot_swap_cooldown_cli.rs"
 # notifier here — the lower crates never see each other.
 atp-adapters = { path = "../atp-adapters" }
 atp-execution = { path = "../atp-execution" }
+# SRS-DATA-013: the quarantine alert reads the data layer's quarantine store and hands each
+# due run to the SRS-NOTIF-001 notifier; this composition layer is where the two meet.
+atp-data = { path = "../atp-data" }
 # SRS-MD-003: the live feed loop lives in atp-market-data and the IB transport in
 # atp-adapters, and neither may see the other (the adapter would gain a core
 # dependency; the market-data core would gain vendor logic). Binding them is

@@ -187,7 +187,11 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         // asserting a destination acknowledgement the IF-10 path never
         // established, so reading one forward would import exactly the false
         // claim the split removes.
-        current_version: 3,
+        //
+        // v4 (2026-10-19): TriggerKind::DataQuarantine (trigger tag "Q",
+        // SRS-DATA-013). Additive — a v3 blob cannot contain the tag — so the
+        // minimum stays at 3.
+        current_version: 4,
         min_supported_version: 3,
         posture: EvolutionPosture::Ranged,
         legacy_unversioned: false,
@@ -366,6 +370,32 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         // Never shipped in a version-less form: the header line has carried the
         // magic and the version since the first byte written, so a reader can
         // fail closed on anything else instead of guessing a layout.
+        posture: EvolutionPosture::Pinned,
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
+        entity_id: "quarantine-run",
+        owner_srs: "SRS-DATA-013",
+        writer_path: "crates/atp-data/src/quarantine_store.rs",
+        marker: "RUN_SCHEMA_VERSION",
+        magic: Some("ATP-QUARANTINE-RUN"),
+        current_version: 1,
+        min_supported_version: 1,
+        // Carried its magic and version from its first byte; the reader accepts exactly this
+        // version and reports any other run as unreadable in place.
+        posture: EvolutionPosture::Pinned,
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
+        entity_id: "quarantine-settled-marker",
+        owner_srs: "SRS-DATA-013",
+        writer_path: "crates/atp-orchestrator/src/quarantine_notification.rs",
+        marker: "SETTLED_SCHEMA_VERSION",
+        magic: Some("ATP-QUARANTINE-SETTLED"),
+        current_version: 1,
+        min_supported_version: 1,
+        // One marker per settled quarantine run, published by atomic rename; its NAME is the
+        // fact (the run id), its body is a versioned record of it.
         posture: EvolutionPosture::Pinned,
         legacy_unversioned: false,
     },

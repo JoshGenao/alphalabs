@@ -51,17 +51,17 @@ use std::time::Duration;
 /// here means something is genuinely wedged rather than merely slow.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(90);
 
-use atp_adapters::notification::{PushChannel, PushConfig, SmtpEmailChannel, SmtpRelayConfig};
 use atp_execution::{
     BrokerageConnectivity, ExecutionEngine, LiveBrokerageSubmit, MarketDataFreshnessProbe,
     StaleDataEventSink,
 };
-use atp_notification::{
-    ChannelError, DeliveryOutcome, NotificationChannel, OperatorNotifier, SharedChannelClient,
-};
+use atp_notification::{DeliveryOutcome, NotificationChannel, OperatorNotifier};
 use atp_orchestrator::connectivity_notification::{
     ConnectivityAlertOutcome, ConnectivityNotifierSink, SystemAlertClock,
 };
+#[cfg(test)]
+use atp_orchestrator::operator_channels::PLACEHOLDER_SECRET;
+use atp_orchestrator::operator_channels::{build_channels, reject_placeholder_secrets};
 use atp_types::{
     AssetClass, ConnectivityState, MarketDataFreshness, OrderErrorCategory, OrderReceipt,
     OrderSide, OrderSubmission, OrderType, StaleDataEvent, StrategyId, StrategyMode,
@@ -253,60 +253,6 @@ struct IgnoredStaleEvents;
 
 impl StaleDataEventSink for IgnoredStaleEvents {
     fn record(&self, _event: StaleDataEvent) {}
-}
-
-/// The literal the catalogue ships as every secret's default, and which
-/// `.env.example` tells the operator to LEAVE IN PLACE when the real values are
-/// sealed in the SRS-SEC-001 vault.
-const PLACEHOLDER_SECRET: &str = "placeholder-set-in-environment";
-
-/// Deployment modes where a placeholder credential is an error, matching
-/// `atp_config`'s `PRODUCTION_ENVS`.
-const PRODUCTION_ENVS: [&str; 2] = ["staging", "production"];
-
-/// Refuse to build transports from placeholder credentials in staging/production.
-///
-/// This binary reads the process environment directly, and it CANNOT overlay the
-/// vault: the vault is `atp_config.vault`, a Python component, and this is the
-/// Rust composition root. That is fine as a division of labour — but it leaves a
-/// gap the documented deployment flow walks straight into. `.env.example` tells
-/// the operator to seal ATP_PUSH_TOPIC / ATP_PUSH_TOKEN / ATP_SMTP_API_KEY in the
-/// vault and LEAVE THE PLACEHOLDERS in `.env`. Without this check, running the
-/// operator alert in that (correct) configuration would build transports from the
-/// literal string `placeholder-set-in-environment` and try to publish with it.
-///
-/// So the binary enforces the half of the readiness contract it can: the same
-/// placeholder rejection `atp_config` applies, at the same severity, in the same
-/// environments. It names the offending keys and never prints their values.
-fn reject_placeholder_secrets(read: &impl Fn(&str) -> Option<String>) -> Result<(), String> {
-    let env = read("ATP_ENV").unwrap_or_default();
-    if !PRODUCTION_ENVS.contains(&env.trim()) {
-        return Ok(());
-    }
-    let offenders: Vec<&str> = ["ATP_SMTP_API_KEY", "ATP_PUSH_TOPIC", "ATP_PUSH_TOKEN"]
-        .into_iter()
-        .filter(|key| read(key).as_deref() == Some(PLACEHOLDER_SECRET))
-        .collect();
-    if offenders.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "ATP_ENV={env} but {} still hold the catalogue placeholder. The real values \
-         are sealed in the SRS-SEC-001 vault, which this Rust binary cannot open — \
-         export them into the environment for this run (see docs/DEPLOYMENT.md). \
-         Refusing to publish an operator alert with placeholder credentials.",
-        offenders.join(", ")
-    ))
-}
-
-fn build_channels() -> Result<Vec<SharedChannelClient>, ChannelError> {
-    let read = |key: &str| std::env::var(key).ok();
-    let email = SmtpEmailChannel::new(SmtpRelayConfig::from_env(read)?);
-    let push = PushChannel::new(PushConfig::from_env(read)?);
-    Ok(vec![
-        std::sync::Arc::new(email) as SharedChannelClient,
-        std::sync::Arc::new(push) as SharedChannelClient,
-    ])
 }
 
 fn run(args: &[String]) -> Result<ExitCode, String> {

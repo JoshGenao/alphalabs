@@ -132,8 +132,8 @@ fn mixed_batch_quarantines_invalid_and_writes_only_valid() {
         "the quarantined option contract must NOT reach primary storage"
     );
 
-    // The quarantined records are RETURNED (not silently dropped) so the deferred SRS-DATA-014/015
-    // quarantine store can persist the rejected payloads for inspection/recovery.
+    // The quarantined records are RETURNED (not silently dropped); the quarantine store persists them
+    // too (tests/srs_data_013_quarantine_store.rs).
     let quarantined_symbols: Vec<&str> = outcome
         .quarantined_records
         .iter()

@@ -83,3 +83,100 @@ concrete IngestionValidationEventSink that fans the per-record events into those
 QuarantineSummarySink here is the reference aggregator). Durable quarantine STORE (rejected payload +
 reason + timestamp + source persisted) remains SRS-DATA-014/015. Don't rebuild Sys77RecordValidator /
 the quarantining path — wire the display sink.
+
+---
+
+=== SESSION SRS-DATA-013 (2) — landing 1 of 3: the durable quarantine store, 2026-10-19 ===
+Session-2 outcome: serialized (passes STAYS false). Operator-selected close-out session; plan
+approved by the operator and saved in progress.d/plan-SRS-DATA-013.md.
+
+WHAT SESSION 1 GOT WRONG (fixed here): the deferred[] entry naming SRS-DATA-014/015 as the
+quarantine store's owner. DATA-014 is SYS-78 anomaly detection (R2) and DATA-015 is schema
+evolution. SyRS SYS-77 says rejects are "quarantined in a separate store": that store is this
+feature's.
+
+WHAT I BUILT
+- crates/atp-data/src/quarantine_store.rs: one atomically written, checksummed run file per
+  ingestion batch under <ssd>/quarantine. A run holds every quarantined record IN FULL (reason,
+  ERR-5 source + hash, payload), the batch totals, and the primary-write outcome:
+  PENDING (written before the primary write; still PENDING = outcome unknown) -> WRITTEN /
+  REFUSED / FAILED. Reads are bounded (MAX_RUNS_READ) and tri-state.
+- Both primary-write paths (ingest_market_records_tiered, ingest_market_records_quarantining)
+  record every batch, clean or not, and every exit (QuarantineStore::refuse; a static check,
+  check_every_exit_is_recorded, fails on any other early return).
+- TieredStore::ingest is crate-private (compile_fail doctest). data016_ingest_cli and
+  data005_fundamental_cli wrote the store themselves; they now ingest through
+  ingest_market_records_tiered like data008_tier_cli. DATA-017's writer rule moved to the one
+  shared locked writer; the DATA-008 sweep refuses any direct save_to_path outside the coverage
+  CLI.
+- Conflicting re-ingests (same key, different content — the batch-scoped validator cannot see
+  them) are decided by TieredStore::ingest under the SSD writer lock (OnConflict), against SSD,
+  a readable NAS archive, and the batch, and recorded on the run BEFORE the primary save.
+- data013_ingestion_validation_cli summary: the newest runs with every SYS-77 reason's count;
+  each ingest CLI prints its run id and exits non-zero if the run could not be finalized.
+- The run format is registered in PERSISTED_ENTITIES (quarantine-run, Pinned v1); the DATA-015
+  scanner no longer truncates at the first #[cfg(test)].
+
+Adversarial rounds: 11   (whole feature so far: landing 1 = rounds 1-6, landing 2 = rounds 7-11)
+REVIEW: 6 Codex rounds (Codex works again: ~/.codex/config.toml pinned gpt-5.5, which the
+account no longer offers; now gpt-6.1-sol). Rounds 1-5 BLOCK, each a real defect, each fixed as
+a class with a mutation-checked test; round 6 APPROVE with no findings.
+  r1 rejects dropped on early exits; directory not durably linked; FAILED recorded after rename
+  r2 ancestor chain not re-synced on retry / relative path
+  r3 conflicting re-ingest lost (failed in upsert)
+  r4 writer-found conflicts returned after the save
+  r5 archived (NAS-only) key not screened; run format unregistered + scanner blind
+Five lessons written back: durable-writes.md 34-37, test-integrity.md 45.
+
+KNOWN BOUNDS (in ingestion_validation_contract.deferred[])
+- An archived key cannot be screened while the NAS is unmounted or its store unreadable
+  (SRS-DATA-008 keeps the SSD write going; the push reports a Failed sync). Owner: SRS-DATA-018.
+- The store keeps every run; read_latest lists the directory. Pruning: SRS-DATA-010.
+- SSD only: not archived to NAS, not a backup unit.
+
+PROCESS NOTE: twice I edited the tree while a background CI mirror was running against it.
+Both runs were stopped and discarded; the green mirror recorded for this landing ran on the
+committed, unedited round-5 tree (5619 passed, every step ran).
+
+=== SESSION SRS-DATA-013 (2) - landing 2 of 3: operator notification, 2026-10-19 ===
+Outcome: serialized (passes STAYS false). Steps 1-2 re-recorded at the landing-2 head; steps 3-4
+need landing 3.
+
+WHAT I BUILT
+- atp-notification: TriggerKind::DataQuarantine ("DATA_QUARANTINE", severity Error), never
+  suppressed by the MD-005 restart window; store codec tag "Q", schema v4 (reads v3). A store
+  refuses a suppressed data-quarantine event, and a pre-v4 store that claims to hold one.
+- atp-orchestrator/src/operator_channels.rs: the Email + Push channel construction and the
+  placeholder-secret refusal, moved out of notif001_operator_alert_cli so both CLIs share it.
+- atp-orchestrator/src/quarantine_notification.rs + data013_quarantine_alert_cli `notify --ssd
+  --store`: one alert per run state (the run id, N of M records quarantined, each reason's
+  count, and the primary write's outcome), at-least-once. A run is settled by a per-run marker file
+  (quarantine_settled/<id>.settled, validated on read) only once its alert got out on a channel
+  or it was clean. PENDING runs wait out a 5-minute grace period, then alert provisionally; an
+  unreadable run is alerted as unreadable and never settled. Exit 0 ok, 1 when an alert failed,
+  a settle failed, or a marker is invalid, 2 for usage/configuration.
+
+REVIEW (landing 2): rounds 7-11. Rounds 7-9 BLOCK, round 10 WARN, round 11 APPROVE with no
+findings. Each finding fixed as a class with a mutation-checked test.
+  r7  (L2 r1) a run older than the newest 200 fell out of the alert scan
+  r8  (L2 r2) a run published late was skipped by the watermark; two saves shared a scratch
+      name. Replaced the watermark with one settlement marker per run.
+  r9  (L2 r3) a damaged or foreign marker settled its run. Markers are validated on read.
+  r10 (L2 r4) the writer's `{:06}` sequence is a minimum width; the parser wanted exactly six,
+      so from run 1,000,000 every marker read as invalid. durable-writes.md rule 38.
+The 8-round budget ran out after r9; the operator granted one more (recorded in review.jsonl).
+
+VERIFIED: CI mirror green on e22729f (every step ran); deterministic critic APPROVE over
+origin/main..HEAD; evidence steps 1-2 pass (34 domain tests).
+
+KNOWN BOUNDS
+- Nothing runs `notify` automatically yet. Running it after every ingestion job belongs to the
+  ingestion jobs themselves: SRS-DATA-001/002 (both blocked on this feature).
+- Not yet run against the real transports (Brevo email, ntfy push). That is landing 3's live run.
+
+Resume / next - landing 3:
+  Dashboard pane over `data013_ingestion_validation_cli summary` (ATP_SSD_DATA_DIR), five visual
+  states (never configured, store unreadable, no runs yet, clean run, run with quarantines),
+  browser evidence with screenshots + a live Email/Push run on the VM. Then evidence steps 3-4,
+  a fresh whole-feature judgment review, and the operator's attested close.
+  Do NOT rebuild the store, the write-path recording, the conflict screening, or the alerting.

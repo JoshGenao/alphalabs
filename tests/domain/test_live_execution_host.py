@@ -309,6 +309,33 @@ def test_the_host_refuses_a_socket_directory_other_users_can_reach(binaries, roo
     assert not (root / "s" / LIVE).exists()
 
 
+def test_a_malformed_frame_gets_a_readable_refusal_and_the_host_keeps_serving(
+    binaries, root, host_factory
+):
+    """A strategy that breaks the framing is told why it was cut off, never reset.
+
+    The host stops reading at the frame limit. On Linux, closing with the rest of the
+    strategy's bytes unread resets the connection, so the strategy saw ECONNRESET
+    instead of the refusal (red main, 2026-10-10 to 2026-10-19).
+    """
+    assert _designate(binaries, root / "designation", LIVE, "yes").returncode == 0
+    host = host_factory([LIVE])
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.settimeout(10)
+        conn.connect(str(root / "s" / LIVE / "order.sock"))
+        try:
+            conn.sendall(b"A" * 10_000)
+        except BrokenPipeError:
+            pass  # the host may stop reading before the tail; the reply is what matters
+        reader = conn.makefile("rb")
+        reply = reader.readline().decode()
+        assert reader.readline() == b"", "the connection stayed open"
+    assert "\trefused\t" in reply and "ProtocolError" in reply, reply
+    assert host.wire() == []
+    assert host.submit(LIVE, "c-1")["outcome"] == "ack"
+    assert host.wire() == [LIVE]
+
+
 def test_each_strategy_socket_is_private_to_its_own_directory(binaries, root, host_factory):
     host_factory([LIVE, *PAPER])
     for strategy in [LIVE, *PAPER]:

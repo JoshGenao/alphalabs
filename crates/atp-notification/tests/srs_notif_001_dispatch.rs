@@ -34,7 +34,8 @@ use atp_notification::dispatcher::{
     DispatchError, OperatorNotifier, SharedChannelClient, SuppressionReason,
 };
 use atp_notification::event::{
-    DeliveryOutcome, NotificationChannel, NotificationTrigger, DISPATCH_SLA_MS,
+    DeliveryOutcome, NotificationChannel, NotificationSeverity, NotificationTrigger, TriggerKind,
+    DISPATCH_SLA_MS,
 };
 use atp_notification::store::{
     NotificationEventStore, NotificationStoreError, NotificationStoreLock, MAGIC, SCHEMA_VERSION,
@@ -831,6 +832,22 @@ fn craft_event_blob(
     dispatch_began_millis: u64,
     deliveries: &[(&str, &str, &str)],
 ) -> String {
+    craft_event_blob_at(
+        SCHEMA_VERSION,
+        trigger_tag,
+        detected_millis,
+        dispatch_began_millis,
+        deliveries,
+    )
+}
+
+fn craft_event_blob_at(
+    schema_version: i64,
+    trigger_tag: &str,
+    detected_millis: u64,
+    dispatch_began_millis: u64,
+    deliveries: &[(&str, &str, &str)],
+) -> String {
     fn push_lp(s: &mut String, value: &str) {
         s.push_str(&value.len().to_string());
         s.push('\n');
@@ -842,7 +859,7 @@ fn craft_event_blob(
     // SEMANTIC restore rejections, so pinning a literal version here would turn
     // them into version-mismatch tests the moment the schema is bumped, and
     // silently stop proving that a checksum-valid blob cannot lie.
-    body.push_str(&format!("{SCHEMA_VERSION}\n")); // schema version
+    body.push_str(&format!("{schema_version}\n")); // schema version
     body.push_str("1\n"); // event count
     body.push_str(trigger_tag);
     body.push('\n'); // trigger tag
@@ -889,12 +906,70 @@ fn restore_rejects_suppressed_critical_failure() {
     // A CRITICAL failure is never suppressed (SYS-75 fail-safe). A blob claiming a
     // critical failure with SUPPRESSED ("X") deliveries is impossible provenance —
     // restoring it would falsely say the system chose not to notify.
+    // Channel tags E + P: an "S" (the retired SMS tag) made this blob fail on its unknown channel
+    // before the suppression rule was ever reached, so the test could not fail on its property.
     let suppressed_critical =
-        craft_event_blob("F", 100, 200, &[("E", "X", "win"), ("S", "X", "win")]);
+        craft_event_blob("F", 100, 200, &[("E", "X", "win"), ("P", "X", "win")]);
     match NotificationEventStore::restore(&suppressed_critical) {
         Err(NotificationStoreError::Corrupt { .. }) => {}
         other => panic!("expected Corrupt for a suppressed critical failure, got {other:?}"),
     }
+}
+
+#[test]
+fn data_quarantine_is_never_suppressed_even_when_requested() {
+    // SRS-DATA-013: the SYS-75 restart window concerns IB connectivity; it must not swallow a
+    // data-quarantine alert.
+    let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "smtp-ok"));
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "push-ok"));
+    let set = channels(vec![email.clone(), push.clone()]);
+    let event = OperatorNotifier::new()
+        .dispatch_with_suppression(
+            &NotificationTrigger::data_quarantine("quarantine run x: 1 of 2", 0),
+            1,
+            &set,
+            Some(SuppressionReason::ScheduledRestartWindow),
+        )
+        .unwrap();
+    assert_eq!(email.send_count(), 1);
+    assert_eq!(push.send_count(), 1);
+    assert!(event.any_handed_off());
+}
+
+#[test]
+fn a_data_quarantine_event_round_trips_through_the_store() {
+    let ok = craft_event_blob("Q", 100, 200, &[("E", "Q", "relay"), ("P", "D", "ntfy")]);
+    let store = NotificationEventStore::restore(&ok).unwrap();
+    assert_eq!(store.len(), 1);
+    let event = &store.events()[0];
+    assert_eq!(event.trigger_kind(), TriggerKind::DataQuarantine);
+    assert_eq!(event.severity(), NotificationSeverity::Error);
+    // And back out byte-for-byte through the writer.
+    assert_eq!(
+        NotificationEventStore::restore(&store.serialize()).unwrap(),
+        store
+    );
+}
+
+#[test]
+fn restore_rejects_suppressed_data_quarantine() {
+    let suppressed = craft_event_blob("Q", 100, 200, &[("E", "X", "win"), ("P", "X", "win")]);
+    match NotificationEventStore::restore(&suppressed) {
+        Err(NotificationStoreError::Corrupt { .. }) => {}
+        other => panic!("expected Corrupt for a suppressed data quarantine, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pre_v4_store_cannot_hold_a_data_quarantine_event() {
+    let v3 = craft_event_blob_at(3, "Q", 100, 200, &[("E", "Q", "relay"), ("P", "D", "ntfy")]);
+    match NotificationEventStore::restore(&v3) {
+        Err(NotificationStoreError::Corrupt { .. }) => {}
+        other => panic!("expected Corrupt for a v3 data-quarantine event, got {other:?}"),
+    }
+    // A v3 blob without one still reads forward.
+    let v3_ok = craft_event_blob_at(3, "C", 100, 200, &[("E", "Q", "relay"), ("P", "D", "ntfy")]);
+    assert_eq!(NotificationEventStore::restore(&v3_ok).unwrap().len(), 1);
 }
 
 #[test]

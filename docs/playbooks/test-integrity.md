@@ -398,20 +398,32 @@ Read this whenever you write a test, and before you believe a green one.
     assertion, and the second-wrong fix is hardcoding the new id — the right one is
     deriving the owner from the payload so the property survives the next re-owning.
     `(NOTIF-001)`
-
-- **Never write a result you did not capture, under a document that promises captured
-  output.** `VERIFICATION.md` opened with "Every block below is captured terminal output,
-  not a summary" and then carried
-  `$ echo "cargo test --workspace : 176 suites ok, 0 failed"`, whose `[exit 0]` was
-  `echo`'s. The number was CORRECT - which is exactly why no reader could tell, and why
-  correctness is no defence. On the page a typed result and a captured one are identical.
-  If a command is slow, run it and wait; if it cannot run, say so and leave the block out.
-  There is no guard for this: one was written and then removed as out of scope for the
-  feature that produced it. The rule stands on its own. `(SRS-MD-005 r15)`
-
-- **A spy whose default equals the expected value cannot fail.** The test proving the
-  dispatcher passes `root` used `def spy(config, source, root=cc.ROOT)` and asserted the
-  spy saw `ROOT` - so it passed with the fix reverted, because the default supplied the
-  answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
-  arrived. Found on the guard's own first mutation run, which is the only reason it was
-  found at all. `(SRS-MD-005 r16)`
+45. **A scanner that truncates at the first `#[cfg(test)]` hides every production line after
+    a test-only ITEM.** The DATA-015 persistence scan cut each Rust file there to skip the
+    test module; a `#[cfg(test)]` accessor above a writer made the writer invisible, and the
+    registry check passed with an unregistered format. Strip only `#[cfg(test)] mod` blocks
+    (brace-matched), and pin a real-tree case: "the scan sees <known writer>" fails the
+    moment the scanner goes blind, where a unit test of the strip function does not.
+    `(DATA-013 r5)`
+46. **A socket or filesystem test that is green on macOS proves nothing about Linux.** CI is
+    Linux; reproduce there (`docker run rust:<version>`) before fixing. Three container traps
+    each faked a result once: a read-only source mount fails every test that writes under
+    the crate; root ignores `chmod 0500`, so permission-denial tests fail (run as a plain
+    user); and a file overlaid with an mtime older than the last build is not rebuilt, so a
+    "without the fix" mutation run silently tests the fixed binary. `touch` the overlay and
+    grep it inside the container before trusting a green. `(EXE-001 red main)`
+47. **Never write a result you did not capture, under a document that promises captured
+    output.** `VERIFICATION.md` opened with "Every block below is captured terminal output,
+    not a summary" and then carried
+    `$ echo "cargo test --workspace : 176 suites ok, 0 failed"`, whose `[exit 0]` was
+    `echo`'s. The number was CORRECT - which is exactly why no reader could tell, and why
+    correctness is no defence. On the page a typed result and a captured one are identical.
+    If a command is slow, run it and wait; if it cannot run, say so and leave the block out.
+    There is no guard for this: one was written and then removed as out of scope for the
+    feature that produced it. The rule stands on its own. `(SRS-MD-005 r15)`
+48. **A spy whose default equals the expected value cannot fail.** The test proving the
+    dispatcher passes `root` used `def spy(config, source, root=cc.ROOT)` and asserted the
+    spy saw `ROOT` - so it passed with the fix reverted, because the default supplied the
+    answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
+    arrived. Found on the guard's own first mutation run, which is the only reason it was
+    found at all. `(SRS-MD-005 r16)`

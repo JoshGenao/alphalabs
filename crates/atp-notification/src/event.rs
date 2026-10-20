@@ -43,9 +43,10 @@
 use core::fmt;
 
 /// The class of condition that triggered an operator notification
-/// (SRS-NOTIF-001). The AC names exactly two: IB **connectivity loss** and
-/// **critical failures**. Kept `Copy` so a consumer can bucket / count triggers
-/// without cloning.
+/// (SRS-NOTIF-001). That AC names IB **connectivity loss** and **critical
+/// failures**; SRS-DATA-013 (SyRS SYS-77) adds **data quarantine** — ingested
+/// records rejected by validation. Kept `Copy` so a consumer can bucket / count
+/// triggers without cloning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TriggerKind {
     /// Connectivity to IB Gateway was lost (SyRS SYS-45 / SYS-46, SRS-SAFE-003).
@@ -55,6 +56,13 @@ pub enum TriggerKind {
     /// A critical system failure (SyRS SYS-46 "any critical system failure").
     /// Dispatched at [`NotificationSeverity::Critical`].
     CriticalFailure,
+    /// Ingested records were quarantined by validation (SRS-DATA-013, SyRS
+    /// SYS-77: "alert the operator ... with the count and nature of quarantined
+    /// records"). Dispatched at [`NotificationSeverity::Error`]: bad data was
+    /// kept out of primary storage, but the operator must act on its source.
+    /// Never suppressed — the SYS-75 restart window concerns IB connectivity
+    /// only.
+    DataQuarantine,
 }
 
 impl TriggerKind {
@@ -65,6 +73,7 @@ impl TriggerKind {
         match self {
             Self::ConnectivityLoss => "IB_CONNECTIVITY_LOSS",
             Self::CriticalFailure => "CRITICAL_FAILURE",
+            Self::DataQuarantine => "DATA_QUARANTINE",
         }
     }
 
@@ -76,6 +85,7 @@ impl TriggerKind {
         match self {
             Self::ConnectivityLoss => NotificationSeverity::Error,
             Self::CriticalFailure => NotificationSeverity::Critical,
+            Self::DataQuarantine => NotificationSeverity::Error,
         }
     }
 }
@@ -164,6 +174,18 @@ impl NotificationTrigger {
     pub fn critical_failure(summary: impl Into<String>, detected_at_millis: u64) -> Self {
         Self {
             kind: TriggerKind::CriticalFailure,
+            summary: summary.into(),
+            detected_at_millis,
+        }
+    }
+
+    /// Build a data-quarantine trigger (SRS-DATA-013 / SyRS SYS-77) for records
+    /// quarantined by ingestion validation, detected at `detected_at_millis` — the
+    /// instant the quarantine run was recorded. `summary` carries the count and
+    /// nature of the quarantined records.
+    pub fn data_quarantine(summary: impl Into<String>, detected_at_millis: u64) -> Self {
+        Self {
+            kind: TriggerKind::DataQuarantine,
             summary: summary.into(),
             detected_at_millis,
         }
