@@ -153,11 +153,8 @@ concretely for whoever picks this up:
   `&attempt.completion` + `&attempt.attempt_id`; `cooldown_store.rs:1050` compares those
   two and nothing else.
 
-  *The fix*, if you take it: move match-and-clear into ONE `cooldown_store` operation that
-  holds the exclusive guard and compares attempt id, both strategy ids AND
-  `completed_at_seconds` before clearing — the same "one locked read-modify-write" shape
-  r20 applied to `probe_writable`. Add a regression where the marker is replaced between
-  the CLI read and the store clear. Then round 29.
+  *Fixed in session 2 (2026-10-19)*, exactly as planned here: see "SESSION SRS-RESV-006
+  (2)" at the end of this note. Round 29 reviews that fix.
 
   This is the eighth finding in one family (r13, r15, r18, r19, r21, r25, r26, r27/28) and
   each has been narrower than the last. Read `guard.attempt_identity_note` and
@@ -540,9 +537,12 @@ r1/r3 above). It needs its own human-reviewed commit; the diff is one regex alte
 
 ## Resume / next
 
-Nothing is left for this feature — it integrates `complete` and flips `passes:true`.
+Superseded: the current Resume block is in "SESSION SRS-RESV-006 (2)" at the end of this
+note. The text below is session 1's, kept for its notes. Its first line ("nothing is left
+- it integrates complete") was never true: session 1 integrated `serialized` with round
+28's finding open.
 
-Two notes for whoever comes next:
+Notes for whoever comes next:
 
 1. **`block SRS-RESV-006 --on SRS-RESV-005` must NOT be attempted.** `tools/feature_deps.json`
    on main already carries `SRS-RESV-005 → SRS-RESV-006`, so the reverse is a cycle;
@@ -567,3 +567,83 @@ Two notes for whoever comes next:
    a future reviewer reading the registry would have concluded the race was intentionally
    open. Fixed in all four places that carried the claim, with a static check added so the
    next stale identifier in that block fails CI instead of a review round.
+
+
+=== SESSION SRS-RESV-006 (2) - fix review round 28, 2026-10-19 ===
+
+Outcome: in progress (round 29 pending). Operator granted 3 more review budgets
+(24 rounds) on 2026-10-19; the grant records are commit 053283e.
+
+## What round 28 found, and what was wrong underneath it
+
+`clear-provisional` read the marker OUTSIDE the store's lock, matched it against the
+operator's `--attempt-id`, pair and `--at`, and then called `abandon_provisional`, which
+compared only the attempt id and the pair. A marker replaced between the read and the
+clear was cleared on the strength of a match against a different one.
+
+Underneath it was a regression. r18 made `abandon_provisional` clear only on FULL
+equality, and the contract (`abandon_matches_in_full_note`, `writer_closure_note`) still
+said so. r26 then narrowed the compare to id plus pair, reasoning that the id is unique.
+It is unique per process, not per history: the id is `pid-counter`, and an operating
+system reuses pids, so a later process can mint an earlier attempt's id. Only the instant
+then separates the two attempts, and r26 had dropped it.
+
+## The fix (class, not instance)
+
+* `cooldown_store::abandon_provisional` compares the WHOLE record (id, pair and instant)
+  under its guard, and returns an `AbandonOutcome`: `Cleared`, `NoWindow`,
+  `NothingInFlight`, or `NotOurs(marker)` with the marker it actually compared. This
+  restores r18's rule for BOTH callers: the operator's repair command and the gate's
+  failure path (`resv005_hot_swap_promote_cli`), which clears with the exact completion it
+  wrote and is unaffected.
+* `clear-provisional` no longer reads before it clears. It passes every named value into
+  the store and reports the store's answer, so its output describes the marker that was
+  compared, not one read earlier.
+* `NoWindow` is new. A mistyped `--state` used to answer "there is no unconfirmed marker
+  at this window", which tells the operator their window is clean (CLAUDE.md rule 3). It
+  now says there is no window at that path. The clear also stopped creating the directory
+  it was pointed at (`acquire_if_parent_exists`, not `acquire_creating`).
+* The class guard: `tools/hot_swap_cooldown_check.py::check_no_caller_decides_from_an_unguarded_read`
+  fails any function in either cool-down CLI that calls a store read (`load`, `resolve`,
+  `completion_is_provisional`) before a guarded store writer. It finds 6 such callers in
+  today's tree and passes; run against the pre-fix CLI it names `cmd_clear_provisional`.
+* Contract notes corrected: `attempt_identity_note` (the pair-only "consistency
+  assertion" sentence) and `abandon_matches_in_full_note` (where the compare happens).
+
+## What was verified
+
+* Store regression `resv_6_a_reused_attempt_id_cannot_clear_a_newer_marker`: same id, same
+  pair, newer instant. Mutation (restore the id-plus-pair compare): 39 passed, 1 failed;
+  restored: 40 passed.
+* `resv_6_clearing_at_a_path_with_no_window_says_so_and_creates_nothing` (store) and
+  `test_clearing_at_a_path_with_no_window_says_so_and_creates_nothing` (domain, real
+  binary). Two mutations, each red: NoWindow reported as NothingInFlight; the directory-
+  creating guard restored.
+* `test_a_reused_attempt_id_at_a_newer_instant_is_not_cleared` (domain, real binary) pins
+  what the operator sees. It does NOT prove the interleaving: a subprocess cannot be paused
+  between two of its own reads, and the pre-fix binary also refuses this non-racing case.
+  The store test is the proof of the race.
+* 5 contract tests for the new check, including the r28 shape, a function nobody has
+  written yet, a read AFTER a write (allowed), and a vacuous scan (fails).
+* Unrelated fix: `tests/test_hot_swap_cooldown_contract.py` had `unittest.main()` in the
+  middle of the file, so running it as a script skipped the four classes after it.
+
+## Review base for round 29
+
+Round 28 ran against `90578a9`, the commit before this feature began, because the feature
+was already on `main`. Today that range also holds two months of unrelated `main` work.
+Round 29 uses the default base, `origin/main`, which is exactly this session's fix.
+
+## Playbook updates
+
+`durable-writes.md` 39 (a compare-and-swap is one locked call, and the caller must not
+decide first) and 40 (a derived id is unique per process, not per history).
+
+## Resume / next
+
+1. Round 29: `ATP_FEATURE_ID=SRS-RESV-006 python3 tools/adversarial_review.py` (default
+   base). Fix what it finds as a class.
+2. Re-run the WHOLE gated e2e directory, solo (`ATP_RUN_E2E=1 pytest tests/e2e/`;
+   test-integrity 35: naming files is how a broken sibling e2e hid for four rounds),
+   then the evidence steps and the CI mirror; stamp both critics with `--rounds N`.
+3. Operator: `close_feature.py SRS-RESV-006 --verified --attested-by operator`.

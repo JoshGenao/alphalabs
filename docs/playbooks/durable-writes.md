@@ -202,3 +202,15 @@ each found a path where the primary write could happen, or fail, without that re
     Keep the width in one constant both sides use, parse each part as a number in range for
     its type, and sort by the parsed numbers. Test the boundary through the real writer.
     `(DATA-013 L2 r4)`
+39. **A compare-and-swap is ONE locked call, and the caller must not decide first.** A
+    command that reads a record, checks it against what the operator named, and then calls
+    the guarded writer has moved the decision outside the lock: a record replaced in between
+    is changed on the strength of a match against a different one. Pass every value that
+    must match INTO the writer, compare there under the guard, and return what was found so
+    the caller can report it. Guard the shape, not just the instance: fail any caller that
+    calls a store read before a store write in the same function. `(RESV-006 r28)`
+40. **A derived id is unique per process, not per history.** An attempt id built from the
+    pid plus a counter repeats once the OS reuses the pid, so it cannot be the whole proof
+    of ownership on a durable record. Keep comparing the rest of the record (the instant it
+    names) as well. When a later round narrows a full-record match to "just the id", check
+    that the id is unique across restarts first. `(RESV-006 r26 -> r28)`
