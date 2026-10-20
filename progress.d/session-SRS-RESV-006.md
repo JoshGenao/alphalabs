@@ -178,8 +178,8 @@ concretely for whoever picks this up:
 
 ## Adversarial rounds
 
-Adversarial rounds: 29 - rounds 1-28 every one a block, every finding real, none disputed;
-round 29 (session 2, below) approved with zero findings.
+Adversarial rounds: 30 - rounds 1-28 every one a block, every finding real, none disputed;
+rounds 29 and 30 (session 2, below) approved with zero findings.
 
 * **r1 `block`** — `meta:critic-self-modification`. Structural refusal of any diff touching
   `tools/critic_check.py`. Class: reviewer refusal, not a code finding. (Prior session.)
@@ -573,7 +573,7 @@ Notes for whoever comes next:
 === SESSION SRS-RESV-006 (2) - fix review round 28, 2026-10-19 ===
 
 Outcome: round 29 APPROVED (codex, zero findings); two screenshot defects then fixed,
-round 30 pending. Operator granted 3 more review budgets (24 rounds) on 2026-10-19; the
+and round 30 APPROVED that fix (codex, zero findings). Evidence complete at d19583b. Operator granted 3 more review budgets (24 rounds) on 2026-10-19; the
 grant records are commit 053283e.
 
 ## What round 28 found, and what was wrong underneath it
@@ -684,10 +684,26 @@ Recorded here so it is not lost.
 
 `honest-surfaces.md` 44 and 45 carry both lessons.
 
+## Round 30
+
+`approve`, reviewer codex, zero findings, at d19583b: "The cooldown static check and 14
+focused tests passed." Its sandbox was read-only again; the full suites ran here.
+
+## Verified at d19583b, after round 30
+
+- Evidence steps 1-4 pass. Step 2 re-captured the screenshots: the dial's lines sit inside
+  the ring in all three states (ACTIVE, READY, UNKNOWN), and the NOT_STARTED case now
+  reads "A COOL-DOWN IS STILL IN EFFECT" beside an ACTIVE dial. Two of them are attached
+  to step 3.
+- The whole gated e2e directory, solo: 76 passed, 3 skipped (the two jupyterlab research
+  tests, which skip by design without that optional tool, and the RESV-002 promote walk).
+- The local CI mirror: ruff, fmt, workspace clippy `-D warnings`, 5641 pytest passed,
+  184 cargo suites with 0 failed, 85/85 and 23/23 contract checks.
+- Gates recorded from those runs, including `pytest_unit_and_domain`, which still read
+  `fail` from 2026-08-15. Both critics stamped; `evidence.py verify` reports complete.
+
 ## Resume / next
 
-1. Round 29 approved the r28 fix. The screenshot fixes above need round 30.
-2. Re-run the WHOLE gated e2e directory, solo (`ATP_RUN_E2E=1 pytest tests/e2e/`;
-   test-integrity 35: naming files is how a broken sibling e2e hid for four rounds),
-   then the evidence steps and the CI mirror; stamp both critics with `--rounds N`.
-3. Operator: `close_feature.py SRS-RESV-006 --verified --attested-by operator`.
+1. Integrate, then the operator closes:
+   `close_feature.py SRS-RESV-006 --verified --attested-by operator`.
+2. The `reservoir-b -> reservoir-b` candidate above is for UI-5 / SRS-RESV-005 / SRS-RESV-002.

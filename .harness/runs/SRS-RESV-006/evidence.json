@@ -2,39 +2,44 @@
   "created": "2026-08-11T12:35:32+00:00",
   "critic": {
     "deterministic": {
-      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
-      "reviewer": "critic_check",
-      "ts": "2026-08-15T17:47:10+00:00",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
+      "reviewer": "critic_check.py",
+      "ts": "2026-10-20T22:31:30+00:00",
       "verdict": "approve"
     },
     "judgment": {
-      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
       "reviewer": "codex",
-      "ts": "2026-08-15T17:47:03+00:00",
-      "verdict": "block"
+      "rounds": 30,
+      "ts": "2026-10-20T22:31:30+00:00",
+      "verdict": "approve"
     }
   },
   "feature": "SRS-RESV-006",
   "gates": {
     "cargo_clippy": {
       "status": "pass",
-      "ts": "2026-08-15T13:37:57+00:00"
+      "ts": "2026-10-20T22:31:29+00:00"
     },
     "cargo_test_workspace": {
       "status": "pass",
-      "ts": "2026-08-15T13:37:57+00:00"
+      "ts": "2026-10-20T22:31:29+00:00"
     },
     "mutation_verify": {
       "status": "pass",
-      "ts": "2026-08-15T13:37:57+00:00"
+      "ts": "2026-10-20T22:31:29+00:00"
     },
     "pytest_e2e": {
       "status": "pass",
-      "ts": "2026-08-15T13:43:53+00:00"
+      "ts": "2026-10-20T22:31:30+00:00"
     },
     "pytest_unit_and_domain": {
-      "status": "fail",
-      "ts": "2026-08-15T13:43:53+00:00"
+      "status": "pass",
+      "ts": "2026-10-20T22:31:30+00:00"
+    },
+    "run_ci_locally": {
+      "status": "pass",
+      "ts": "2026-10-20T22:31:30+00:00"
     }
   },
   "steps": [
@@ -45,13 +50,13 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "26e646036db3081821a3c355b44e151253b3c16f",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
       "n": 1,
       "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-006/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-10-20T05:51:51+00:00"
+      "ts": "2026-10-20T21:59:28+00:00"
     },
     {
       "argv": [
@@ -63,97 +68,97 @@
       ],
       "artifacts": [
         {
-          "bytes": 98734,
+          "bytes": 97621,
           "caption": "Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-01-8ug6ae.png",
-          "sha256": "50ee68bb636aaa5e",
-          "ts": "2026-10-20T05:52:04+00:00"
+          "name": "step2-01-3b7kpm.png",
+          "sha256": "542f255c7738f647",
+          "ts": "2026-10-20T14:04:03+00:00"
         },
         {
-          "bytes": 114520,
+          "bytes": 113918,
           "caption": "A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-02-8ug6ae.png",
-          "sha256": "01f63d2a6df4967a",
-          "ts": "2026-10-20T05:52:04+00:00"
+          "name": "step2-02-3b7kpm.png",
+          "sha256": "60fcb9dfda81cb24",
+          "ts": "2026-10-20T14:04:03+00:00"
         },
         {
-          "bytes": 129646,
+          "bytes": 128893,
           "caption": "Arming during the cool-down raises SYS-49e's confirmation warning \u2014 the manual swap is offered, not blocked (clause 2)",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-03-8ug6ae.png",
-          "sha256": "5cb5f4c37178f48f",
-          "ts": "2026-10-20T05:52:04+00:00"
+          "name": "step2-03-3b7kpm.png",
+          "sha256": "f253d4926d6b2406",
+          "ts": "2026-10-20T14:04:03+00:00"
         },
         {
-          "bytes": 114151,
+          "bytes": 113468,
           "caption": "After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 \u2014 the start time is the most recent successful completion)",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-04-8ug6ae.png",
-          "sha256": "6109ba3f828b0b64",
-          "ts": "2026-10-20T05:52:04+00:00"
+          "name": "step2-04-3b7kpm.png",
+          "sha256": "a18ce314c5da7d01",
+          "ts": "2026-10-20T14:04:03+00:00"
         },
         {
-          "bytes": 1009541,
+          "bytes": 1002730,
           "caption": "full session recording",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "video",
-          "name": "step2-page@6b2496e658c0e3ee2aa5dc76b2d91d3e.webm",
-          "sha256": "6b10b232703c3098",
-          "ts": "2026-10-20T05:52:04+00:00"
+          "name": "step2-page@3cd583dfc616de36250d54f740c3ed4d.webm",
+          "sha256": "a87a9e4c54ec0aa2",
+          "ts": "2026-10-20T14:04:03+00:00"
         },
         {
-          "bytes": 110268,
+          "bytes": 106965,
           "caption": "A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert \u2014 an unreadable window is never read as 'clear'",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-01-4qas8v.png",
-          "sha256": "44777edb9f660e4c",
-          "ts": "2026-10-20T05:52:06+00:00"
+          "name": "step2-01-beqe43.png",
+          "sha256": "1c4543a82f25f5b8",
+          "ts": "2026-10-20T14:04:06+00:00"
         },
         {
-          "bytes": 266322,
+          "bytes": 262096,
           "caption": "full session recording",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "video",
-          "name": "step2-page@07883e079322b66600f63764b82c16f4.webm",
-          "sha256": "6d5907496ba34c8e",
-          "ts": "2026-10-20T05:52:06+00:00"
+          "name": "step2-page@45e4a09e254926ace7882867311d7863.webm",
+          "sha256": "2e4a1b6e7042dfaf",
+          "ts": "2026-10-20T14:04:06+00:00"
         },
         {
-          "bytes": 144968,
-          "caption": "A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "bytes": 146289,
+          "caption": "A swap that PROMOTED but whose own SYS-49e window did not start, because a newer window was already on file: the pane says the candidate is live, that this swap's window is NOT_STARTED, and that the newer window shown on the dial is still suppressing the automatic triggers (adversarial review r24)",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "image",
-          "name": "step2-01-gl5_0s.png",
-          "sha256": "55649d6313367b5e",
-          "ts": "2026-10-20T05:52:12+00:00"
+          "name": "step2-01-6dmmf9.png",
+          "sha256": "c7de1d64e6285d7d",
+          "ts": "2026-10-20T14:04:11+00:00"
         },
         {
-          "bytes": 620038,
+          "bytes": 658503,
           "caption": "full session recording",
-          "head": "26e646036db3081821a3c355b44e151253b3c16f",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
           "kind": "video",
-          "name": "step2-page@aa65b4ddd729d5fb478f6a2e2cece0ad.webm",
-          "sha256": "205232e2eae04e7b",
-          "ts": "2026-10-20T05:52:12+00:00"
+          "name": "step2-page@2d0f08a07b9c07b1a7408a7afbe73dac.webm",
+          "sha256": "157972f913f6f60c",
+          "ts": "2026-10-20T14:04:11+00:00"
         }
       ],
       "command": ".venv/bin/python -m pytest tests/e2e/test_hot_swap_cooldown_browser.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "26e646036db3081821a3c355b44e151253b3c16f",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
       "n": 2,
-      "observed": "...                                                                      [100%]\n3 passed in 20.42s",
+      "observed": "...                                                                      [100%]\n3 passed in 19.82s",
       "status": "pass",
       "step_text": "Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-10-20T05:52:12+00:00"
+      "ts": "2026-10-20T14:04:12+00:00"
     },
     {
       "argv": [
@@ -163,17 +168,36 @@
         "tests/domain/test_hot_swap_cooldown.py",
         "-q"
       ],
-      "artifacts": [],
+      "artifacts": [
+        {
+          "bytes": 146289,
+          "caption": "A promoted swap whose own window did not start, with a newer window still in force: the pane says a cool-down IS still in effect and the dial agrees (the domain test pins the same sentence in the promote CLI)",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
+          "kind": "image",
+          "name": "step3-step2-01-6dmmf9.png",
+          "sha256": "c7de1d64e6285d7d",
+          "ts": "2026-10-20T14:05:28+00:00"
+        },
+        {
+          "bytes": 113468,
+          "caption": "A recorded completion: the dial reads ACTIVE 6d 23h, with since/expires each on its own line inside the ring",
+          "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
+          "kind": "image",
+          "name": "step3-step2-04-3b7kpm.png",
+          "sha256": "a18ce314c5da7d01",
+          "ts": "2026-10-20T14:05:29+00:00"
+        }
+      ],
       "command": ".venv/bin/python -m pytest tests/domain/test_hot_swap_cooldown.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "26e646036db3081821a3c355b44e151253b3c16f",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
       "n": 3,
-      "observed": "................................................                         [100%]\n48 passed in 2.60s",
+      "observed": "................................................                         [100%]\n48 passed in 36.96s",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: After successful swap, automatic triggers are ignored for the configured cool-down period defaulting to 7 calendar days; manual swap during cool-down requires confirmation warning; the cool-down start time is the timestamp of the most recent successful swap completion.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-10-20T05:52:16+00:00"
+      "ts": "2026-10-20T14:04:49+00:00"
     },
     {
       "argv": [
@@ -185,14 +209,14 @@
       "command": "cargo test -p atp-orchestrator",
       "executed": true,
       "exit_code": 0,
-      "head": "26e646036db3081821a3c355b44e151253b3c16f",
+      "head": "d19583bc8ad2c33e91a7bc793a5b30a7d2fb16a8",
       "n": 4,
-      "observed": "ch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-49e33f2c72078469)\n     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-1cc54cb468a12381)\n     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-40a9be3aeb6c41f4)\n     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-cf0a52b8d2b3e087)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\n     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-e7b8aee8148acde3)\n     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-f4f66c11369151b5)\n     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-4a213a201c27ae7c)\n     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-96e1a838f7076f82)\n     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-8962ac891fb610e0)\n     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-930e6d8e89acae9f)\n     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-575984fe9db5d008)\n     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-6e5bd2c8a44707f3)\n     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-064bc48c605047ac)\n     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-60bd21efb09976b9)\n     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-7f139eb0800ccc03)\n     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-33573d8651afcd69)\n     Running tests/srs_data_013_quarantine_alert.rs (target/debug/deps/srs_data_013_quarantine_alert-d697c02fec057047)\n     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-ddb4d4118daf4d39)\n     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-7d5e08710aacd6c3)\n     Running tests/srs_exe_001_live_host.rs (target/debug/deps/srs_exe_001_live_host-7c593315c75d2d2b)\n     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-45daa4de785d00f1)\n     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-ea35429f112f017c)\n     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-8f513f0cd08c627b)\n     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-a646effc5e9c4dc1)\n   Doc-tests atp_orchestrator",
+      "observed": "ch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-49e33f2c72078469)\n     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-1cc54cb468a12381)\n     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-40a9be3aeb6c41f4)\n     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-cf0a52b8d2b3e087)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\n     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-e7b8aee8148acde3)\n     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-f4f66c11369151b5)\n     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-4a213a201c27ae7c)\n     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-96e1a838f7076f82)\n     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-8962ac891fb610e0)\n     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-930e6d8e89acae9f)\n     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-575984fe9db5d008)\n     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-6e5bd2c8a44707f3)\n     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-064bc48c605047ac)\n     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-60bd21efb09976b9)\n     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-7f139eb0800ccc03)\n     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-33573d8651afcd69)\n     Running tests/srs_data_013_quarantine_alert.rs (target/debug/deps/srs_data_013_quarantine_alert-d697c02fec057047)\n     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-ddb4d4118daf4d39)\n     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-7d5e08710aacd6c3)\n     Running tests/srs_exe_001_live_host.rs (target/debug/deps/srs_exe_001_live_host-7c593315c75d2d2b)\n     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-45daa4de785d00f1)\n     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-ea35429f112f017c)\n     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-8f513f0cd08c627b)\n     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-a646effc5e9c4dc1)\n   Doc-tests atp_orchestrator",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-10-20T05:58:12+00:00"
+      "ts": "2026-10-20T22:02:42+00:00"
     }
   ],
-  "updated": "2026-10-20T05:58:12+00:00"
+  "updated": "2026-10-20T22:31:30+00:00"
 }

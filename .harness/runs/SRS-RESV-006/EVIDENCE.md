@@ -4,15 +4,9 @@
 
 - **method**: `e2e`
 - **steps evidenced**: 4/4
-- **critics**: deterministic `approve`, judgment `block`
-- **artifacts**: 9
-- **record complete**: NO
-
-## Outstanding
-
-- deterministic critic approved at 3f0afcf9, but 252 non-evidence path(s) have changed since (.env.example, .github/workflows/security.yml, .gitleaks.toml…) — the approval describes code this close would not ship. Re-run the deterministic review.
-- judgment critic verdict is 'block', not 'approve'
-- verification_method is 'e2e' but no image artifact is attached to step 3 — its acceptance criterion is about what a reviewer can SEE. Attach one: `tools/evidence.py artifact SRS-RESV-006 --step 3 --file <screenshot.png> --caption '...'`
+- **critics**: deterministic `approve`, judgment `approve`
+- **artifacts**: 11
+- **record complete**: yes
 
 ## Acceptance criterion
 
@@ -78,40 +72,40 @@ Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plu
 
 ```
 ...                                                                      [100%]
-3 passed in 20.42s
+3 passed in 19.82s
 ```
 
 </details>
 
-![Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)](artifacts/step2-01-8ug6ae.png)
+![Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)](artifacts/step2-01-3b7kpm.png)
 
 *Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)*
 
-![A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)](artifacts/step2-02-8ug6ae.png)
+![A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)](artifacts/step2-02-3b7kpm.png)
 
 *A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)*
 
-![Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)](artifacts/step2-03-8ug6ae.png)
+![Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)](artifacts/step2-03-3b7kpm.png)
 
 *Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)*
 
-![After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)](artifacts/step2-04-8ug6ae.png)
+![After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)](artifacts/step2-04-3b7kpm.png)
 
 *After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)*
 
-🎬 [full session recording](artifacts/step2-page@6b2496e658c0e3ee2aa5dc76b2d91d3e.webm) — 1.0 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@3cd583dfc616de36250d54f740c3ed4d.webm) — 1.0 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
-![A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'](artifacts/step2-01-4qas8v.png)
+![A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'](artifacts/step2-01-beqe43.png)
 
 *A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'*
 
-🎬 [full session recording](artifacts/step2-page@07883e079322b66600f63764b82c16f4.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@45e4a09e254926ace7882867311d7863.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
-![A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)](artifacts/step2-01-gl5_0s.png)
+![A swap that PROMOTED but whose own SYS-49e window did not start, because a newer window was already on file: the pane says the candidate is live, that this swap's window is NOT_STARTED, and that the newer window shown on the dial is still suppressing the automatic triggers (adversarial review r24)](artifacts/step2-01-6dmmf9.png)
 
-*A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)*
+*A swap that PROMOTED but whose own SYS-49e window did not start, because a newer window was already on file: the pane says the candidate is live, that this swap's window is NOT_STARTED, and that the newer window shown on the dial is still suppressing the automatic triggers (adversarial review r24)*
 
-🎬 [full session recording](artifacts/step2-page@aa65b4ddd729d5fb478f6a2e2cece0ad.webm) — 0.6 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@2d0f08a07b9c07b1a7408a7afbe73dac.webm) — 0.7 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
 
 ### Step 3
@@ -128,10 +122,19 @@ Step 3: Verify acceptance criteria: After successful swap, automatic triggers ar
 
 ```
 ................................................                         [100%]
-48 passed in 2.60s
+48 passed in 36.96s
 ```
 
 </details>
+
+![A promoted swap whose own window did not start, with a newer window still in force: the pane says a cool-down IS still in effect and the dial agrees (the domain test pins the same sentence in the promote CLI)](artifacts/step3-step2-01-6dmmf9.png)
+
+*A promoted swap whose own window did not start, with a newer window still in force: the pane says a cool-down IS still in effect and the dial agrees (the domain test pins the same sentence in the promote CLI)*
+
+![A recorded completion: the dial reads ACTIVE 6d 23h, with since/expires each on its own line inside the ring](artifacts/step3-step2-04-3b7kpm.png)
+
+*A recorded completion: the dial reads ACTIVE 6d 23h, with since/expires each on its own line inside the ring*
+
 
 ### Step 4
 
@@ -151,8 +154,8 @@ ch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version
      Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-40a9be3aeb6c41f4)
      Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-cf0a52b8d2b3e087)
 resv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.
-resv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)
 resv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.
+resv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)
 resv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)
      Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-e7b8aee8148acde3)
      Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-f4f66c11369151b5)
