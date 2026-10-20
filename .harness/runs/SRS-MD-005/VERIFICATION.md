@@ -1,42 +1,46 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was re-run at the commit this document ships with (`20bf2f1`). It is a
-re-verification, not a replay of the session that built the feature.
+block was run at commit `3585315`. The commit that adds this document changes
+only files under `.harness/runs/SRS-MD-005/`, so the code it certifies is the
+code it ships with. It is a re-verification, not a replay of the session that
+built the feature.
 
-Round 16 caught the earlier version presenting captures from `ed36c790` as
+Round 16 caught an earlier version presenting captures from `ed36c790` as
 verification of a tree that had since changed under them - the pytest block
-reported 101 collected where the same command now collects 110. Re-running is
-the only honest repair for that, so the whole transcript was re-run rather than
-its numbers edited. Sections 4 and 5 capture a DELIBERATELY BROKEN tree; each
-mutation was re-applied and reverted around its own command.
+reported 101 collected where the same command then collected 110. Re-running is
+the only honest repair for that, so the whole transcript is re-run rather than
+its numbers edited. It was re-run again on 2026-10-19, after `origin/main` was
+merged into this branch: the previous capture certified `20bf2f1`, which was no
+longer the head. Sections 4 and 5 capture a DELIBERATELY BROKEN tree; each
+mutation was applied and reverted around its own command, and the tree was
+checked clean after each revert.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 25 rounds**. This feature integrated
+The judgment critic sits at **`block` after 26 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
-`tools/evidence.py verify` refuses for exactly that reason — see Section 6. If
+`tools/evidence.py verify` refuses for exactly that reason - see Section 6. If
 that section said `approve`, this document would be lying.
 
-What IS green: all four acceptance steps, 176 cargo suites, clippy `-D warnings`,
-the GitHub `ci` and `security` workflows, and the mutation checks in
-Section 5. `integration` is SKIPPED on a branch push, which is why this
-feature is `serialized` and not `complete`: that job needs live IB. The
-L5 fault-injection run against a genuinely dead loopback port is Section 6,
-step 4.
+What IS green: all four acceptance steps, 184 cargo suites, clippy `-D warnings`,
+the GitHub `ci` and `security` workflows, the local CI mirror, and the mutation
+checks in Section 5. `integration` is SKIPPED on a branch push, which is why this
+feature is `serialized` and not `complete`: that job needs live IB. The L5
+fault-injection run against a genuinely dead loopback port is Section 6, step 4.
 
 ## What each section is for
 
 | § | Question it answers |
 |---|---|
-| 1 | Is the work actually on `main`, and is `passes` honestly still `false`? |
+| 1 | Is the work actually on `main`, and is `passes` honestly still `false`? (The log lists commits whose message mentions SRS-MD-005, oldest first; the first five belong to the features MD-005 builds on.) |
 | 2 | Does the feature do the four things SyRS SYS-75 asks for? |
 | 3 | **Can those proofs fail?** Each is re-run with the opposite condition injected. |
 | 4 | Is the admission closure enforced by the **compiler**, or only by a scanner? |
 | 5 | **Break the behaviour on purpose** — does a named test go red? |
 | 6 | The recorded evidence, including the verdict that is not green. |
-| 7 | CI on the integrated commit, read from GitHub. |
-| 8 | The static contract gate: 13 checks, plus a cargo smoke line. |
+| 7 | CI on the certified commit, read from GitHub. |
+| 8 | The static contract gate (tail shown). |
 | 9 | Suite totals, re-run now. |
 
 The sections that carry weight are **3, 4 and 5**. Sections 2, 8 and 9 only show
@@ -49,24 +53,24 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-20bf2f1005c31d31340d2759a49a88fff8d3c2ae
+35853150db33e6156084c0471726b8963896efbb
 [exit 0]
 
-$ git log --oneline origin/main -14 | cat
-ed36c79 chore(SRS-MD-005): record session, evidence, and five playbook write-backs
-50786dc fix(SRS-MD-005): enumerate who may implement the gate; label what is unproven
-00991c2 fix(SRS-MD-005): do not relabel a permanently-invalid request as maintenance
-6042d04 fix(SRS-MD-005): pub(crate) is not private; a comment is not a guard
-bd78e5e fix(SRS-MD-005): stop caching a reachable gateway; fix a stripper that ate code
-8725f24 fix(SRS-MD-005): bind exemptions to a shape; refuse pre-epoch and overflow
-46435c9 style(SRS-MD-005): satisfy ruff on the new guard and its domain test
-553f832 fix(SRS-MD-005): move the registry so the privacy boundary is real, not asserted
-3b9680f fix(SRS-MD-005): close the guard on Rust's privacy; bound the probe by NFR-P1
-fe43f87 fix(SRS-MD-005): make the admission guard a CLOSED SET, not a checklist
-30de72d fix(SRS-MD-005): close the review round-3 warns
-46ca150 fix(SRS-MD-005): close the review round-2 findings, class-first
-b02d281 fix(SRS-MD-005): witness the published maintenance marker, don't re-derive it
+$ git log --oneline --reverse origin/main --grep='SRS-MD-005' | head -14 | cat
+ac00527 feat(ERR-2): block live order submission when IB Gateway is unreachable
+fa8b837 feat(SRS-SAFE-003): fault-injection surface proving the IB-unreachable order block
+c703842 chore(SRS-SAFE-003): de-churn — record blocking owners + the re-offer diagnosis
+5e5ac62 feat(SRS-NOTIF-001): wire IB connectivity loss to the operator alert
+53be480 close(SRS-NOTIF-001): flip passes:true on operator attestation
 2b6c0cf feat(SRS-MD-005): the scheduled IB Gateway restart-window producer
+b02d281 fix(SRS-MD-005): witness the published maintenance marker, don't re-derive it
+46ca150 fix(SRS-MD-005): close the review round-2 findings, class-first
+30de72d fix(SRS-MD-005): close the review round-3 warns
+fe43f87 fix(SRS-MD-005): make the admission guard a CLOSED SET, not a checklist
+3b9680f fix(SRS-MD-005): close the guard on Rust's privacy; bound the probe by NFR-P1
+553f832 fix(SRS-MD-005): move the registry so the privacy boundary is real, not asserted
+46435c9 style(SRS-MD-005): satisfy ruff on the new guard and its domain test
+8725f24 fix(SRS-MD-005): bind exemptions to a shape; refuse pre-epoch and overflow
 [exit 0]
 
 $ git merge-base --is-ancestor 2b6c0cf origin/main && echo 'first feat commit IS an ancestor of origin/main'
@@ -145,7 +149,6 @@ $ cargo build -q -p atp-market-data && echo 'restored: builds clean again'
 restored: builds clean again
 [exit 0]
 
-
 === SECTION 5: break the behaviour, watch it fail ===
 
 # Mutation A - delete the escalation arm entirely.
@@ -172,26 +175,26 @@ $ cargo test -p atp-types --lib a_gateway_still_dead_after_the_window_escalates_
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.00s
 [exit 0]
 
-
-
 === SECTION 6: the recorded evidence, including the verdict that is NOT green ===
 
-$ .venv/bin/python -c "
+$ .venv/bin/python - <<'PY'
 import json
-d=json.load(open('.harness/runs/SRS-MD-005/evidence.json'))
-for s in d['steps']:
-    print(f\"step {s['n']}: {'PASS' if s['exit_code']==0 else 'FAIL'} | exit={s['exit_code']} | {' '.join(s['argv'])[:74]}\")
+d = json.load(open(".harness/runs/SRS-MD-005/evidence.json"))
+for s in d["steps"]:
+    ok = "PASS" if s["exit_code"] == 0 else "FAIL"
+    print(f"step {s['n']}: {ok} | exit={s['exit_code']} | @{s['head'][:8]} | {' '.join(s['argv'])[:64]}")
 print()
-print('deterministic critic:', d['critic']['deterministic']['verdict'], '@', d['critic']['deterministic']['head'][:8])
-j=d['critic']['judgment']
-print('judgment critic    :', j['verdict'], '| rounds:', j['rounds'], '| reviewer:', j['reviewer'])
-"
-step 1: PASS | exit=0 | ./init.sh
-step 2: PASS | exit=0 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli
-step 3: PASS | exit=0 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_windo
-step 4: PASS | exit=0 | .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_inje
+det = d["critic"]["deterministic"]
+print("deterministic critic:", det["verdict"], "@", det["head"][:8])
+j = d["critic"]["judgment"]
+print("judgment critic    :", j["verdict"], "| rounds:", j.get("rounds"), "| reviewer:", j["reviewer"])
+PY
+step 1: PASS | exit=0 | @35853150 | ./init.sh
+step 2: PASS | exit=0 | @35853150 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
+step 3: PASS | exit=0 | @35853150 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
+step 4: PASS | exit=0 | @35853150 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
 
-deterministic critic: approve @ 20bf2f10
+deterministic critic: approve @ 35853150
 judgment critic    : block | rounds: 26 | reviewer: claude-fallback
 [exit 0]
 
@@ -200,16 +203,15 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
     · judgment critic verdict is 'block', not 'approve'
 [exit 1]
 
+=== SECTION 7: CI on the certified commit, straight from GitHub ===
 
-=== SECTION 7: CI on the integrated commit, straight from GitHub ===
-
-$ gh run list --commit 20bf2f1005c31d31340d2759a49a88fff8d3c2ae --json workflowName,conclusion,headSha --jq '.[] | "\(.conclusion)	\(.workflowName)"'
-	ci
+$ gh run list --commit 35853150db33e6156084c0471726b8963896efbb --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
+success	ci
 success	security
 skipped	integration
 [exit 0]
 
-=== SECTION 8: the static contract gate (13 checks + a cargo smoke line; tail 9 shown) ===
+=== SECTION 8: the static contract gate (tail 9 shown) ===
 
 $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 - atp-types declares RestartPhase with 4 phases (Normal, Suspending, Restarting, Elapsed) — the SyRS SYS-75 restart window (SRS-MD-005)
@@ -223,19 +225,11 @@ $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 - cargo test -p atp-execution --lib + err_2_connectivity_blocked: PASS (connectivity-gated rejection + zero broker side effect verified)
 [exit 0]
 
-=== SECTION 9: suite totals, re-run now against the integrated tree ===
+=== SECTION 9: suite totals, re-run now against the shipping tree ===
 
 $ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok."){ok++}; p+=$4; f+=$6} END {print s" suites, "ok" ok, "s-ok" failed suites, "p" tests passed, "f" tests failed"}'
-176 suites, 176 ok, 0 failed suites, 2400 tests passed, 0 tests failed
+184 suites, 184 ok, 0 failed suites, 2510 tests passed, 0 tests failed
 [exit 0]
-
-> **This block replaces a fabricated one.** Round 15 caught the original:
-> `$ echo "cargo test --workspace : 176 suites ok, 0 failed"` - a hand-typed
-> summary under a document promising captured output, whose `[exit 0]` was
-> `echo`'s. The count was right, which is precisely why nobody could tell.
-> The command above derives every number from the run. A guard banning the shape
-> repo-wide was written and later removed as out of scope for this feature; the
-> lesson is recorded in `docs/playbooks/test-integrity.md`.
 
 $ cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1; echo "cargo clippy --workspace --all-targets -- -D warnings : exit $?"
 cargo clippy --workspace --all-targets -- -D warnings : exit 0
@@ -246,10 +240,18 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-129 passed, 17 subtests passed in 344.72s (0:05:44)
+129 passed, 17 subtests passed in 258.86s (0:04:18)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
 8 passed in 0.32s
 [exit 0]
 ```
+
+> **Section 9's first block replaced a fabricated one.** Round 15 caught the
+> original: `$ echo "cargo test --workspace : 176 suites ok, 0 failed"` - a
+> hand-typed summary under a document promising captured output, whose `[exit 0]`
+> was `echo`'s. The count was right, which is precisely why nobody could tell.
+> The command now derives every number from the run. A guard banning the shape
+> repo-wide was written and later removed as out of scope for this feature; the
+> lesson is recorded in `docs/playbooks/test-integrity.md`.
