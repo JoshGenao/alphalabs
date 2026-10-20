@@ -34,6 +34,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NoReturn
 
@@ -47,7 +49,7 @@ class ConnectivityCheckError(AssertionError):
     pass
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise ConnectivityCheckError(message)
 
 
@@ -1017,16 +1019,161 @@ def check_restart_window_producer(config: dict, producer_src: str) -> str:
 def _local_aliases(source: str, trait: str) -> set[str]:
     """Names this file has bound to `trait` through `use ... as ...`.
 
-    Handles both `use path::Trait as Alias;` and a braced group
-    `use path::{Trait as Alias, Other};`. A guard keyed on one spelling is a
-    guard a two-word rename walks past.
+    Reads the rename PAIRS, not the shape of the use tree around them. A rename
+    `X as Y` can only appear inside a use declaration, and a use declaration
+    always ends at its first `;` (a use tree cannot contain one), so every
+    `X as Y` between `use` and that `;` is a rename at whatever depth it sits.
+    The previous version matched a braced group with `\\{([^}]*)\\}`, so a
+    NESTED group ended the match early: `use md::{RestartWindowGate as G,
+    live_feed::{LiveFeedLoop}};` bound no alias and `impl G for AlwaysOpen`
+    passed every check (review r29). A guard keyed on one spelling is a guard a
+    two-word rename walks past; one keyed on one tree shape is a guard a pair of
+    braces walks past.
+
+    `self as Y` renames the segment in front of its group:
+    `use md::RestartWindowGate::{self as G};` binds `G` to the trait.
+
+    A rename through a macro metavariable (`RestartWindowGate as $n`,
+    `$t as G`) binds a name only the call site knows, so it is refused.
     """
     out: set[str] = set()
-    t = re.escape(trait)
-    out.update(re.findall(rf"\buse\s+[\w:]*\b{t}\s+as\s+(\w+)\s*;", source))
-    for group in re.findall(r"\buse\s+[\w:]*\{([^}]*)\}\s*;", source):
-        out.update(re.findall(rf"\b{t}\s+as\s+(\w+)", group))
+    masked = _mask_non_code(source)
+    for use in re.finditer(r"\buse\b", masked):
+        stop = masked.find(";", use.end())
+        if stop == -1:
+            fail(
+                f"a use declaration at offset {use.start()} never ends; this scan cannot "
+                f"tell which names it binds, so it cannot bound the `{trait}` aliases"
+            )
+        tree = masked[use.end() : stop]
+        for rename in re.finditer(r"(\$?(?:r#)?\w+)\s+as\s+(\$?(?:r#)?\w+)", tree):
+            item, alias = rename.groups()
+            if item == "self":
+                item = _group_parent(tree, rename.start())
+            if "$" in item.replace("$crate", "") or "$" in alias:
+                fail(
+                    f"a use declaration renames through a macro metavariable "
+                    f"(`{rename.group(0)}`); the name it binds is chosen at the call site, "
+                    f"so this scan cannot tell whether it is an alias for `{trait}`"
+                )
+            if item.removeprefix("r#") == trait:
+                out.add(alias.removeprefix("r#"))
     return out
+
+
+def _refuse_code_outside_the_scan(root: Path) -> None:
+    """Fail unless every compiled production source is under `crates/*/src`.
+
+    The implementor enumeration reads `crates/*/src/**/*.rs` and claims the set
+    it finds is closed. Rust compiles code from elsewhere, and each route below
+    put an implementor where the scan never looked: a workspace member outside
+    `crates/`, a root package, a build script (its output is `include!`d), a
+    Cargo target whose `path` leaves `src/`, and a proc-macro crate, which can
+    emit an impl assembled from strings. None is used by this tree, so each is
+    refused rather than followed. (`#[path]` and `include!` are refused per file,
+    where the scan reads them.)
+    """
+    workspace = root / "Cargo.toml"
+    if not workspace.is_file():
+        fail(f"no workspace Cargo.toml under {root}: this scan cannot see which crates compile")
+    manifest = tomllib.loads(workspace.read_text(encoding="utf-8"))
+    if "package" in manifest:
+        fail(
+            "the workspace root is itself a package, compiled from sources outside "
+            "crates/*/src that this scan cannot see"
+        )
+    for member in manifest.get("workspace", {}).get("members", []):
+        if not re.fullmatch(r"crates/(?:\*|[\w.-]+)", member):
+            fail(f"workspace member `{member}` is outside crates/, so this scan cannot see it")
+    for crate in sorted(p for p in (root / "crates").iterdir() if p.is_dir()):
+        if (crate / "build.rs").exists():
+            fail(f"{crate.name} has a build script, whose generated code this scan cannot see")
+        toml_path = crate / "Cargo.toml"
+        if not toml_path.is_file():
+            continue  # not a crate: cargo compiles nothing here
+        crate_manifest = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        if crate_manifest.get("package", {}).get("build", False) is not False:
+            fail(f"{crate.name} declares a build script, whose output this scan cannot see")
+        lib = crate_manifest.get("lib", {})
+        if lib.get("proc-macro") or lib.get("proc_macro"):
+            fail(
+                f"{crate.name} is a proc-macro crate; the code it emits is assembled at "
+                "compile time, where this scan cannot see it"
+            )
+        for target in [lib, *crate_manifest.get("bin", [])]:
+            target_path = target.get("path")
+            if target_path is None:
+                continue
+            parts = Path(target_path).parts
+            if not parts or parts[0] != "src" or ".." in parts:
+                fail(
+                    f"{crate.name} compiles `{target_path}`, outside src/, so this scan "
+                    "cannot see it"
+                )
+
+
+def _attributes(masked: str) -> Iterator[str]:
+    """The text of every `#[...]` / `#![...]` attribute in `masked`, bracket-balanced."""
+    for start in re.finditer(r"#\s*!?\s*\[", masked):
+        depth = 0
+        for end in range(start.end() - 1, len(masked)):
+            if masked[end] in "([{":
+                depth += 1
+            elif masked[end] in ")]}":
+                depth -= 1
+                if depth == 0:
+                    break
+        yield masked[start.start() : end + 1]
+
+
+def _enclosing_macro(masked: str, at: int) -> str | None:
+    """The attribute or macro invocation whose delimiters enclose `at`, if any.
+
+    Walks outward through every unmatched `(`, `[` or `{`. One opened by `#[`
+    or `#![` is an attribute; one right after `name!` is that macro's input. A
+    `macro_rules! name {` body is neither: its `{` follows the name, not a `!`,
+    and an `impl` written there is read like any other.
+    """
+    depth = 0
+    for i in range(at - 1, -1, -1):
+        ch = masked[i]
+        if ch in ")]}":
+            depth += 1
+        elif ch in "([{":
+            if depth:
+                depth -= 1
+                continue
+            before = masked[:i].rstrip()
+            if ch == "[" and (before.endswith("#") or before.endswith("#!")):
+                return "an attribute"
+            invoked = re.search(r"(\w+)\s*!$", before)
+            if invoked and not before.endswith("macro_rules!"):
+                return f"the macro `{invoked.group(1)}!`"
+    return None
+
+
+def _group_parent(tree: str, at: int) -> str:
+    """The path segment a `{` group at `at` hangs from: `Trait` in `Trait::{self}`.
+
+    Walks back to the group's unmatched `{`, then over `::` to the segment. A
+    `self` with no parent segment cannot be resolved here, so it is refused.
+    """
+    depth = 0
+    for i in range(at - 1, -1, -1):
+        if tree[i] == "}":
+            depth += 1
+        elif tree[i] == "{":
+            if depth:
+                depth -= 1
+                continue
+            parent = re.search(r"((?:r#)?\w+)\s*::\s*$", tree[:i])
+            if parent:
+                return parent.group(1)
+            break
+    fail(
+        f"a use declaration renames `self` (`{tree.strip()}`) with no path segment "
+        "in front of its group; this scan cannot tell what it renames"
+    )
 
 
 def _skip_generic_list(text: str, i: int) -> int:
@@ -1285,6 +1432,7 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     crate_roots = sorted((root / "crates").glob("*/src")) if (root / "crates").is_dir() else []
     if not crate_roots:
         fail("no crate sources found under crates/*/src — this scan cannot bound anything")
+    _refuse_code_outside_the_scan(root)
     # Aliases are collected across the WHOLE tree first, because a rename can be
     # two hops: `pub use RestartWindowGate as Gate;` in one module, then
     # `use crate::gates::Gate; impl Gate for AlwaysOpen` in another. Reading
@@ -1323,6 +1471,31 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
         # away: `use atp_market_data::RestartWindowGate as Gate; impl Gate for
         # AlwaysOpen`. Search for every name the trait answers to.
         names = {spec["trait"], *crate_aliases, *_local_aliases(source, spec["trait"])}
+        masked = _mask_non_code(source)
+        where = path.relative_to(root)
+        # `include` as a WORD, not `include!`: `use std::include as splice;` calls it
+        # under another name. And `path =` anywhere in an attribute, not just
+        # `#[path`: `#[cfg_attr(not(test), path = "..")]` is the same redirect.
+        include = re.search(r"\binclude\b", masked)
+        redirect = next((a for a in _attributes(masked) if re.search(r"\bpath\s*=", a)), None)
+        unseen = include.group(0) if include else redirect
+        if unseen:
+            fail(
+                f"{where} uses `{unseen}`, which compiles a file this scan cannot "
+                f"see; an implementor of `{spec['trait']}` there would go uncounted"
+            )
+        for name in sorted(names):
+            # Searched in `source`, where string literals are KEPT: a proc macro
+            # can be handed the name as a string (`#[delegate(target = "Gate")]`)
+            # and parse it into the impl it emits.
+            for hit in re.finditer(rf"\b{re.escape(name)}\b", source):
+                macro = _enclosing_macro(masked, hit.start())
+                if macro:
+                    fail(
+                        f"{where} hands `{name}` (the `{spec['trait']}` gate) to {macro}; a "
+                        "macro given the gate's name can implement it where this scan "
+                        "cannot look"
+                    )
         for header in _impl_headers(_mask_non_code(source)):
             split = _split_impl_header(header)
             if split is None:

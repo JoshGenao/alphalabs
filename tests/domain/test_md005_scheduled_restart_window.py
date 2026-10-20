@@ -893,6 +893,98 @@ impl RestartWindowGate for CommentedOpenWindow {
     assert len(assert_connectivity_static(config)) == 13
 
 
+def test_a_nested_use_group_cannot_hide_a_renamed_implementor() -> None:
+    """Adversarial review r29 [high], planted in the REAL tree, through the FULL gate.
+
+    The alias finder matched a braced use group up to its first `}`, so a NESTED
+    group hid the rename: `use atp_market_data::{RestartWindowGate as G,
+    live_feed::{LiveFeedLoop}};` bound no alias, and `impl G for AlwaysOpen`
+    left all 13 checks green with one approved implementor reported. The finder
+    now reads every `X as Y` between `use` and its `;`, at any depth.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-orchestrator/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+use atp_market_data::{RestartWindowGate as RenamedGate, live_feed::{LiveFeedLoop as _}};
+pub struct RenamedOpenWindow;
+impl RenamedGate for RenamedOpenWindow {
+    fn admission(&self) -> atp_market_data::MarketDataAdmission {
+        atp_market_data::MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="RenamedOpenWindow"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
+    """The sweep after r29: code the enumeration never reads, planted in the REAL tree.
+
+    The scan reads `crates/*/src/**/*.rs`. An `include!`d file, or a macro handed
+    the gate's name (`#[delegate(RestartWindowGate)]`), puts an implementor where
+    it never looks, and the full gate used to stay green. Both are now refused.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-orchestrator/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    shapes = {
+        "include": ('include!("../../../elsewhere.rs");\n', "cannot see"),
+        "macro": (
+            "#[delegate(atp_market_data::RestartWindowGate)]\npub struct Delegated(u8);\n",
+            "macro given the gate's name",
+        ),
+    }
+    try:
+        for planted, refusal in shapes.values():
+            target.write_text(original + "\n" + planted, encoding="utf-8")
+            with pytest.raises(ConnectivityCheckError, match=refusal):
+                assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
 def test_the_resume_proof_labels_its_readiness_scope() -> None:
     """A reachable probe means the endpoint accepted TCP.
 

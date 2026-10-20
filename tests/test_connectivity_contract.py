@@ -1006,6 +1006,10 @@ class GateImplementorScanTest(unittest.TestCase):
         dest = self.tmp / self.PRODUCER
         dest.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / self.PRODUCER, dest)
+        # The real workspace's shape: every member under `crates/`.
+        (self.tmp / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n', encoding="utf-8"
+        )
 
     def _inject(self, crate: str, body: str) -> None:
         path = self.tmp / "crates" / crate / "src" / "sneaky.rs"
@@ -1477,6 +1481,196 @@ impl atp_market_data::RestartWindowGate for AlwaysOpen {{
                 with self.assertRaises(ConnectivityCheckError) as ctx:
                     check_restart_window_gate_implementors(self.config, "", root=self.tmp)
                 self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_rename_in_any_use_tree_shape_does_not_hide_an_implementor(self) -> None:
+        """Adversarial review r29 [high] - the reviewer's reproducer, and its kin.
+
+        The alias finder read a braced group with `\\{([^}]*)\\}`, so a NESTED group
+        ended the match early and the rename was never seen: `impl G for
+        AlwaysOpen` passed all 13 checks with one approved implementor reported.
+        A rename `X as Y` can only appear in a use declaration, which always ends
+        at its first `;`, so the finder now reads every `X as Y` in that span at
+        any depth.
+        """
+        shapes = {
+            "the reviewer's: nested group after the rename": (
+                "use atp_market_data::{RestartWindowGate as G, live_feed::{LiveFeedLoop}};"
+            ),
+            "nested group before the rename": (
+                "use atp_market_data::{live_feed::{LiveFeedLoop}, RestartWindowGate as G};"
+            ),
+            "three levels deep": "use atp_market_data::{a::{b::{c}}, x::{RestartWindowGate as G}};",
+            "pub, leading `::` and `self`": (
+                "pub use ::atp_market_data::{self, RestartWindowGate as G};"
+            ),
+            "spread over lines, with comments": (
+                "use atp_market_data::{\n    // the gate\n    RestartWindowGate /* renamed */ as G,\n};"
+            ),
+            "a raw-identifier alias": "use atp_market_data::RestartWindowGate as r#G;",
+            "`self` renames the group's parent": (
+                "use atp_market_data::RestartWindowGate::{self as G};"
+            ),
+            "`self` in a nested group": (
+                "use atp_market_data::{live_feed, RestartWindowGate :: { self as G }};"
+            ),
+        }
+        for label, use in shapes.items():
+            with self.subTest(shape=label):
+                self._inject(
+                    "atp-orchestrator",
+                    f"""
+{use}
+pub struct AlwaysOpen;
+impl G for AlwaysOpen {{
+    fn admission(&self) -> MarketDataAdmission {{
+        MarketDataAdmission::Admitted
+    }}
+}}
+""",
+                )
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_rename_through_a_macro_metavariable_fails_closed(self) -> None:
+        # `m!(G)` would bind the gate to a name only the call site knows, and a
+        # gate named through `$t` cannot be ruled out. Unboundable is not absent.
+        for label, body in {
+            "the alias is a metavariable": (
+                "macro_rules! m { ($n:ident) => { use atp_market_data::RestartWindowGate as $n; }; }"
+            ),
+            "the renamed item is a metavariable": (
+                "macro_rules! m { ($t:ident) => { use atp_market_data::$t as G; }; }"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject("atp-orchestrator", body)
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("metavariable", str(ctx.exception))
+
+    def test_renames_of_other_items_in_nested_groups_are_not_implementors(self) -> None:
+        # The legal direction: the finder may not cry wolf on ordinary imports.
+        self._inject(
+            "atp-orchestrator",
+            """
+use std::{fmt::{self as f, Display as Show}, io::{Result as IoResult}};
+macro_rules! cast { ($x:expr) => { $x as u64 }; }
+pub struct Real;
+impl Show for Real {
+    fn fmt(&self, out: &mut f::Formatter<'_>) -> f::Result { Ok(()) }
+}
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
+
+    def test_code_the_scan_cannot_see_fails_closed(self) -> None:
+        """The enumeration's claim covers every COMPILED production source.
+
+        It reads `crates/*/src/**/*.rs`, and Rust compiles code from elsewhere:
+        `#[path]` points a module at any file, `include!` splices one in, a build
+        script generates code, a Cargo target can live outside `src/`, a
+        proc-macro crate can emit an impl built from strings, and a workspace
+        member can sit outside `crates/`. An implementor in any of those was
+        invisible while the scan reported one approved implementor. Each is now
+        refused: none is used by the real tree, and a scan cannot bound what it
+        cannot read.
+        """
+        crate = self.tmp / "crates" / "atp-orchestrator"
+        cases = {
+            "a #[path] module": (
+                "src/sneaky.rs",
+                '#[path = "../../../elsewhere.rs"]\nmod hidden;\n',
+            ),
+            "an include!": ("src/sneaky.rs", 'include!("../../../elsewhere.rs");\n'),
+            "a path inside cfg_attr": (
+                "src/sneaky.rs",
+                '#[cfg_attr(not(test), path = "../../../elsewhere.rs")]\nmod hidden;\n',
+            ),
+            "include! under another name": (
+                "src/sneaky.rs",
+                'use std::include as splice;\nsplice!("../../../elsewhere.rs");\n',
+            ),
+            "a build script": ("build.rs", "fn main() {}\n"),
+            "a build key": ("Cargo.toml", '[package]\nname = "x"\nbuild = "gen.rs"\n'),
+            "a bin outside src": (
+                "Cargo.toml",
+                '[package]\nname = "x"\n[[bin]]\nname = "e"\npath = "bin/e.rs"\n',
+            ),
+            "a lib outside src": ("Cargo.toml", '[package]\nname = "x"\n[lib]\npath = "lib.rs"\n'),
+            "a proc-macro crate": (
+                "Cargo.toml",
+                '[package]\nname = "x"\n[lib]\nproc-macro = true\n',
+            ),
+            "a member outside crates/": (
+                "../../Cargo.toml",
+                '[workspace]\nmembers = ["crates/*", "tools/evil"]\n',
+            ),
+            "a root package": (
+                "../../Cargo.toml",
+                '[package]\nname = "root"\n[workspace]\nmembers = ["crates/*"]\n',
+            ),
+        }
+        root_toml = (self.tmp / "Cargo.toml").read_text(encoding="utf-8")
+        for label, (rel, text) in cases.items():
+            with self.subTest(shape=label):
+                path = (crate / rel).resolve()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                    self.assertIn("this scan cannot see", str(ctx.exception))
+                finally:
+                    if path == (self.tmp / "Cargo.toml").resolve():
+                        path.write_text(root_toml, encoding="utf-8")
+                    else:
+                        path.unlink()
+
+    def test_a_macro_handed_the_gate_fails_closed(self) -> None:
+        """A macro given the trait's NAME can implement it where no scan looks.
+
+        `#[derive(Delegate)] #[delegate(RestartWindowGate)]` (ambassador-style) or
+        `gen_gate!(RestartWindowGate, AlwaysOpen)` expands to an implementor that
+        appears nowhere in the source. The production tree never hands the
+        gate's name to a macro, so any that does is refused - under an alias too.
+        """
+        for label, body in {
+            "an attribute": (
+                "#[derive(Delegate)]\n#[delegate(atp_market_data::RestartWindowGate)]\n"
+                "pub struct AlwaysOpen(Inner);\n"
+            ),
+            "a function-like macro": "gen_gate!(atp_market_data::RestartWindowGate, AlwaysOpen);\n",
+            "a braced macro under an alias": (
+                "use atp_market_data::RestartWindowGate as G;\ngen_gate! { G => AlwaysOpen }\n"
+            ),
+            "the name as a string in an attribute": (
+                '#[delegate(target = "atp_market_data::RestartWindowGate")]\n'
+                "pub struct AlwaysOpen(Inner);\n"
+            ),
+            "the name as a string in a macro": 'gen_gate!("RestartWindowGate", AlwaysOpen);\n',
+        }.items():
+            with self.subTest(shape=label):
+                self._inject("atp-orchestrator", body)
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("macro", str(ctx.exception))
+
+    def test_macros_and_includes_that_do_not_name_the_gate_are_legal(self) -> None:
+        self._inject(
+            "atp-orchestrator",
+            """
+#[derive(Debug, Clone)]
+pub struct Plain;
+pub const SCHEMA: &str = include_str!("schema.json");
+pub fn takes(gate: impl atp_market_data::RestartWindowGate) -> String {
+    format!("{:?}", vec![1, 2])
+}
+""",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
 
     def test_a_nested_comment_that_closes_properly_is_not_an_implementor(self) -> None:
         # The legal direction: commented-out code is not code, at any depth.
