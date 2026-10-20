@@ -90,7 +90,12 @@ artifact is only honest if it CANNOT be made to say PASS without real, complete 
   not a better regex: count the impls a LOOSE pattern can see, count what the strict one
   parsed, and `fail()` when the strict pass accounts for fewer. Any future shape the
   parser cannot read then turns the guard red instead of silently shrinking the set it
-  claims is closed. `(SRS-MD-005 r20)`
+  claims is closed. `(SRS-MD-005 r20)` **Superseded in part by r27:** a loose pattern
+  that shares the strict one's assumptions shares its blind spot (both assumed no `{`
+  before the trait name, so a const-generic brace hid an impl from both and the counts
+  agreed at zero). Where the shape is a bracketed header, replace both patterns with a
+  depth walker over masked source; see `adversarial-precheck.md`, "When no boundary can
+  close it, WALK". `(SRS-MD-005 r27)`
 
 - **A test cited as proof of an invariant must exercise the branch that could break it.**
   A module comment named `a_shortened_ttl_shortens_both_directions` as the thing pinning

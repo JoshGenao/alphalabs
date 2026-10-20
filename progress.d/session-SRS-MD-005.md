@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 26 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 27 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 26 - the loop has not reached APPROVE.** The feature first
+  standing at round 27 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 26 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 27 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -556,6 +556,21 @@ count.
       guard could not see because it did not strip `///`, and an NFR-P1 assert
       pinning 4x one line below its sibling corrected to 10x.
 
+  r27 block/1  - 2026-10-19, after the operator granted three more budgets and
+      origin/main was merged in. Codex, one high finding, and it was the
+      implementor scan again: Rust permits a `{` inside a const-generic
+      argument (`impl<T: HasWidth<{ 1 + 1 }>> RestartWindowGate for
+      AlwaysOpen<T>`), the strict regex and its backstop both assumed no brace
+      before the trait name, both missed it, their counts agreed, and the scan
+      reported one implementor. The eighth header shape this pair was walked
+      past by. Fixed as the class, not the shape: one lexer
+      (`_mask_non_code`) blanks literals and comments for every scan that
+      counts brackets (the test-module stripper now reads it too), and
+      `_impl_headers` bounds each header by bracket depth, failing on any it
+      cannot bound or any macro impl whose trait is a metavariable. The old
+      scanner also counted gate-impl text inside a string literal as an
+      implementor; that false positive is gone and pinned.
+
 ## Playbook updates
 
   docs/playbooks/adversarial-precheck.md - "When a guard keeps failing, stop
@@ -632,7 +647,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 26**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 27**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

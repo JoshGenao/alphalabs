@@ -80,6 +80,16 @@ Three corollaries worth having before you write the guard:
   4001/4002", and a `compile_fail` doctest declaring `fn sibling_reach` that
   names the very field the scan forbids. Strip comments before scanning, and
   keep a non-vacuity assertion that the stripper did not eat the code.
+- **When no boundary can close it, WALK; do not match.** "Who implements this
+  `pub` trait" has no module boundary to hide behind, so it must be scanned. Two
+  regexes (a strict match and a "loose" backstop) were walked past eight times,
+  each by a legal header they did not anticipate: an arrow in a bound, a
+  reference target, a rename, generics on the trait, a `;` in an array type, and
+  finally a brace inside a const-generic argument, which defeated BOTH because
+  both assumed no `{` before the trait name. Blank literals and comments once,
+  with one lexer every scan shares; bound each header by bracket depth; fail on
+  any header you cannot bound. A backstop that shares the strict pattern's
+  assumptions shares its blind spot. `(SRS-MD-005 r27)`
 
 `(SRS-MD-005)`
 
