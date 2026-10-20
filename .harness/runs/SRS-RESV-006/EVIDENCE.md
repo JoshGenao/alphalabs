@@ -5,12 +5,14 @@
 - **method**: `e2e`
 - **steps evidenced**: 4/4
 - **critics**: deterministic `approve`, judgment `block`
-- **artifacts**: 11
+- **artifacts**: 9
 - **record complete**: NO
 
 ## Outstanding
 
+- deterministic critic approved at 3f0afcf9, but 252 non-evidence path(s) have changed since (.env.example, .github/workflows/security.yml, .gitleaks.toml…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
+- verification_method is 'e2e' but no image artifact is attached to step 3 — its acceptance criterion is about what a reviewer can SEE. Attach one: `tools/evidence.py artifact SRS-RESV-006 --step 3 --file <screenshot.png> --caption '...'`
 
 ## Acceptance criterion
 
@@ -34,7 +36,7 @@ Step 1: Run ./init.sh and confirm the development environment reports Environmen
 → Installing dependencies...
   Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-006/.venv/bin/python (Python 3.13)
 → Starting dev server...
-  Dev server already running at http://127.0.0.1:3000.
+  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.
 → Waiting for server...
 → Running baseline smoke test...
 → Running contract checks (scope=env)...
@@ -76,40 +78,40 @@ Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plu
 
 ```
 ...                                                                      [100%]
-3 passed in 19.48s
+3 passed in 20.42s
 ```
 
 </details>
 
-![Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)](artifacts/step2-01-9dffps.png)
+![Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)](artifacts/step2-01-8ug6ae.png)
 
 *Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)*
 
-![A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)](artifacts/step2-02-9dffps.png)
+![A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)](artifacts/step2-02-8ug6ae.png)
 
 *A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)*
 
-![Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)](artifacts/step2-03-9dffps.png)
+![Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)](artifacts/step2-03-8ug6ae.png)
 
 *Arming during the cool-down raises SYS-49e's confirmation warning — the manual swap is offered, not blocked (clause 2)*
 
-![After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)](artifacts/step2-04-9dffps.png)
+![After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)](artifacts/step2-04-8ug6ae.png)
 
 *After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 — the start time is the most recent successful completion)*
 
-🎬 [full session recording](artifacts/step2-page@690722737e155b0d74b8def5e0da64cb.webm) — 1.0 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@6b2496e658c0e3ee2aa5dc76b2d91d3e.webm) — 1.0 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
-![A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'](artifacts/step2-01-0bfyuw.png)
+![A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'](artifacts/step2-01-4qas8v.png)
 
 *A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert — an unreadable window is never read as 'clear'*
 
-🎬 [full session recording](artifacts/step2-page@62b1ab4fd88ac28087f8e546acc32340.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@07883e079322b66600f63764b82c16f4.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
-![A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)](artifacts/step2-01-vp75sr.png)
+![A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)](artifacts/step2-01-gl5_0s.png)
 
 *A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)*
 
-🎬 [full session recording](artifacts/step2-page@aa8e97e9eb05b6ac621d0cf6957fb586.webm) — 0.6 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@aa65b4ddd729d5fb478f6a2e2cece0ad.webm) — 0.6 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
 
 ### Step 3
@@ -125,20 +127,11 @@ Step 3: Verify acceptance criteria: After successful swap, automatic triggers ar
 <details><summary>observed output (tail)</summary>
 
 ```
-..............................................                           [100%]
-46 passed in 2.85s
+................................................                         [100%]
+48 passed in 2.60s
 ```
 
 </details>
-
-![The AC's third clause after the final head: the swap completed and the dial's start moved to THIS completion's instant, with the seven-day expiry moving with it](artifacts/step3-step2-04-9dffps.png)
-
-*The AC's third clause after the final head: the swap completed and the dial's start moved to THIS completion's instant, with the seven-day expiry moving with it*
-
-![The AC's first and second clauses: an ACTIVE window with the three automatic triggers suppressed, and the promote control armed carrying SYS-49e's confirmation warning](artifacts/step3-step2-03-9dffps.png)
-
-*The AC's first and second clauses: an ACTIVE window with the three automatic triggers suppressed, and the promote control armed carrying SYS-49e's confirmation warning*
-
 
 ### Step 4
 
@@ -153,34 +146,34 @@ cargo test -p atp-orchestrator
 <details><summary>observed output (tail)</summary>
 
 ```
-t.rs (target/debug/deps/orch_1_lifecycle_contract-7831891b84ee895a)
-     Running tests/orch_2_resource_profile_contract.rs (target/debug/deps/orch_2_resource_profile_contract-7c122c85bc25ed55)
-     Running tests/orch_3_workload_priority_contract.rs (target/debug/deps/orch_3_workload_priority_contract-b2c0a21127794d21)
-     Running tests/orch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-726fde9b617eabaa)
-     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-3a77e6ab502734fb)
-     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-86401f2bfa275bcb)
-     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-800e942f509af1e4)
+ch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-49e33f2c72078469)
+     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-1cc54cb468a12381)
+     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-40a9be3aeb6c41f4)
+     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-cf0a52b8d2b3e087)
 resv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.
 resv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)
 resv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.
 resv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)
-     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-61209c7189580bd8)
-     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-93b6e6aaf812c4e8)
-     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-8ff60a7498efb2ef)
-     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-e8671bc2caea6efe)
-     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-9c1d1ab4ccc457f4)
-     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-69514517cd57f634)
-     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-a4cb1b2c83a09735)
-     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-c721ff6e6d50e3ec)
-     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-42d0c6677a6e34fb)
-     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-ac52d07bb6e1721a)
-     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-c78f6b09b0f05d50)
-     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-c9b98b2df890067c)
-     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-f9208b28391a2650)
-     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-c072c7b3bd170949)
-     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-04db9f6704493cd1)
-     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-32507a0b483a7ec5)
-     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-442cff82d0507d35)
+     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-e7b8aee8148acde3)
+     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-f4f66c11369151b5)
+     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-4a213a201c27ae7c)
+     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-96e1a838f7076f82)
+     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-8962ac891fb610e0)
+     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-930e6d8e89acae9f)
+     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-575984fe9db5d008)
+     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-6e5bd2c8a44707f3)
+     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-064bc48c605047ac)
+     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-60bd21efb09976b9)
+     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-7f139eb0800ccc03)
+     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-33573d8651afcd69)
+     Running tests/srs_data_013_quarantine_alert.rs (target/debug/deps/srs_data_013_quarantine_alert-d697c02fec057047)
+     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-ddb4d4118daf4d39)
+     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-7d5e08710aacd6c3)
+     Running tests/srs_exe_001_live_host.rs (target/debug/deps/srs_exe_001_live_host-7c593315c75d2d2b)
+     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-45daa4de785d00f1)
+     Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-ea35429f112f017c)
+     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-8f513f0cd08c627b)
+     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-a646effc5e9c4dc1)
    Doc-tests atp_orchestrator
 ```
 
