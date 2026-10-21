@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 29 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 30 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 29 - the loop has not reached APPROVE.** The feature first
+  standing at round 30 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 29 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 30 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -619,6 +619,34 @@ count.
       The real tree passes all 13 checks;
       every new guard is mutation-verified, and two domain tests plant the
       shapes in the real tree and run the full gate.
+  r30 block/1  - 2026-10-20, at ba040df. Codex, one high finding, and a
+      regression r27 introduced: implementors were recorded by BARE type name,
+      so `bypass::ScheduledRestartConnectivity` - a different, always-admitting
+      type - was filed under the producer's allowlist entry and all 13 checks
+      passed (origin/main's regex had caught it by accident, reading `bypass`
+      as the type). Fixed as identity, not spelling: every impl is its own
+      occurrence keyed by its WHOLE target, and the contract now names the
+      producer's site (`production_implementor_sites`), so the producer must be
+      implemented exactly once, at that file. Two layers, each pinned on its
+      own: the count and site check stops every additive namesake, and the
+      whole-target key stops the site's one impl naming a namesake instead.
+
+      The identity sweep then found the same class in the admission-site check,
+      four live holes: a second `fn subscribe` (a trait-impl method) was never
+      read, because the check took "the body of `subscribe`" - the first one;
+      `fn name [^;{]* {` missed a signature with a `;` in an array parameter or
+      a `{` in a const-generic argument, and counting body braces in text that
+      still held strings ended a body at a `"}"`; a macro body naming the field
+      wrote the map from outside every function; and `pub(crate) mod inner;`
+      slipped the submodule rule. Every function body that reaches the map is
+      now read on its own, spans come from a depth walker over masked text,
+      the field may appear outside a function body only in its declaration
+      (and nowhere else in the crate), and a submodule of any visibility is
+      refused. The stray-field rule also backstops the span walker: with it
+      off, each walker mutation turns its own shape red. Last, r29's
+      unscanned-code rule gained the route it missed: a dependency is compiled
+      code, so a path dependency outside `crates/` (in any dependency table), a
+      git dependency and a `[patch]` / `[replace]` section are refused too.
 
 ## Playbook updates
 
@@ -696,7 +724,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 29**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 30**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

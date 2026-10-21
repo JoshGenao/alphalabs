@@ -111,6 +111,15 @@ Three corollaries worth having before you write the guard:
   by which the compiler can see code you do not, and refuse each one the tree
   does not use. When rounds keep finding new shapes of one hole, stop answering
   the round and sweep for the next shape yourself. `(SRS-MD-005 r29)`
+- **Key an allowlist by identity, never by spelling.** A set of names collapses
+  two things that share one: `bypass::ScheduledRestartConnectivity` was filed
+  under the real producer's entry (r30), and a second `fn subscribe` in a trait
+  impl hid behind the gated one because the check read "the body of
+  `subscribe`" - the first. Record OCCURRENCES (what, where), key each by its
+  whole path, pin each allowed item to the one site it may live at, and check
+  every occurrence on its own. A rewrite that replaces a regex can drop an
+  accidental guarantee the regex gave - r30's hole was introduced by r27's fix.
+  `(SRS-MD-005 r30)`
 
 `(SRS-MD-005)`
 
