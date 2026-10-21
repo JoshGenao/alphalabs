@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was run at commit `7af1b26`. The commit that adds this document changes
+block was run at commit `fac39ee`. The commit that adds this document changes
 only files under `.harness/runs/SRS-MD-005/`, so the code it certifies is the
 code it ships with. It is a re-verification, not a replay of the session that
 built the feature.
@@ -13,13 +13,15 @@ the only honest repair for that, so the whole transcript is re-run rather than
 its numbers edited. It was re-run again on 2026-10-19, after `origin/main` was
 merged into this branch: the previous capture certified `20bf2f1`, which was no
 longer the head. It was re-run once more on 2026-10-20, after the round-27
-fix: the capture before this one certified `3585315`. Sections 4 and 5 capture
+fix: the capture before this one certified `3585315`. It was re-run again on
+2026-10-21, after the compiler-enforced redesign that followed round 31: the
+capture before this one certified `7af1b26`. Sections 4 and 5 capture
 a DELIBERATELY BROKEN tree; each mutation was applied and reverted around its
 own command, and the tree was checked clean after each revert.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 27 rounds**. This feature integrated
+The judgment critic sits at **`block` after 31 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason - see Section 6. If
 that section said `approve`, this document would be lying.
@@ -54,7 +56,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-7af1b26dd50cc5cfdfb4a081d47e7346b53be93b
+fac39ee906b77dbefdab19c01d45b91d7b361971
 [exit 0]
 
 $ git log --oneline --reverse origin/main --grep='SRS-MD-005' | head -14 | cat
@@ -138,16 +140,29 @@ error: SyRS SYS-75(c)/(d): expected CONNECTED once the gateway answers, observed
 [exit 0]
 
 === SECTION 4: the compiler enforces the admission closure (not a scanner) ===
-# Add a crate-root function that reaches the registry's private field, then build.
+# Each shape is appended to the REAL registry module, built, and reverted.
+# Every one is a write that skips the restart-window decision.
 
-$ cargo build -p atp-market-data 2>&1 | grep -E 'E0616|private field' | head -3
-error[E0616]: field `subscribers` of struct `ConsolidatedSubscriptionRegistry` is private
-     |       ^^^^^^^^^^^ private field
-For more information about this error, try `rustc --explain E0616`.
+# A. Write the set's private map directly.
+$ cargo build -p atp-market-data 2>&1 | grep -E '^error' | head -2
+error[E0616]: field `lines` of struct `AdmittedSet` is private
+error: could not compile `atp-market-data` (lib) due to 1 previous error
 [exit 0]
 
-$ cargo build -q -p atp-market-data && echo 'restored: builds clean again'
-restored: builds clean again
+# B. Forge the proof the set demands.
+$ cargo build -p atp-market-data 2>&1 | grep -E '^error' | head -2
+error[E0451]: field `_sealed` of struct `AdmissionProof` is private
+error: could not compile `atp-market-data` (lib) due to 1 previous error
+[exit 0]
+
+# C. Fabricate the zero-sized proof with unsafe code (workspace forbids unsafe_code).
+$ cargo build -p atp-market-data 2>&1 | grep -E '^error' | head -2
+error: usage of an `unsafe` block
+error: could not compile `atp-market-data` (lib) due to 1 previous error
+[exit 0]
+
+$ git diff --quiet -- crates && cargo build -q -p atp-market-data && echo 'restored: tree clean, builds clean again'
+restored: tree clean, builds clean again
 [exit 0]
 
 === SECTION 5: break the behaviour, watch it fail ===
@@ -190,13 +205,13 @@ print("deterministic critic:", det["verdict"], "@", det["head"][:8])
 j = d["critic"]["judgment"]
 print("judgment critic    :", j["verdict"], "| rounds:", j.get("rounds"), "| reviewer:", j["reviewer"])
 PY
-step 1: PASS | exit=0 | @7af1b26d | ./init.sh
-step 2: PASS | exit=0 | @7af1b26d | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
-step 3: PASS | exit=0 | @7af1b26d | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
-step 4: PASS | exit=0 | @7af1b26d | .venv/bin/python -m pytest tests/integration/test_md005_restart_
+step 1: PASS | exit=0 | @fac39ee9 | ./init.sh
+step 2: PASS | exit=0 | @fac39ee9 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
+step 3: PASS | exit=0 | @fac39ee9 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
+step 4: PASS | exit=0 | @fac39ee9 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
 
-deterministic critic: approve @ 7af1b26d
-judgment critic    : block | rounds: 27 | reviewer: codex
+deterministic critic: approve @ fac39ee9
+judgment critic    : block | rounds: 31 | reviewer: codex
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -206,7 +221,7 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the certified commit, straight from GitHub ===
 
-$ gh run list --commit 7af1b26dd50cc5cfdfb4a081d47e7346b53be93b --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
+$ gh run list --commit fac39ee906b77dbefdab19c01d45b91d7b361971 --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
 success	security
 success	ci
 skipped	integration
@@ -219,17 +234,17 @@ $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 - atp-types declares MarketDataAdmission with 3 outcomes (Admitted, SuspendedForScheduledRestart, ConnectivityLost) — a market-data refusal states WHETHER and WHY, so planned maintenance is never rendered as an outage or the reverse
 - atp-types declares RestartWindow with private fields, 3 classification methods, and the SyRS SYS-75 defaults (60s lead / 300s window)
 - atp-types::connectivity_state maps RestartPhase::Elapsed onto ConnectivityState::Unreachable with no catch-all arm — the SyRS SYS-75 escalation is exhaustive by construction
-- atp-market-data gates 2 subscription admission site(s) (request_subscription, subscribe) on `window.admission(`. The set is closed by RUST: `subscribers` is private to this file, so the functions naming it are all the code that can reach the consolidated set — 7 classified as unable to admit, each with a stated reason (new, unsubscribe, distinct_subscriptions, subscriber_count, is_subscribed, fan_out, try_acquire)
+- atp-market-data cannot grow its subscription set without an admission proof: `subscribers` is a private `AdmittedSet` whose only add method spends an `AdmissionProof`, which only `RestartWindow` can make (both files pinned by sha256, both rules proved by compile_fail doctests); `SubscriptionAccepted` carries the proof, the crate never asks a window itself, and every crate forbids `unsafe` code
 - atp-orchestrator::ScheduledRestartConnectivity implements BrokerageConnectivity + RestartWindowGate — one producer behind both suspensions (SRS-MD-005)
 - atp-adapters::GatewayReachability lives outside the digest-pinned transport module, probes with an explicit connect deadline, and never resolves a hostname
-- exactly 1 production type implements `RestartWindowGate` (ScheduledRestartConnectivity) — the port buys freshness, and this enumeration is what makes it unforgeable
+- exactly 1 production type implements `RestartWindowGate` (ScheduledRestartConnectivity, once, at crates/atp-orchestrator/src/restart_window_connectivity.rs) — the port buys freshness; `Admitted` itself is unforgeable by type (AdmissionProof), and this enumeration bounds which types may ask the window
 - cargo test -p atp-execution --lib + err_2_connectivity_blocked: PASS (connectivity-gated rejection + zero broker side effect verified)
 [exit 0]
 
 === SECTION 9: suite totals, re-run now against the shipping tree ===
 
 $ cargo test --workspace 2>&1 | grep -E '^test result:' | awk '{s++; if($3=="ok."){ok++}; p+=$4; f+=$6} END {print s" suites, "ok" ok, "s-ok" failed suites, "p" tests passed, "f" tests failed"}'
-184 suites, 184 ok, 0 failed suites, 2510 tests passed, 0 tests failed
+184 suites, 184 ok, 0 failed suites, 2515 tests passed, 0 tests failed
 [exit 0]
 
 $ cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1; echo "cargo clippy --workspace --all-targets -- -D warnings : exit $?"
@@ -241,11 +256,11 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-134 passed, 20 subtests passed in 93.70s (0:01:33)
+145 passed, 89 subtests passed in 216.69s (0:03:36)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
-8 passed in 0.32s
+8 passed in 0.35s
 [exit 0]
 ```
 

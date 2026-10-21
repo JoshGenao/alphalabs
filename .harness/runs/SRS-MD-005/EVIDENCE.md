@@ -10,7 +10,6 @@
 
 ## Outstanding
 
-- deterministic critic approved at 7af1b26d, but 6 non-evidence path(s) have changed since (architecture/runtime_services.json, docs/playbooks/adversarial-precheck.md, docs/verification-queue.md…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - judgment critic verdict is 'block', not 'approve'
 
 ## Acceptance criterion
@@ -77,25 +76,25 @@ cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli
 
 ```
 running 15 tests
-test a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok
 test help_is_available_alone_and_carries_no_success_sentinel ... ok
+test a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok
 test the_resume_proof_cannot_be_printed_from_outside_the_window ... ok
 test a_one_second_lead_still_lands_inside_the_lead ... ok
-test suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok
+test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
 test suspension_cannot_be_derived_outside_the_window ... ok
-test the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok
 test escalation_cannot_be_derived_inside_the_window ... ok
 test resume_cannot_be_derived_against_a_dead_gateway ... ok
-test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
+test suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok
+test the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok
 test a_malformed_catalogue_key_is_refused_not_defaulted ... ok
-test identical_inputs_produce_identical_output_across_processes ... ok
 test the_catalogue_keys_actually_move_the_window ... ok
-test every_rejected_invocation_fails_closed ... ok
+test identical_inputs_produce_identical_output_across_processes ... ok
 test the_window_boundaries_are_operator_configurable ... ok
+test every_rejected_invocation_fails_closed ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
      Running tests/srs_md_005_restart_window_cli.rs (target/debug/deps/srs_md_005_restart_window_cli-ea35429f112f017c)
 ```
 
@@ -114,8 +113,8 @@ Step 3: Verify acceptance criteria: During the configured restart window, order 
 <details><summary>observed output (tail)</summary>
 
 ```
-..........................................................               [100%]
-58 passed in 249.45s (0:04:09)
+............................................................             [100%]
+60 passed in 210.31s (0:03:30)
 ```
 
 </details>
