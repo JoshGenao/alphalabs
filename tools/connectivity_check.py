@@ -37,7 +37,7 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
@@ -464,24 +464,36 @@ def _public_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
-def _fn_spans(source: str) -> list[tuple[str, int, int]]:
-    """`(name, body_start, body_end)` for every function with a body in `source`.
+class _FnItem(NamedTuple):
+    name: str
+    params: str  # the top-level parameter list, masked
+    start: int  # body span in the masked text; -1 for a bodiless declaration
+    end: int
 
-    Walked on `_mask_non_code`'s output and bounded by bracket DEPTH, like
-    `_impl_headers`, not by a pattern. The pattern `fn name [^;{]* {` ended a
-    signature at a `;` inside an array parameter (`[Key; 1]`) or at the `{` of a
-    const-generic argument, and counting body braces in text that still held
-    strings ended a body at a `"}"`. Each left a write to the map outside the
-    span it was searched in (sweep after r30). A signature ends at the first `{`
-    (the body) or `;` (a bodiless trait method) with every `<`, `(`, `[` closed;
-    one that never ends, or a body that never closes, is refused.
+
+def _fn_items(source: str) -> list[_FnItem]:
+    """Every function declaration in `source`, with or without a body.
+
+    The ONE parser for functions: the spans every admission scan reads and the
+    declarations the exemption check counts both come from here, so they cannot
+    disagree about a name again (r31: two parsers, one of which read
+    `r#is_subscribed` as `is_subscribed`). Walked on `_mask_non_code`'s output
+    and bounded by bracket DEPTH, like `_impl_headers`, not by a pattern. The
+    pattern `fn name [^;{]* {` ended a signature at a `;` inside an array
+    parameter (`[Key; 1]`) or at the `{` of a const-generic argument, and
+    counting body braces in text that still held strings ended a body at a
+    `"}"`; each left a write to the map outside the span it was searched in. A
+    signature ends at the first `{` (the body) or `;` (a bodiless declaration)
+    with every `<`, `(`, `[` closed; one that never ends, or a body that never
+    closes, is refused.
     """
     masked = _mask_non_code(source)
-    spans: list[tuple[str, int, int]] = []
-    for match in re.finditer(r"\bfn\s+(?:r#)?(\w+)", masked):
+    items: list[_FnItem] = []
+    for match in re.finditer(r"\bfn\s+(\w+)", masked):
         name = match.group(1)
         angle = paren = bracket = brace = 0
         prev, j, opened = "", match.end(), -1
+        params_open = params_close = -1
         while j < len(masked):
             ch = masked[j]
             if brace:
@@ -496,23 +508,34 @@ def _fn_spans(source: str) -> list[tuple[str, int, int]]:
             elif ch == ">" and prev != "-":
                 angle -= 1
             elif ch in "([":
+                if ch == "(" and params_open < 0 and angle == paren == bracket == 0:
+                    params_open = j
                 paren, bracket = paren + (ch == "("), bracket + (ch == "[")
             elif ch in ")]":
                 paren, bracket = paren - (ch == ")"), bracket - (ch == "]")
+                if ch == ")" and paren == 0 and params_open >= 0 and params_close < 0:
+                    params_close = j
             prev = ch
             j += 1
         if opened == -1:
             fail(f"the signature of `fn {name}` never ends; this scan cannot bound its body")
+        params = masked[params_open + 1 : params_close] if params_close > params_open >= 0 else ""
         if opened == -2:
-            continue  # a declaration without a body
+            items.append(_FnItem(name, params, -1, -1))
+            continue
         depth, end = 1, opened + 1
         while end < len(masked) and depth:
             depth += {"{": 1, "}": -1}.get(masked[end], 0)
             end += 1
         if depth:
             fail(f"the body of `fn {name}` never closes; this scan cannot bound it")
-        spans.append((name, opened + 1, end - 1))
-    return spans
+        items.append(_FnItem(name, params, opened + 1, end - 1))
+    return items
+
+
+def _fn_spans(source: str) -> list[tuple[str, int, int]]:
+    """`(name, body_start, body_end)` for every function WITH a body (`_fn_items`)."""
+    return [(item.name, item.start, item.end) for item in _fn_items(source) if item.start >= 0]
 
 
 def _all_fn_spans(source: str) -> list[tuple[str, str]]:
@@ -601,7 +624,13 @@ def _mask_non_code(source: str, *, strings: bool = True) -> str:
         if strings:
             blank(cursor, literal_end)
         cursor = literal_end
-    return "".join(out)
+    # A raw identifier IS its plain name: `fn r#is_subscribed` declares
+    # `is_subscribed`. The prefix is erased HERE, once, so no scan can read the
+    # name differently from another - the span walker stripped it and the
+    # declaration counter did not, and a raw-named mutator inherited a read-only
+    # exemption through the gap (r31). A raw STRING keeps its prefix: its `r#` is
+    # followed by `"` or `#`, never by an identifier character.
+    return re.sub(r"\br#(?=[A-Za-z_])", "  ", "".join(out))
 
 
 # A char literal's escape and its closing quote: `\u{..}` (hex digits and `_`),
@@ -712,22 +741,6 @@ _MAP_ADD_TOKENS = (".insert(", ".push(", ".entry(", ".append(", ".extend(")
 _MAP_WRITE_TOKENS = _MAP_ADD_TOKENS + (".remove(", ".retain(", ".clear(", ".get_mut(")
 
 
-def _any_fn_body(source: str, fn_name: str) -> str:
-    """A function body regardless of visibility — trait-impl methods included."""
-    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\b[^;{{]*{{", source)
-    if not match:
-        fail(f"Rust source is missing function `{fn_name}`")
-    depth, index = 1, match.end()
-    while index < len(source) and depth:
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        index += 1
-    return source[match.end() : index - 1]
-
-
 def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) -> None:
     """An exemption must attach to ONE function with a KNOWN shape.
 
@@ -753,13 +766,15 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
       anchored on the field name.
     """
     receivers = spec["exempt_receivers"]
+    items = _fn_items(source)
+    masked = _mask_non_code(source)
     for name in exempt:
         # The generic list may contain PARENTHESES: `<F: Fn() -> bool>` is a
         # legal bound, and excluding `(` meant a second declaration carrying one
         # was invisible - the scan still found exactly one, so the exemption was
         # inherited by a function that could reach the consolidated registry
         # without ever consulting the window.
-        declarations = _fn_declarations(source, name)
+        declarations = [item for item in items if item.name == name]
         if len(declarations) != 1:
             fail(
                 f"exempt function `{name}` is declared {len(declarations)} times in the "
@@ -769,7 +784,7 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
         declared = receivers.get(name)
         if declared is None:
             fail(f"admission_sites.exempt_receivers has no entry for `{name}`")
-        actual = declarations[0].strip()
+        actual = declarations[0].params.strip()
         if declared == "none":
             if actual.startswith("&"):
                 fail(f"exempt function `{name}` gained a self receiver; re-classify it")
@@ -794,7 +809,8 @@ def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) ->
         # expression at all, aliased or not. Over-strict on purpose: `unsubscribe`
         # only needs `retain` and `remove`, and an exemption that has to be
         # argued case by case is not an exemption.
-        body = re.sub(r"\s+", "", _any_fn_body(source, name))
+        item = declarations[0]
+        body = re.sub(r"\s+", "", masked[item.start : item.end] if item.start >= 0 else "")
         offending = [token for token in _MAP_ADD_TOKENS if token in body]
         if offending:
             fail(
@@ -860,7 +876,9 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
 
     field = spec["private_field"]
     if not re.search(
-        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:", market_data_src, re.M
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:",
+        _mask_non_code(market_data_src),
+        re.M,
     ):
         fail(
             f"the consolidated subscriber map `{field}` is no longer a private field of "
@@ -875,7 +893,7 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
     # and `\bpub\s+` matched none of the parenthesised forms.
     visibility = re.search(
         rf"^[^\S\n]*(pub(?:[^\S\n]*\([^)]*\))?)[^\S\n]+{re.escape(field)}[^\S\n]*:",
-        market_data_src,
+        _mask_non_code(market_data_src),
         re.M,
     )
     if visibility:
@@ -941,7 +959,10 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "see them — the closure is one level short. Keep the module leaf, or extend "
             "this check to walk its children"
         )
-    if f"pub mod {spec['module_name']};" not in lib_src:
+    # Read in masked text: a comment saying `pub mod subscriptions;` is not one.
+    if not re.search(
+        rf"\bpub\s+mod\s+{re.escape(spec['module_name'])}\s*;", _mask_non_code(lib_src)
+    ):
         fail(
             f"the crate root no longer declares `pub mod {spec['module_name']};` — the "
             "registry must stay in its own module, or the parent regains visibility of "
@@ -1115,7 +1136,7 @@ def _local_aliases(source: str, trait: str) -> set[str]:
                 f"tell which names it binds, so it cannot bound the `{trait}` aliases"
             )
         tree = masked[use.end() : stop]
-        for rename in re.finditer(r"(\$?(?:r#)?\w+)\s+as\s+(\$?(?:r#)?\w+)", tree):
+        for rename in re.finditer(r"(\$?\w+)\s+as\s+(\$?\w+)", tree):
             item, alias = rename.groups()
             if item == "self":
                 item = _group_parent(tree, rename.start())
@@ -1125,8 +1146,8 @@ def _local_aliases(source: str, trait: str) -> set[str]:
                     f"(`{rename.group(0)}`); the name it binds is chosen at the call site, "
                     f"so this scan cannot tell whether it is an alias for `{trait}`"
                 )
-            if item.removeprefix("r#") == trait:
-                out.add(alias.removeprefix("r#"))
+            if item == trait:
+                out.add(alias)
     return out
 
 
@@ -1274,7 +1295,7 @@ def _group_parent(tree: str, at: int) -> str:
             if depth:
                 depth -= 1
                 continue
-            parent = re.search(r"((?:r#)?\w+)\s*::\s*$", tree[:i])
+            parent = re.search(r"(\w+)\s*::\s*$", tree[:i])
             if parent:
                 return parent.group(1)
             break
@@ -1282,65 +1303,6 @@ def _group_parent(tree: str, at: int) -> str:
         f"a use declaration renames `self` (`{tree.strip()}`) with no path segment "
         "in front of its group; this scan cannot tell what it renames"
     )
-
-
-def _skip_generic_list(text: str, i: int) -> int:
-    """Index just past a `<...>` starting at `i`, or `i` if there is none.
-
-    Counted, not pattern-matched. Every regex attempt at this failed on a shape
-    it did not anticipate - one nesting level was enough until
-    `<T: Into<Vec<u8>>>` arrived, and before that a `->` closed the list early.
-    A counter has no depth limit and needs no alternation for the arrow, which
-    is simply "a `>` whose predecessor is `-`".
-    """
-    if i >= len(text) or text[i] != "<":
-        return i
-    depth, brackets, j, prev = 0, 0, i, ""
-    while j < len(text):
-        ch = text[j]
-        if ch in "{}":
-            return -1  # cannot be inside a generic list: unparseable
-        if ch == ";" and brackets == 0:
-            # A `;` is legal INSIDE an array type - `<T: Into<[u8; 4]>>` - and
-            # illegal outside one. Returning the start index here made
-            # `_fn_declarations` silently DROP the declaration, so a second
-            # `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption. -1
-            # says "unparseable" so the caller can refuse instead of guess.
-            return -1
-        if ch == "[":
-            brackets += 1
-        elif ch == "]":
-            brackets = max(0, brackets - 1)
-        elif ch == "<":
-            depth += 1
-        elif ch == ">" and prev != "-":
-            depth -= 1
-            if depth == 0:
-                return j + 1
-        prev = ch
-        j += 1
-    return -1
-
-
-def _fn_declarations(source: str, name: str) -> list[str]:
-    """Every `fn <name>(...)` parameter list in `source`, generics of any depth."""
-    out: list[str] = []
-    for m in re.finditer(rf"\bfn\s+{re.escape(name)}\s*", source):
-        i = _skip_generic_list(source, m.end())
-        if i < 0:
-            # UNPARSEABLE IS NOT ABSENT. Dropping it kept the declaration count
-            # at 1, so the exemption was inherited by a function this scan could
-            # not read. Counting it makes the count wrong, which makes the
-            # exemption check fail, which is the correct outcome.
-            out.append("<unparseable generic list>")
-            continue
-        while i < len(source) and source[i].isspace():
-            i += 1
-        if i < len(source) and source[i] == "(":
-            close = source.find(")", i)
-            if close != -1:
-                out.append(source[i + 1 : close])
-    return out
 
 
 def _strip_generic_args(text: str) -> str:
@@ -1645,7 +1607,7 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             # identity. `bypass::ScheduledRestartConnectivity` is a different type
             # from the producer, and keeping its qualifier is what stops it being
             # filed under the producer's name (review r30).
-            identity = re.sub(r"\s+", "", _strip_generic_args(target)).removeprefix("r#")
+            identity = re.sub(r"\s+", "", _strip_generic_args(target))
             occurrences.append((identity, str(path.relative_to(root))))
     found: dict[str, list[str]] = {}
     for name, where in occurrences:

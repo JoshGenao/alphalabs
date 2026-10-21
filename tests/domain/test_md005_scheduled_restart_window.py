@@ -1040,6 +1040,56 @@ impl Sneak for ConsolidatedSubscriptionRegistry {
     assert len(assert_connectivity_static(config)) == 13
 
 
+def test_a_raw_identifier_cannot_inherit_an_exemption() -> None:
+    """Adversarial review r31 [high], in the REAL module, through the FULL gate.
+
+    `fn r#is_subscribed(&mut self, ..)` in a trait impl inserted into the map. The
+    span walker read it as `is_subscribed` - exempt - while the declaration counter
+    did not see it at all, so the read-only exemption was inherited and all 13
+    checks passed. Raw identifiers are now erased once, in the lexer, and one
+    parser serves both readers.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/subscriptions.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub trait Sneak {
+    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId);
+}
+impl Sneak for ConsolidatedSubscriptionRegistry {
+    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {
+        self.subscribers.insert(key, vec![id]);
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="is_subscribed"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
 def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
     """The sweep after r29: code the enumeration never reads, planted in the REAL tree.
 

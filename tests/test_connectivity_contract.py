@@ -704,6 +704,63 @@ impl ConsolidatedSubscriptionRegistry {
                     )
                 self.assertIn("submodule", str(ctx.exception))
 
+    def test_a_raw_identifier_is_the_same_name(self) -> None:
+        """Adversarial review r31 [high]: `r#is_subscribed` IS `is_subscribed`.
+
+        The span walker stripped `r#`; the declaration counter did not. So a trait
+        method `fn r#is_subscribed(&mut self, ..)` that inserts into the map was
+        read as `is_subscribed` - exempt - while the count still saw ONE
+        declaration, and it inherited the read-only exemption. Two parsers that
+        disagree about one name are two guards with a gap between them. The
+        lexer now erases every raw-identifier prefix once, for every scan, and
+        one parser serves both the spans and the exemption check.
+        """
+        write = "        self.subscribers.insert(key, vec![id]);\n"
+        decl = "    subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,"
+        self.assertEqual(self.market_data_src.count(decl), 1, "the field declaration moved")
+        shapes = {
+            "the reviewer's: a raw-named exempt mutator": self._inject(
+                "pub trait Sneak { fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId); }\n"
+                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
+                "    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                f"{write}    }}\n}}\n"
+            ),
+            "a raw-named gated site without the gate": self._inject(
+                "pub trait Sneak { fn r#subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
+                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
+                "    fn r#subscribe(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                f"{write}    }}\n}}\n"
+            ),
+            "a raw-named submodule": self.market_data_src + "\nmod r#inner;\n",
+            "a raw-named public field": self.market_data_src.replace(
+                decl, "    pub r#subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,"
+            ),
+            "a raw field access in a new function": self._inject(
+                "impl ConsolidatedSubscriptionRegistry {\n"
+                "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                "        self.r#subscribers.insert(key, vec![id]);\n    }\n}\n"
+            ),
+        }
+        for label, mutated in shapes.items():
+            with self.subTest(shape=label):
+                with self.assertRaises(ConnectivityCheckError):
+                    check_market_data_admission_sites(self.config, mutated)
+
+    def test_a_comment_cannot_declare_the_owning_module(self) -> None:
+        # The crate-root declaration was matched in RAW text, so a comment saying
+        # `pub mod subscriptions;` satisfied it with the real one gone.
+        import connectivity_check as cc
+
+        lib = cc.market_data_lib_source(self.config)
+        self.assertEqual(lib.count("pub mod subscriptions;"), 1, "the declaration moved")
+        gutted = lib.replace(
+            "pub mod subscriptions;", "mod subscriptions; // pub mod subscriptions;"
+        )
+        with mock.patch.object(cc, "market_data_lib_source", lambda config, root=None: gutted):
+            with self.assertRaises(ConnectivityCheckError) as ctx:
+                check_market_data_admission_sites(self.config, self.market_data_src)
+        self.assertIn("pub mod subscriptions", str(ctx.exception))
+
     def test_a_submodule_of_the_owning_module_is_refused(self) -> None:
         """Rust exposes a private item to the defining module AND its
         descendants, so a submodule would be an unscanned file able to write the
