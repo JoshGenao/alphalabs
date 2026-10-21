@@ -632,6 +632,78 @@ impl ConsolidatedSubscriptionRegistry {
             check_market_data_admission_sites(self.config, mutated)
         self.assertIn("unsubscribe", str(ctx.exception))
 
+    def test_every_function_that_reaches_the_map_is_read_not_just_the_first(self) -> None:
+        """The identity class (r30) in this check: names are not functions.
+
+        A second `fn subscribe` - a trait-impl method sharing the gated site's
+        name - was never read: the check looked up "the body of `subscribe`" and
+        got the first one, which is gated. Every function body is now checked on
+        its own. And a function the span finder could not see at all reached the
+        map unclassified: a `;` in an array parameter or a `{` in a const-generic
+        argument ended its signature early, and a `"}"` in a string ended its body
+        early, leaving the write outside the span it was searched in.
+        """
+        write = "        self.subscribers.insert(key, vec![id]);\n"
+        shapes = {
+            "a second fn with a gated site's name": (
+                "pub trait Sneak { fn subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
+                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
+                "    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                f"{write}    }}\n}}\n"
+            ),
+            "a `;` in an array parameter": (
+                "impl ConsolidatedSubscriptionRegistry {\n"
+                "    pub fn sneak(&mut self, keys: [SecurityKey; 1], id: StrategyId) {\n"
+                "        let [key] = keys;\n"
+                f"{write}    }}\n}}\n"
+            ),
+            "a `{` in a const-generic argument": (
+                "pub trait HasWidth<const N: usize> {}\n"
+                "impl ConsolidatedSubscriptionRegistry {\n"
+                "    pub fn sneak<T: HasWidth<{ 1 + 1 }>>(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                f"{write}    }}\n}}\n"
+            ),
+            "a `}` in a string before the write": (
+                "impl ConsolidatedSubscriptionRegistry {\n"
+                "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+                '        let _ = "}";\n'
+                f"{write}    }}\n}}\n"
+            ),
+        }
+        for label, bypass in shapes.items():
+            with self.subTest(shape=label):
+                with self.assertRaises(ConnectivityCheckError):
+                    check_market_data_admission_sites(self.config, self._inject(bypass))
+
+    def test_the_map_named_outside_any_function_is_refused(self) -> None:
+        """A macro body is not a function, so a write inside one was in no span.
+
+        `macro_rules! sneak { .. $r.subscribers.insert(..) .. }` invoked from
+        `fn add` left `add` never naming the field, so it was never classified.
+        Outside its declaration, the field may now appear only inside a function
+        body of its own module.
+        """
+        bypass = (
+            "macro_rules! sneak {\n"
+            "    ($r:expr, $k:expr, $id:expr) => { $r.subscribers.insert($k, vec![$id]) };\n"
+            "}\n"
+            "impl ConsolidatedSubscriptionRegistry {\n"
+            "    pub fn add(&mut self, key: SecurityKey, id: StrategyId) { sneak!(self, key, id); }\n"
+            "}\n"
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_market_data_admission_sites(self.config, self._inject(bypass))
+        self.assertIn("outside", str(ctx.exception))
+
+    def test_a_submodule_with_any_visibility_is_refused(self) -> None:
+        for decl in ("pub(crate) mod inner;", "pub(super) mod inner;", "pub(in crate) mod inner;"):
+            with self.subTest(decl=decl):
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_market_data_admission_sites(
+                        self.config, self.market_data_src + f"\n{decl}\n"
+                    )
+                self.assertIn("submodule", str(ctx.exception))
+
     def test_a_submodule_of_the_owning_module_is_refused(self) -> None:
         """Rust exposes a private item to the defining module AND its
         descendants, so a submodule would be an unscanned file able to write the
@@ -1607,6 +1679,27 @@ impl Show for Real {
                 "../../Cargo.toml",
                 '[workspace]\nmembers = ["crates/*", "tools/evil"]\n',
             ),
+            "a path dependency outside crates/": (
+                "Cargo.toml",
+                '[package]\nname = "x"\n[dependencies]\nevil = { path = "../../evil" }\n',
+            ),
+            "a target-specific path dependency": (
+                "Cargo.toml",
+                "[package]\nname = \"x\"\n[target.'cfg(unix)'.dependencies]\n"
+                'evil = { path = "../../evil" }\n',
+            ),
+            "a git dependency": (
+                "Cargo.toml",
+                '[package]\nname = "x"\n[dependencies]\nevil = { git = "https://example.invalid/e" }\n',
+            ),
+            "a patch section": (
+                "../../Cargo.toml",
+                '[workspace]\nmembers = ["crates/*"]\n[patch.crates-io]\nserde = { path = "vendor/serde" }\n',
+            ),
+            "a workspace dependency outside crates/": (
+                "../../Cargo.toml",
+                '[workspace]\nmembers = ["crates/*"]\n[workspace.dependencies]\nevil = { path = "evil" }\n',
+            ),
             "a root package": (
                 "../../Cargo.toml",
                 '[package]\nname = "root"\n[workspace]\nmembers = ["crates/*"]\n',
@@ -1671,6 +1764,92 @@ pub fn takes(gate: impl atp_market_data::RestartWindowGate) -> String {
         )
         evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
         self.assertIn("exactly 1 production type", evidence)
+
+    ALWAYS_ADMITS = (
+        "    fn admission(&self) -> MarketDataAdmission {\n"
+        "        MarketDataAdmission::Admitted\n"
+        "    }\n"
+    )
+
+    def test_a_second_type_with_the_producers_name_is_not_the_producer(self) -> None:
+        """Adversarial review r30 [high] - identity, not spelling.
+
+        Implementors were recorded by BARE type name, so a different type that
+        shares the producer's name - `bypass::ScheduledRestartConnectivity` - was
+        filed under the producer's allowlist entry, and all 13 checks passed with
+        "exactly one" implementor reported. Every impl now counts as its own
+        occurrence, a target must be the bare type name, and the declared
+        producer must be implemented exactly once, in its declared file.
+        """
+        gate = "atp_market_data::RestartWindowGate"
+        sneaky = "crates/atp-market-data/src/sneaky.rs"
+        shapes = {
+            "the reviewer's: a module-qualified namesake": (
+                sneaky,
+                "mod bypass { pub struct ScheduledRestartConnectivity; }\n"
+                f"impl {gate} for bypass::ScheduledRestartConnectivity {{\n"
+                f"{self.ALWAYS_ADMITS}}}\n",
+            ),
+            "a bare namesake in another file": (
+                sneaky,
+                "pub struct ScheduledRestartConnectivity;\n"
+                f"impl {gate} for ScheduledRestartConnectivity {{\n{self.ALWAYS_ADMITS}}}\n",
+            ),
+            "a namesake in an inline module of the producer's own file": (
+                self.PRODUCER,
+                "mod bypass {\n    pub struct ScheduledRestartConnectivity;\n"
+                f"    impl {gate} for ScheduledRestartConnectivity {{\n{self.ALWAYS_ADMITS}    }}\n}}\n",
+            ),
+            "a crate-qualified target": (
+                sneaky,
+                f"impl {gate} for crate::ScheduledRestartConnectivity {{\n{self.ALWAYS_ADMITS}}}\n",
+            ),
+        }
+        for label, (rel, body) in shapes.items():
+            with self.subTest(shape=label):
+                path = self.tmp / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                before = path.read_text(encoding="utf-8") if path.exists() else None
+                path.write_text((before or "") + "\n" + body, encoding="utf-8")
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                    self.assertIn("ScheduledRestartConnectivity", str(ctx.exception))
+                finally:
+                    if before is None:
+                        path.unlink()
+                    else:
+                        path.write_text(before, encoding="utf-8")
+
+    def test_the_producer_file_implementing_a_namesake_is_refused(self) -> None:
+        """Identity is the WHOLE target, so the one impl at the site must be the producer.
+
+        Keyed by the last path segment, `impl Gate for bypass::ScheduledRestartConnectivity`
+        written AS the site's only impl would read as "the producer, once, at its site"
+        while the real type implemented nothing.
+        """
+        producer = self.tmp / self.PRODUCER
+        source = producer.read_text(encoding="utf-8")
+        real = "atp_market_data::RestartWindowGate for ScheduledRestartConnectivity<P, C>"
+        self.assertEqual(source.count(real), 1, "the producer's header moved; update this test")
+        producer.write_text(
+            source.replace(real, real.replace(" for ", " for bypass::"))
+            + "\nmod bypass { pub struct ScheduledRestartConnectivity<P, C>(P, C); }\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("bypass::ScheduledRestartConnectivity", str(ctx.exception))
+
+    def test_the_producer_must_be_implemented_at_its_declared_site(self) -> None:
+        config = json.loads(json.dumps(self.config))
+        gate = config["connectivity_contract"]["restart_window"]["gate_port"]
+        gate["production_implementor_sites"]["ScheduledRestartConnectivity"] = (
+            "crates/atp-orchestrator/src/elsewhere.rs"
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(config, "", root=self.tmp)
+        self.assertIn("elsewhere.rs", str(ctx.exception))
 
     def test_a_nested_comment_that_closes_properly_is_not_an_implementor(self) -> None:
         # The legal direction: commented-out code is not code, at any depth.

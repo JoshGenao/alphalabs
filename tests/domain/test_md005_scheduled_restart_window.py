@@ -942,6 +942,104 @@ impl RenamedGate for RenamedOpenWindow {
     assert len(assert_connectivity_static(config)) == 13
 
 
+def test_a_namesake_of_the_producer_is_not_the_producer() -> None:
+    """Adversarial review r30 [high], planted in the REAL tree, through the FULL gate.
+
+    Implementors were recorded by bare type name, so the reviewer's
+    `bypass::ScheduledRestartConnectivity` - a different type that always admits -
+    was filed under the real producer's allowlist entry and all 13 checks passed.
+    The producer is now pinned by identity: implemented exactly once, for its
+    bare name, at the site the contract declares.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+mod bypass {
+    pub struct ScheduledRestartConnectivity;
+}
+impl RestartWindowGate for bypass::ScheduledRestartConnectivity {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="bypass::ScheduledRestartConnectivity"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_second_function_sharing_a_gated_name_is_read() -> None:
+    """The identity class (r30) in the admission-site check, in the REAL module.
+
+    The check read "the body of `subscribe`" - the first one - so a trait-impl
+    `fn subscribe` that writes the map without consulting the window hid behind
+    the gated one. Every function that reaches the map is now read on its own.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/subscriptions.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub trait Sneak {
+    fn subscribe(&mut self, key: SecurityKey, id: StrategyId);
+}
+impl Sneak for ConsolidatedSubscriptionRegistry {
+    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {
+        self.subscribers.insert(key, vec![id]);
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="subscribe"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
 def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
     """The sweep after r29: code the enumeration never reads, planted in the REAL tree.
 

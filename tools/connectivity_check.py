@@ -37,7 +37,7 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
@@ -464,6 +464,57 @@ def _public_fn_spans(source: str) -> list[tuple[str, str]]:
     return spans
 
 
+def _fn_spans(source: str) -> list[tuple[str, int, int]]:
+    """`(name, body_start, body_end)` for every function with a body in `source`.
+
+    Walked on `_mask_non_code`'s output and bounded by bracket DEPTH, like
+    `_impl_headers`, not by a pattern. The pattern `fn name [^;{]* {` ended a
+    signature at a `;` inside an array parameter (`[Key; 1]`) or at the `{` of a
+    const-generic argument, and counting body braces in text that still held
+    strings ended a body at a `"}"`. Each left a write to the map outside the
+    span it was searched in (sweep after r30). A signature ends at the first `{`
+    (the body) or `;` (a bodiless trait method) with every `<`, `(`, `[` closed;
+    one that never ends, or a body that never closes, is refused.
+    """
+    masked = _mask_non_code(source)
+    spans: list[tuple[str, int, int]] = []
+    for match in re.finditer(r"\bfn\s+(?:r#)?(\w+)", masked):
+        name = match.group(1)
+        angle = paren = bracket = brace = 0
+        prev, j, opened = "", match.end(), -1
+        while j < len(masked):
+            ch = masked[j]
+            if brace:
+                brace += {"{": 1, "}": -1}.get(ch, 0)
+            elif ch in "{;" and angle == paren == bracket == 0:
+                opened = j if ch == "{" else -2
+                break
+            elif ch == "{":
+                brace += 1
+            elif ch == "<":
+                angle += 1
+            elif ch == ">" and prev != "-":
+                angle -= 1
+            elif ch in "([":
+                paren, bracket = paren + (ch == "("), bracket + (ch == "[")
+            elif ch in ")]":
+                paren, bracket = paren - (ch == ")"), bracket - (ch == "]")
+            prev = ch
+            j += 1
+        if opened == -1:
+            fail(f"the signature of `fn {name}` never ends; this scan cannot bound its body")
+        if opened == -2:
+            continue  # a declaration without a body
+        depth, end = 1, opened + 1
+        while end < len(masked) and depth:
+            depth += {"{": 1, "}": -1}.get(masked[end], 0)
+            end += 1
+        if depth:
+            fail(f"the body of `fn {name}` never closes; this scan cannot bound it")
+        spans.append((name, opened + 1, end - 1))
+    return spans
+
+
 def _all_fn_spans(source: str) -> list[tuple[str, str]]:
     """Every function in the file — `pub` or not, inherent impl or trait impl.
 
@@ -471,20 +522,13 @@ def _all_fn_spans(source: str) -> list[tuple[str, str]]:
     That restriction is what let the previous version of this guard miss a trait
     impl with a `&mut self` method and a public free function in the same file,
     both of which can write the private subscriber map.
+
+    Bodies are MASKED (`_mask_non_code`): a field name or a guard call inside a
+    string literal is not code, so it can neither make a function a toucher nor
+    satisfy the gate.
     """
-    spans: list[tuple[str, str]] = []
-    for match in re.finditer(r"\bfn\s+(\w+)\b[^;{]*\{", source):
-        name = match.group(1)
-        depth, index = 1, match.end()
-        while index < len(source) and depth:
-            char = source[index]
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-            index += 1
-        spans.append((name, source[match.end() : index - 1]))
-    return spans
+    masked = _mask_non_code(source)
+    return [(name, masked[start:end]) for name, start, end in _fn_spans(source)]
 
 
 def _mask_non_code(source: str, *, strings: bool = True) -> str:
@@ -887,7 +931,8 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "mutate the consolidated set, and interior mutability removes that "
             "guarantee. Re-argue each exemption or drop it"
         )
-    submodules = re.findall(r"^\s*(?:pub\s+)?mod\s+(\w+)\s*;", production_src, re.M)
+    # ANY visibility: `pub(crate) mod inner;` is as much a child as `mod inner;`.
+    submodules = re.findall(r"\bmod\s+(\w+)\s*;", _mask_non_code(production_src))
     if submodules:
         fail(
             f"the subscription module declares submodule(s) {', '.join(submodules)}. "
@@ -904,14 +949,45 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         )
     lib_production_src = _code_only(_without_test_module(lib_src))
     envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
-    touchers = {name for name, body in _all_fn_spans(production_src) if field in body} | {
-        name
+    # Every FUNCTION that reaches the map, not every name: a second `fn subscribe`
+    # in a trait impl is a different function from the gated one (sweep after r30).
+    toucher_spans = [
+        (name, body) for name, body in _all_fn_spans(production_src) if field in body
+    ] + [
+        (name, body)
         for name, body in _all_fn_spans(lib_production_src)
         if envelope in re.sub(r"\s+", "", body)
-    }
+    ]
+    touchers = {name for name, _ in toucher_spans}
+    # The map named anywhere but its declaration and a function body - a macro,
+    # a const, a static - is a write no function span contains, so no function
+    # would ever be asked to consult the window.
+    masked_module = _mask_non_code(production_src)
+    bodies = [(start, end) for _, start, end in _fn_spans(production_src)]
+    stray = [
+        hit.start()
+        for hit in re.finditer(rf"\b{re.escape(field)}\b", masked_module)
+        if not any(start <= hit.start() < end for start, end in bodies)
+    ]
+    declaration = [at for at in stray if re.match(rf"{re.escape(field)}\s*:", masked_module[at:])]
+    if len(stray) != 1 or len(declaration) != 1:
+        fail(
+            f"`{field}` appears {len(stray)} time(s) outside a function body of its module "
+            "where only its one declaration may: a macro, const or static naming it "
+            "writes the map from outside every function this scan classifies"
+        )
     # Nothing outside the owning module may name the field. This is the property
     # the whole closure rests on, so it is checked rather than assumed.
     leaked = [name for name, body in _all_fn_spans(lib_production_src) if field in body]
+    if not leaked and re.search(rf"\b{re.escape(field)}\b", _mask_non_code(lib_production_src)):
+        leaked = ["<outside any function>"]
+    crate_dir = (ROOT / spec["crate_path"]).parent
+    for sibling in sorted(crate_dir.rglob("*.rs")):
+        if sibling in (ROOT / spec["crate_path"], ROOT / spec["module"]):
+            continue
+        sibling_src = _mask_non_code(_without_test_module(sibling.read_text(encoding="utf-8")))
+        if re.search(rf"\b{re.escape(field)}\b", sibling_src):
+            leaked.append(str(sibling.relative_to(ROOT)))
     if leaked:
         fail(
             f"crate-root function(s) {', '.join(leaked)} name `{field}`. Rust exposes a "
@@ -959,20 +1035,13 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "reason for why it cannot admit"
         )
 
-    # A site lives in whichever of the two scanned files declares it: the
-    # registry's methods in the owning module, the envelope minters in the root.
-    def body_of(name: str) -> str:
-        # BOTH halves comment-stripped. The crate-root half was not, so deleting
-        # the real `match window.admission()` from the manager and leaving a
-        # comment that merely MENTIONS it satisfied the check — a guard a
-        # docstring could pass.
-        for source in (production_src, lib_production_src):
-            if re.search(rf"\bfn\s+{re.escape(name)}\b[^;{{]*{{", source):
-                return _fn_body_any(source, name)
-        fail(f"admission site `{name}` was discovered but its body cannot be read")
-        raise AssertionError("unreachable")  # pragma: no cover
-
-    ungated = [name for name in required if guard_call not in body_of(name)]
+    # Each body is read ON ITS OWN, from masked text in both files, so a comment
+    # or a string that merely MENTIONS the guard cannot satisfy it (the crate-root
+    # half once could), and a second function sharing a gated site's name is
+    # read rather than shadowed by the first.
+    ungated = sorted(
+        {name for name, body in toucher_spans if name not in exempt and guard_call not in body}
+    )
     if ungated:
         fail(
             f"atp-market-data::{', '.join(ungated)} can admit a subscription without "
@@ -1082,6 +1151,7 @@ def _refuse_code_outside_the_scan(root: Path) -> None:
             "the workspace root is itself a package, compiled from sources outside "
             "crates/*/src that this scan cannot see"
         )
+    _refuse_dependencies_outside_the_scan(manifest, root, root, "the workspace root")
     for member in manifest.get("workspace", {}).get("members", []):
         if not re.fullmatch(r"crates/(?:\*|[\w.-]+)", member):
             fail(f"workspace member `{member}` is outside crates/, so this scan cannot see it")
@@ -1092,6 +1162,7 @@ def _refuse_code_outside_the_scan(root: Path) -> None:
         if not toml_path.is_file():
             continue  # not a crate: cargo compiles nothing here
         crate_manifest = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        _refuse_dependencies_outside_the_scan(crate_manifest, crate, root, crate.name)
         if crate_manifest.get("package", {}).get("build", False) is not False:
             fail(f"{crate.name} declares a build script, whose output this scan cannot see")
         lib = crate_manifest.get("lib", {})
@@ -1124,6 +1195,43 @@ def _attributes(masked: str) -> Iterator[str]:
                 if depth == 0:
                     break
         yield masked[start.start() : end + 1]
+
+
+def _refuse_dependencies_outside_the_scan(
+    manifest: dict[str, Any], manifest_dir: Path, root: Path, label: str
+) -> None:
+    """A dependency is compiled code too, so it must be a scanned crate.
+
+    A path dependency outside `crates/` (`evil = { path = "../../evil" }`), in
+    any dependency table including a target-specific one or the workspace's, is
+    a crate that can export an always-admitting gate this scan never reads; a git
+    dependency or a `[patch]` / `[replace]` swaps in source from elsewhere. None
+    is used by this tree.
+    """
+    for section in ("patch", "replace"):
+        if section in manifest:
+            fail(f"{label} has a [{section}] section, which swaps in source this scan cannot see")
+    tables = [manifest.get(key, {}) for key in _DEPENDENCY_TABLES]
+    for target in manifest.get("target", {}).values():
+        tables += [target.get(key, {}) for key in _DEPENDENCY_TABLES]
+    tables.append(manifest.get("workspace", {}).get("dependencies", {}))
+    crates_dir = (root / "crates").resolve()
+    for table in tables:
+        for name, dependency in table.items():
+            if not isinstance(dependency, dict):
+                continue
+            if "git" in dependency:
+                fail(f"{label} depends on `{name}` from git, source this scan cannot see")
+            if "path" in dependency:
+                resolved = (manifest_dir / dependency["path"]).resolve()
+                if resolved.parent != crates_dir:
+                    fail(
+                        f"{label} depends on `{name}` at `{dependency['path']}`, outside "
+                        "crates/, so this scan cannot see it"
+                    )
+
+
+_DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
 def _enclosing_macro(masked: str, at: int) -> str | None:
@@ -1424,7 +1532,15 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     block = restart_window_block(config)
     spec = block["gate_port"]
     declared = set(spec["production_implementors"])
-    found: dict[str, str] = {}
+    sites: dict[str, str] = spec["production_implementor_sites"]
+    if set(sites) != declared:
+        fail(
+            f"the `{spec['trait']}` contract declares implementors {sorted(declared)} but "
+            f"sites for {sorted(sites)}; each declared implementor needs exactly one site"
+        )
+    # Every impl is its own OCCURRENCE: (bare type name, file). Keying by name
+    # alone let a namesake overwrite the producer's entry (review r30).
+    occurrences: list[tuple[str, str]] = []
     # EVERY workspace crate, not a hard-coded four. The first version listed the
     # four crates that had the trait in view at the time; a fifth gaining an
     # atp-market-data dependency later would have been unscanned, and the
@@ -1525,8 +1641,15 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
                     "An implementor it cannot name is one it cannot bound, so this "
                     "fails rather than reporting a closed set"
                 )
-            for name in type_names:
-                found[name] = str(path.relative_to(root))
+            # The WHOLE target, generics dropped and spacing removed, is the
+            # identity. `bypass::ScheduledRestartConnectivity` is a different type
+            # from the producer, and keeping its qualifier is what stops it being
+            # filed under the producer's name (review r30).
+            identity = re.sub(r"\s+", "", _strip_generic_args(target)).removeprefix("r#")
+            occurrences.append((identity, str(path.relative_to(root))))
+    found: dict[str, list[str]] = {}
+    for name, where in occurrences:
+        found.setdefault(name, []).append(where)
     if not found:
         fail(
             f"no production type implements `{spec['trait']}` — either the producer was "
@@ -1537,7 +1660,7 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     if undeclared:
         fail(
             f"undeclared production implementor(s) of `{spec['trait']}`: "
-            + ", ".join(f"{name} ({found[name]})" for name in undeclared)
+            + ", ".join(f"{name} ({', '.join(found[name])})" for name in undeclared)
             + ". An implementor that always admits bypasses the SyRS SYS-75(a) "
             "suspension with every other guard still green, so the production set is "
             "enumerated here rather than trusted"
@@ -1548,9 +1671,17 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
             f"declared implementor(s) {', '.join(missing)} no longer implement "
             f"`{spec['trait']}` — the contract and the source disagree"
         )
+    for name in sorted(found):
+        if found[name] != [sites[name]]:
+            fail(
+                f"`{spec['trait']}` is implemented for {name} at {', '.join(found[name])}; "
+                f"the contract allows exactly one impl, at {sites[name]}. A second impl "
+                "for the same name is a namesake, not the producer"
+            )
     return (
         f"exactly {len(found)} production type implements `{spec['trait']}` "
-        f"({', '.join(sorted(found))}) — the port buys freshness, and this enumeration "
+        f"({', '.join(f'{name}, once, at {sites[name]}' for name in sorted(found))}) — "
+        "the port buys freshness, and this enumeration "
         "is what makes it unforgeable"
     )
 

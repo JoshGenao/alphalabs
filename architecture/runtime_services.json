@@ -954,6 +954,10 @@
         "production_implementors": [
           "ScheduledRestartConnectivity"
         ],
+        "production_implementor_sites": {
+          "ScheduledRestartConnectivity": "crates/atp-orchestrator/src/restart_window_connectivity.rs"
+        },
+        "$production_implementor_sites_why": "A name is not an identity. Review r30 filed a different type, bypass::ScheduledRestartConnectivity, under the producer's allowlist entry because implementors were keyed by bare type name. Each declared implementor is therefore implemented exactly once, for its bare name, in the file named here; a second impl, a qualified target or an impl anywhere else is refused.",
         "$production_implementors_why": "Taking a PORT rather than a boolean buys freshness -- the fact is read at the instant the decision is made rather than whenever the caller last looked -- but it does NOT make the answer unforgeable: an impl that always returns Admitted is exactly as forgeable as `true`, and would bypass the SYS-75(a) suspension with every static guard, the L7 suite and all three CLI proofs still green. Unforgeability comes from this enumeration instead: tools/connectivity_check.py walks the crate sources (excluding tests/ and #[cfg(test)] modules) and refuses any production implementor not listed here."
       },
       "reachability_port": {
