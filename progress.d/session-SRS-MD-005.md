@@ -663,6 +663,40 @@ count.
       (`pub r#subscribers`, which passed because the "field is private"
       check was satisfied by the struct literal in `new()`), and the crate
       root's `pub mod subscriptions;`, which a comment could satisfy.
+  after r31 - 2026-10-21, OPERATOR DECISION: "let the compiler enforce it".
+      A red team on the r31 tree found six more bypasses of the admission
+      scan before round 32 (B1 a `#[cfg(test)] mod` inside a macro body was
+      stripped as test code; B2 a `<`/`>` comparison inside `(..)` or `[..]`
+      in an impl header was read as a generic bracket; B3 a symlinked
+      directory under `crates/` was never walked; B4 `unsubscribe` adding
+      through a form not on the banned-token list; B5 `unsubscribe` replacing
+      the whole map; B6 a write after a gate call whose answer is ignored).
+      Five rounds had each grown the scan, so
+      the guarantee moved into the types instead:
+      - `atp_types::admission::AdmissionProof` has a private field and is
+        built only by `RestartWindow::market_data_admission`, as the payload
+        of `MarketDataAdmission::Admitted`. Neither `Clone` nor `Copy`, so one
+        decision authorizes one write. `AdmissionOutcome` is the plain,
+        copyable label for evidence and logs.
+      - `atp_market_data::subscriptions::admitted_set::AdmittedSet` holds the
+        map as a private field; its only add method, `admit`, spends a proof.
+        The registry's `subscribers` field is a private `AdmittedSet`.
+      - `SubscriptionAccepted` carries the proof, so an acceptance cannot be
+        built without a decision.
+      - Test doubles ask a real window whose restart is in the year 2100.
+      The scan shrank to structural pins: both files by SHA-256, the private
+      fields, the envelope's proof, the `compile_fail` doctests (E0451,
+      E0616), atp-market-data never naming `RestartWindow`, and - added in
+      this pass - `unsafe_code = "forbid"` workspace-wide with every crate
+      inheriting it, because `unsafe { transmute::<(), AdmissionProof>(()) }`
+      forges a zero-sized proof. B1-B3 are fixed in the implementor scan that
+      remains. The domain test plants nine shapes in the real
+      `subscriptions.rs` and asserts rustc's refusal for each (E0599 x3,
+      E0616, E0451, E0382, two `unsafe` lint errors, E0453); lowering the
+      workspace lint to `allow` turns it red ("a proof transmuted from ():
+      rustc ACCEPTED it"). Residual, stated not hidden: a caller can feed the
+      window a false clock or schedule - configuration integrity, not a code
+      path.
 
 ## Playbook updates
 
@@ -670,7 +704,8 @@ count.
     describing and start bounding", with the four-round table and the three
     corollaries (ask what the compiler already guarantees; Rust privacy is
     parent-to-child; a source-scanning guard will flag its own documentation -
-    which happened three times in this feature alone).
+    which happened three times in this feature alone). After r31: "When a
+    text scan keeps losing, move the guarantee into the types".
   docs/playbooks/test-integrity.md - mutation harnesses that lie (mtime-
     preserving restore leaves cargo serving the MUTANT; an anchor moves when a
     module is extracted; compile_fail doctests as cheap encapsulation proof),

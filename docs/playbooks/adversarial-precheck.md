@@ -129,6 +129,23 @@ Three corollaries worth having before you write the guard:
   later scan has a rule to forget, and never match a guard against unlexed text
   - a comment or a struct literal satisfied two "is declared" checks here.
   `(SRS-MD-005 r31)`
+- **When a text scan keeps losing, move the guarantee into the types.** After
+  r31 a red team found six more bypasses of the same scan (a test module inside
+  a macro, a comparison read as a generic bracket, a symlinked directory, ...).
+  Each fix made the scan bigger, and every new rule was one more place to be
+  wrong. The fix that ended it: make the forbidden act unwritable. A proof type
+  with a private field, built in ONE function, neither `Clone` nor `Copy`; a
+  set whose map is private to its own module and whose only add method spends
+  that proof. Then every bypass review ever found (`entry().or_default()`, a
+  trait-impl mutator, a raw name, a second `fn subscribe`, a forged or reused
+  proof) is a compile error, and the domain test hands each shape to
+  `cargo check` and asserts the exact error code. What stays a scan is small
+  and structural: digest-pin the two files that may make a proof or grow the
+  set, keep the field private, keep the `compile_fail` doctests, and keep
+  `unsafe_code = "forbid"` workspace-wide - unsafe code transmutes `()` into a
+  zero-sized proof, so the type-level guarantee holds only in safe Rust. Name
+  the residual out loud: a caller can still hand the decision a false clock.
+  `(SRS-MD-005, after r31)`
 
 `(SRS-MD-005)`
 
