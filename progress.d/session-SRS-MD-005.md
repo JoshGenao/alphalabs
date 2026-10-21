@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 30 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 31 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 30 - the loop has not reached APPROVE.** The feature first
+  standing at round 31 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 30 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 31 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -647,6 +647,22 @@ count.
       unscanned-code rule gained the route it missed: a dependency is compiled
       code, so a path dependency outside `crates/` (in any dependency table), a
       git dependency and a `[patch]` / `[replace]` section are refused too.
+  r31 block/1  - 2026-10-20, at 7cc2b9e. Codex, one high finding, and again
+      one r30's fix introduced: the new span walker read `fn r#is_subscribed`
+      as `is_subscribed` (exempt), while the old declaration counter did not
+      see it, so a raw-named `&mut self` trait method that inserts into the
+      map inherited the read-only exemption and all 13 checks passed. The
+      class is TWO PARSERS DISAGREEING about one name. Fixed twice over: the
+      lexer erases every raw-identifier prefix once, so every scan reads
+      `r#x` as `x` (the scattered `r#` handling is gone), and one function
+      parser (`_fn_items`) now serves both the admission spans and the
+      exemption count, receiver and body (`_fn_declarations`,
+      `_skip_generic_list` and `_any_fn_body` are deleted). The sweep found
+      three more readers of unlexed text and moved them onto the lexer: a
+      raw-named submodule (`mod r#inner;`) and a raw-named public field
+      (`pub r#subscribers`, which passed because the "field is private"
+      check was satisfied by the struct literal in `new()`), and the crate
+      root's `pub mod subscriptions;`, which a comment could satisfy.
 
 ## Playbook updates
 
@@ -724,7 +740,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 30**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 31**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

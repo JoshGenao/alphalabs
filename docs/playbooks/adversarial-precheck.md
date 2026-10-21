@@ -120,6 +120,15 @@ Three corollaries worth having before you write the guard:
   every occurrence on its own. A rewrite that replaces a regex can drop an
   accidental guarantee the regex gave - r30's hole was introduced by r27's fix.
   `(SRS-MD-005 r30)`
+- **One parser per syntax, and normalize identity in the lexer.** r31 put a
+  raw-named mutator (`fn r#is_subscribed`) through the gap between two parsers:
+  the span walker stripped `r#`, the declaration counter did not, so one called
+  it exempt and the other never counted it. Every second parser for the same
+  syntax is a second set of opinions; delete it and route both readers through
+  the first. Erase spelling variants (`r#x` is `x`) once, in the lexer, so no
+  later scan has a rule to forget, and never match a guard against unlexed text
+  - a comment or a struct literal satisfied two "is declared" checks here.
+  `(SRS-MD-005 r31)`
 
 `(SRS-MD-005)`
 
