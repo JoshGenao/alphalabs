@@ -626,8 +626,8 @@ mod tests {
         // fact about the lead rather than about a gate that never probes.
         let outside = at(RESTART_NS - LEAD_NS - 1, true);
         assert_eq!(
-            outside.market_data_admission(),
-            MarketDataAdmission::Admitted
+            outside.market_data_admission().outcome(),
+            atp_types::AdmissionOutcome::Admitted
         );
         assert_eq!(outside.probe.calls.get(), 1);
     }

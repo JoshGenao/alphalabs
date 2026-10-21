@@ -28,8 +28,10 @@ Invoke:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -37,7 +39,7 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NoReturn
 
 from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
@@ -66,10 +68,16 @@ def connectivity_block(config: dict) -> dict:
 def types_source(config: dict, root: Path = ROOT) -> str:
     block = connectivity_block(config)
     crate_path = root / block["types_crate"]["path"]
-    source_path = crate_path / "src" / "lib.rs"
-    if not source_path.exists():
-        fail(f"types crate source missing: {source_path.relative_to(root)}")
-    return source_path.read_text(encoding="utf-8")
+    # The admission decision and its proof live in their own module (SRS-MD-005:
+    # the proof's private field is what makes `Admitted` unforgeable), so the
+    # types surface these checks read is the crate root PLUS that module.
+    parts = []
+    for name in ("lib.rs", "admission.rs"):
+        source_path = crate_path / "src" / name
+        if not source_path.exists():
+            fail(f"types crate source missing: {source_path.relative_to(root)}")
+        parts.append(source_path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def _code_only(source: str) -> str:
@@ -447,113 +455,6 @@ def check_restart_escalation_arm(config: dict, types_src: str) -> str:
     )
 
 
-def _public_fn_spans(source: str) -> list[tuple[str, str]]:
-    """Every ``pub fn`` in the file, paired with its body."""
-    spans: list[tuple[str, str]] = []
-    for match in re.finditer(r"\bpub\s+(?:const\s+|async\s+)*fn\s+(\w+)\b[^{]*\{", source):
-        name = match.group(1)
-        depth, index = 1, match.end()
-        while index < len(source) and depth:
-            char = source[index]
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-            index += 1
-        spans.append((name, source[match.end() : index - 1]))
-    return spans
-
-
-class _FnItem(NamedTuple):
-    name: str
-    params: str  # the top-level parameter list, masked
-    start: int  # body span in the masked text; -1 for a bodiless declaration
-    end: int
-
-
-def _fn_items(source: str) -> list[_FnItem]:
-    """Every function declaration in `source`, with or without a body.
-
-    The ONE parser for functions: the spans every admission scan reads and the
-    declarations the exemption check counts both come from here, so they cannot
-    disagree about a name again (r31: two parsers, one of which read
-    `r#is_subscribed` as `is_subscribed`). Walked on `_mask_non_code`'s output
-    and bounded by bracket DEPTH, like `_impl_headers`, not by a pattern. The
-    pattern `fn name [^;{]* {` ended a signature at a `;` inside an array
-    parameter (`[Key; 1]`) or at the `{` of a const-generic argument, and
-    counting body braces in text that still held strings ended a body at a
-    `"}"`; each left a write to the map outside the span it was searched in. A
-    signature ends at the first `{` (the body) or `;` (a bodiless declaration)
-    with every `<`, `(`, `[` closed; one that never ends, or a body that never
-    closes, is refused.
-    """
-    masked = _mask_non_code(source)
-    items: list[_FnItem] = []
-    for match in re.finditer(r"\bfn\s+(\w+)", masked):
-        name = match.group(1)
-        angle = paren = bracket = brace = 0
-        prev, j, opened = "", match.end(), -1
-        params_open = params_close = -1
-        while j < len(masked):
-            ch = masked[j]
-            if brace:
-                brace += {"{": 1, "}": -1}.get(ch, 0)
-            elif ch in "{;" and angle == paren == bracket == 0:
-                opened = j if ch == "{" else -2
-                break
-            elif ch == "{":
-                brace += 1
-            elif ch == "<":
-                angle += 1
-            elif ch == ">" and prev != "-":
-                angle -= 1
-            elif ch in "([":
-                if ch == "(" and params_open < 0 and angle == paren == bracket == 0:
-                    params_open = j
-                paren, bracket = paren + (ch == "("), bracket + (ch == "[")
-            elif ch in ")]":
-                paren, bracket = paren - (ch == ")"), bracket - (ch == "]")
-                if ch == ")" and paren == 0 and params_open >= 0 and params_close < 0:
-                    params_close = j
-            prev = ch
-            j += 1
-        if opened == -1:
-            fail(f"the signature of `fn {name}` never ends; this scan cannot bound its body")
-        params = masked[params_open + 1 : params_close] if params_close > params_open >= 0 else ""
-        if opened == -2:
-            items.append(_FnItem(name, params, -1, -1))
-            continue
-        depth, end = 1, opened + 1
-        while end < len(masked) and depth:
-            depth += {"{": 1, "}": -1}.get(masked[end], 0)
-            end += 1
-        if depth:
-            fail(f"the body of `fn {name}` never closes; this scan cannot bound it")
-        items.append(_FnItem(name, params, opened + 1, end - 1))
-    return items
-
-
-def _fn_spans(source: str) -> list[tuple[str, int, int]]:
-    """`(name, body_start, body_end)` for every function WITH a body (`_fn_items`)."""
-    return [(item.name, item.start, item.end) for item in _fn_items(source) if item.start >= 0]
-
-
-def _all_fn_spans(source: str) -> list[tuple[str, str]]:
-    """Every function in the file — `pub` or not, inherent impl or trait impl.
-
-    Deliberately not restricted to `pub fn` inside an inherent `impl` block.
-    That restriction is what let the previous version of this guard miss a trait
-    impl with a `&mut self` method and a public free function in the same file,
-    both of which can write the private subscriber map.
-
-    Bodies are MASKED (`_mask_non_code`): a field name or a guard call inside a
-    string literal is not code, so it can neither make a function a toucher nor
-    satisfy the gate.
-    """
-    masked = _mask_non_code(source)
-    return [(name, masked[start:end]) for name, start, end in _fn_spans(source)]
-
-
 def _mask_non_code(source: str, *, strings: bool = True) -> str:
     """`source` with every comment - and, by default, every literal - blanked.
 
@@ -714,6 +615,16 @@ def _without_test_module(source: str) -> str:
     for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", masked):
         if match.start() < index:
             continue
+        # A `#[cfg(test)] mod` handed to a macro is whatever the macro emits: a
+        # macro can drop the cfg and compile the body into production. Cutting it
+        # as a test module hid an implementor (red team, after r31).
+        macro = _enclosing_macro(masked, match.start())
+        if macro:
+            fail(
+                f"a `#[cfg(test)] mod` is the input to {macro}, which decides what it "
+                "expands to; this scan cannot tell whether it is test code, so it refuses "
+                "rather than stripping it"
+            )
         out.append(source[index : match.start()])
         depth, cursor = 1, match.end()
         while cursor < len(masked) and depth:
@@ -733,138 +644,37 @@ def _without_test_module(source: str) -> str:
     return "".join(out)
 
 
-#: Expressions that ADD to a map, as opposed to reading or removing from it.
-#: Whitespace is collapsed before matching, so a rustfmt rewrap cannot hide one.
-_MAP_ADD_TOKENS = (".insert(", ".push(", ".entry(", ".append(", ".extend(")
-
-#: Any mutation at all, including removals.
-_MAP_WRITE_TOKENS = _MAP_ADD_TOKENS + (".remove(", ".retain(", ".clear(", ".get_mut(")
-
-
-def _check_exemptions_are_not_reusable(spec: dict, source: str, exempt: list) -> None:
-    """An exemption must attach to ONE function with a KNOWN shape.
-
-    Exempting by bare name is a hole: a new trait-impl method reusing an exempt
-    name inherits the exemption and is never asked to consult the window. The
-    reviewer proved it with
-    ``impl S for ConsolidatedSubscriptionRegistry { fn is_subscribed(&mut self, ..)
-    { self.subscribers.insert(..); } }`` — the same trait-impl shape that had
-    already defeated an earlier version of this guard.
-
-    So an exemption is valid only when all three hold:
-
-    * exactly ONE function in the module has that name (a second declaration
-      makes the exemption ambiguous, and ambiguity resolves in the dangerous
-      direction);
-    * its receiver matches the one the contract declares, so an exempt reader
-      cannot quietly become `&mut self`; and
-    * a `&self` exemption is proved safe by the BORROW CHECKER rather than by a
-      token scan (the module is additionally refused if it introduces interior
-      mutability, which would undo that guarantee), while the single `&mut self`
-      exemption must contain no add expression at all — aliased or not, since
-      `let map = &mut self.subscribers; map.insert(..)` walks past any check
-      anchored on the field name.
-    """
-    receivers = spec["exempt_receivers"]
-    items = _fn_items(source)
-    masked = _mask_non_code(source)
-    for name in exempt:
-        # The generic list may contain PARENTHESES: `<F: Fn() -> bool>` is a
-        # legal bound, and excluding `(` meant a second declaration carrying one
-        # was invisible - the scan still found exactly one, so the exemption was
-        # inherited by a function that could reach the consolidated registry
-        # without ever consulting the window.
-        declarations = [item for item in items if item.name == name]
-        if len(declarations) != 1:
-            fail(
-                f"exempt function `{name}` is declared {len(declarations)} times in the "
-                "subscription module; an exemption keyed on a name that resolves to "
-                "more than one function lets a new declaration inherit it"
-            )
-        declared = receivers.get(name)
-        if declared is None:
-            fail(f"admission_sites.exempt_receivers has no entry for `{name}`")
-        actual = declarations[0].params.strip()
-        if declared == "none":
-            if actual.startswith("&"):
-                fail(f"exempt function `{name}` gained a self receiver; re-classify it")
-        elif not actual.startswith(declared):
-            fail(
-                f"exempt function `{name}` now takes `{actual.split(',')[0].strip()}` "
-                f"where the contract declares `{declared}` — an exempt reader that "
-                "became a mutator would inherit an exemption it was never granted"
-            )
-        # `pub`-optional: trait-impl methods (try_acquire) carry no visibility
-        # keyword, and an exemption must cover them too.
-        # A `&self` (or receiver-less) exemption needs NO body check: the borrow
-        # checker already guarantees it cannot mutate `self.subscribers`, and
-        # that is a stronger argument than any token scan. The module-level
-        # interior-mutability check below is what keeps that guarantee true.
-        if declared != "&mut self":
-            continue
-        # The ONE `&mut self` exemption claims it can remove but never add. That
-        # cannot be checked against `subscribers.insert(` — a local alias
-        # (`let map = &mut self.subscribers; map.insert(..)`) walks straight past
-        # it, which the reviewer demonstrated. So the body must contain NO add
-        # expression at all, aliased or not. Over-strict on purpose: `unsubscribe`
-        # only needs `retain` and `remove`, and an exemption that has to be
-        # argued case by case is not an exemption.
-        item = declarations[0]
-        body = re.sub(r"\s+", "", masked[item.start : item.end] if item.start >= 0 else "")
-        offending = [token for token in _MAP_ADD_TOKENS if token in body]
-        if offending:
-            fail(
-                f"exempt function `{name}` contains `{', '.join(offending)}` — its "
-                "exemption is the claim that it cannot ADD a subscriber, and any add "
-                "expression in its body (through the field or through an alias) makes "
-                "that claim unverifiable"
-            )
-
-
 def check_market_data_admission_sites(config: dict, market_data_src: str) -> str:
-    """Require the guard over the set RUST's privacy already closes.
+    """SYS-75(a) for market data: nothing joins the subscription set unadmitted.
 
-    This guard has been wrong three times, each time because it enumerated
-    something the author could think of:
+    The COMPILER enforces it now; this check pins the structure the compiler
+    relies on. Seven versions of this guard tried to recognise, in source text,
+    every way Rust can write to a map, and review kept finding the next one -
+    `entry().or_default()`, a trait-impl method, a sibling module, a macro body,
+    a raw identifier, `Vec::push(..)`, `mem::swap`, a gate call whose answer is
+    ignored. Text cannot decide those; types can:
 
-    1. by "takes a `RestartWindowGate`" — circular, since a path that SKIPS the
-       port is precisely what must be caught;
-    2. by two literal effect FORMS — walked past by
-       ``subscribers.entry(k).or_default().push(..)``;
-    3. by "public `&mut self` methods on the inherent impl" — walked past by a
-       trait impl with a `&mut self` method, and by a free function in the same
-       file writing ``registry.subscribers``.
+    1. `atp_types::AdmissionProof` has a private field and is built in ONE
+       place, `RestartWindow::market_data_admission`, as the payload of
+       `MarketDataAdmission::Admitted`. No other code can produce one.
+    2. The registry's map is an `AdmittedSet`, whose map is private to its own
+       module and whose ONLY add method consumes a proof. Every write that
+       skipped the decision is a compile error, wherever it is written.
+    3. The acceptance envelope carries the proof, so an acceptance cannot be
+       built without a decision either.
 
-    4. by "the functions in ``lib.rs`` that name the private field" — walked
-       past by the fact that Rust exposes a module's privates to its
-       DESCENDANTS, so the sibling ``live_feed`` module could have reached in.
-
-    Every one of those tried to describe the dangerous code, and the fourth also
-    asserted a language property Rust does not have. So the fix was not another
-    scan: the registry MOVED into its own module
-    (``crates/atp-market-data/src/subscriptions.rs``). Privacy runs
-    parent-to-child and never child-to-parent, so the crate root and every
-    sibling module are now unable to name ``subscribers`` — the compiler says
-    so, and a ``compile_fail`` doctest in that module proves it. "The functions
-    in the owning module" is therefore the complete set, bounded by the
-    compiler rather than by imagination, and this check verifies the boundary
-    still holds instead of assuming it.
-
-    So: every function here that names the subscriber map must either consult
-    the window or be a declared exemption with a stated reason. Read-only
-    accessors cannot admit and are exempt; each is named individually, so a NEW
-    function touching the map has to be classified rather than silently
-    inheriting whichever answer the scan happened to give. The acceptance-
-    envelope minters are added on top, because the manager is a separate type
-    that holds no map at all.
+    What is pinned here, because the compiler relies on it: the two files that
+    alone can make a proof or grow the set are frozen by SHA-256, so a second
+    way in is a visible contract change; the proof's field stays private; the
+    registry's field stays a private `AdmittedSet`; the envelope keeps its
+    proof; the `compile_fail` doctests that prove (1) and (2) stay in place; and
+    atp-market-data never asks a `RestartWindow` itself - its only source of a
+    proof is the gate port, so it cannot decide on inputs of its own choosing.
     """
     block = restart_window_block(config)
     spec = block["admission_sites"]
-    guard_call = spec["guard_call"]
     port = block["gate_port"]
 
-    # The port is declared in the crate root; the registry that consumes it
-    # lives in its own module.
     lib_src = market_data_lib_source(config)
     try:
         trait_body = _trait_body(lib_src, port["trait"])
@@ -874,208 +684,129 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         if f"fn {method}(" not in trait_body:
             fail(f"{port['trait']} is missing the `{method}` method")
 
+    for pinned in (spec["admission_proof"], spec["admitted_set"]):
+        path = ROOT / pinned["module"]
+        if not path.is_file():
+            fail(
+                f"{pinned['module']} is missing; it is one of the two files the compiler's guarantee rests on"
+            )
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != pinned["sha256"]:
+            fail(
+                f"{pinned['module']} changed (sha256 {digest[:12]}..., pinned "
+                f"{pinned['sha256'][:12]}...). It is one of the two files that alone can "
+                "make an admission proof or grow the subscription set, so any edit to it "
+                "is a change to what may admit: re-review it, then update its sha256 in "
+                "connectivity_contract.restart_window.admission_sites"
+            )
+
+    proof_src = _mask_non_code(
+        (ROOT / spec["admission_proof"]["module"]).read_text(encoding="utf-8")
+    )
+    proof_fields = _struct_body(proof_src, spec["admission_proof"]["type"])
+    if re.search(r"\bpub\b", proof_fields):
+        fail(
+            f"`{spec['admission_proof']['type']}` has a public field, so any crate can build "
+            "one and claim an admission no window decided"
+        )
+    set_src = _mask_non_code((ROOT / spec["admitted_set"]["module"]).read_text(encoding="utf-8"))
+    if re.search(r"\bpub\b", _struct_body(set_src, spec["admitted_set"]["type"])):
+        fail(
+            f"`{spec['admitted_set']['type']}` exposes its map, so code can grow the "
+            "subscription set without spending a proof"
+        )
+
+    module_src = _mask_non_code(_without_test_module(market_data_src))
     field = spec["private_field"]
-    if not re.search(
-        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?{re.escape(field)}\s*:",
-        _mask_non_code(market_data_src),
-        re.M,
-    ):
-        fail(
-            f"the consolidated subscriber map `{field}` is no longer a private field of "
-            "the registry — the closure this check relies on is Rust's own privacy, so "
-            "if the field moved or became public this scan no longer bounds anything"
-        )
-    # ANY visibility modifier, not just a bare `pub`. `pub(crate)` re-opens the
-    # field to every sibling module — including `live_feed`, the exact module the
-    # registry was moved into its own file to escape — and `pub(super)` does the
-    # same for the crate root. The closure this check rests on is that NOTHING
-    # outside this file can name the field, so any widening at all breaks it,
-    # and `\bpub\s+` matched none of the parenthesised forms.
-    visibility = re.search(
-        rf"^[^\S\n]*(pub(?:[^\S\n]*\([^)]*\))?)[^\S\n]+{re.escape(field)}[^\S\n]*:",
-        _mask_non_code(market_data_src),
-        re.M,
+    declared = re.search(
+        rf"^\s*(pub(?:\s*\([^)]*\))?\s+)?{re.escape(field)}\s*:\s*(\w+)\s*,", module_src, re.M
     )
-    if visibility:
+    if not declared or declared.group(2) != spec["field_type"]:
         fail(
-            f"`{field}` is declared `{visibility.group(1)}`, not private — anything "
-            "outside this module could then admit a subscription without passing "
-            "through a gated function, and no source scan can close that"
+            f"the registry's `{field}` is no longer an `{spec['field_type']}`; only that "
+            "type makes an addition spend an admission proof"
+        )
+    if declared.group(1):
+        fail(f"the registry's `{field}` is `{declared.group(1).strip()}`; it must stay private")
+
+    envelope = _struct_body(_mask_non_code(lib_src), spec["acceptance_envelope"])
+    if not re.search(rf":\s*{spec['admission_proof']['type']}\s*(,|$)", envelope, re.M):
+        fail(
+            f"`{spec['acceptance_envelope']}` no longer carries an "
+            f"`{spec['admission_proof']['type']}`, so an acceptance can be built without "
+            "a restart-window decision"
         )
 
-    # The `#[cfg(test)]` module is not shipped, so a test that builds a registry
-    # is not a production admission path. Excluded explicitly rather than by
-    # accident — and if the marker ever moves, the "scan found nothing" guard
-    # below fires rather than the scan silently covering less.
-    # Comments stripped BEFORE scanning. The owning module documents its
-    # boundary with `compile_fail` doctests that necessarily name the field and
-    # declare a `fn sibling_reach`, and without this the guard flags the very
-    # prose explaining why the guard exists — the third time this class of
-    # false positive has appeared in this feature.
-    production_src = _code_only(_without_test_module(market_data_src))
-    # The envelope minters live in the crate ROOT (the manager is a separate
-    # type holding no map), so that file is scanned for them too.
-    # The `&self` exemptions rest on the borrow checker, which interior
-    # mutability would quietly undo — a `RefCell` around the map would let a
-    # `&self` method admit a subscription.
-    # The whole CLASS, not the three shapes that came to mind. A `Cell`,
-    # `OnceCell` or atomic reintroduces interior mutability just as well, and
-    # would let an already-exempt `&self` reader admit a subscription with no
-    # window check — the exemptions rest on the borrow checker, so anything that
-    # lets `&self` mutate dissolves them.
-    interior = [
-        token
-        for token in (
-            "Cell<",
-            "RefCell",
-            "UnsafeCell",
-            "OnceCell",
-            "LazyCell",
-            "Mutex<",
-            "RwLock<",
-            "OnceLock",
-            "LazyLock",
-            "Atomic",
-            "unsafe ",
-            "cell::",
-            "sync::atomic",
-        )
-        if token in production_src
-    ]
-    if interior:
-        fail(
-            f"the subscription module uses {', '.join(interior)} — the exemptions for "
-            "its `&self` methods rest on the borrow checker guaranteeing they cannot "
-            "mutate the consolidated set, and interior mutability removes that "
-            "guarantee. Re-argue each exemption or drop it"
-        )
-    # ANY visibility: `pub(crate) mod inner;` is as much a child as `mod inner;`.
-    submodules = re.findall(r"\bmod\s+(\w+)\s*;", _mask_non_code(production_src))
-    if submodules:
-        fail(
-            f"the subscription module declares submodule(s) {', '.join(submodules)}. "
-            "Rust exposes a private item to the defining module AND its descendants, so "
-            "those files could write the subscriber map ungated and this scan would not "
-            "see them — the closure is one level short. Keep the module leaf, or extend "
-            "this check to walk its children"
-        )
-    # Read in masked text: a comment saying `pub mod subscriptions;` is not one.
-    if not re.search(
-        rf"\bpub\s+mod\s+{re.escape(spec['module_name'])}\s*;", _mask_non_code(lib_src)
+    for pinned, codes in (
+        (spec["admission_proof"], ("E0451",)),
+        (spec["admitted_set"], ("E0616", "E0451")),
     ):
-        fail(
-            f"the crate root no longer declares `pub mod {spec['module_name']};` — the "
-            "registry must stay in its own module, or the parent regains visibility of "
-            "the private field and this scan stops bounding anything"
-        )
-    lib_production_src = _code_only(_without_test_module(lib_src))
-    envelope = re.sub(r"\s+", "", spec["acceptance_envelope"])
-    # Every FUNCTION that reaches the map, not every name: a second `fn subscribe`
-    # in a trait impl is a different function from the gated one (sweep after r30).
-    toucher_spans = [
-        (name, body) for name, body in _all_fn_spans(production_src) if field in body
-    ] + [
-        (name, body)
-        for name, body in _all_fn_spans(lib_production_src)
-        if envelope in re.sub(r"\s+", "", body)
-    ]
-    touchers = {name for name, _ in toucher_spans}
-    # The map named anywhere but its declaration and a function body - a macro,
-    # a const, a static - is a write no function span contains, so no function
-    # would ever be asked to consult the window.
-    masked_module = _mask_non_code(production_src)
-    bodies = [(start, end) for _, start, end in _fn_spans(production_src)]
-    stray = [
-        hit.start()
-        for hit in re.finditer(rf"\b{re.escape(field)}\b", masked_module)
-        if not any(start <= hit.start() < end for start, end in bodies)
-    ]
-    declaration = [at for at in stray if re.match(rf"{re.escape(field)}\s*:", masked_module[at:])]
-    if len(stray) != 1 or len(declaration) != 1:
-        fail(
-            f"`{field}` appears {len(stray)} time(s) outside a function body of its module "
-            "where only its one declaration may: a macro, const or static naming it "
-            "writes the map from outside every function this scan classifies"
-        )
-    # Nothing outside the owning module may name the field. This is the property
-    # the whole closure rests on, so it is checked rather than assumed.
-    leaked = [name for name, body in _all_fn_spans(lib_production_src) if field in body]
-    if not leaked and re.search(rf"\b{re.escape(field)}\b", _mask_non_code(lib_production_src)):
-        leaked = ["<outside any function>"]
-    crate_dir = (ROOT / spec["crate_path"]).parent
-    for sibling in sorted(crate_dir.rglob("*.rs")):
-        if sibling in (ROOT / spec["crate_path"], ROOT / spec["module"]):
-            continue
-        sibling_src = _mask_non_code(_without_test_module(sibling.read_text(encoding="utf-8")))
-        if re.search(rf"\b{re.escape(field)}\b", sibling_src):
-            leaked.append(str(sibling.relative_to(ROOT)))
-    if leaked:
-        fail(
-            f"crate-root function(s) {', '.join(leaked)} name `{field}`. Rust exposes a "
-            "parent's privates to its CHILDREN, so a registry reachable from outside its "
-            "own module cannot be bounded by any scan — move the code into that module"
-        )
-    if not touchers:
-        fail(
-            f"no function in atp-market-data names `{field}` or mints "
-            f"`{spec['acceptance_envelope']}` — either the crate changed shape or this "
-            "scan no longer matches it, and a scan that finds nothing must fail rather "
-            "than report a clean tree"
-        )
+        text = (ROOT / pinned["module"]).read_text(encoding="utf-8")
+        for code in codes:
+            if f"```compile_fail,{code}" not in text:
+                fail(
+                    f"{pinned['module']} lost its `compile_fail,{code}` doctest, the proof "
+                    "that the compiler refuses the forbidden shape"
+                )
 
-    exempt = spec["exempt"]
-    reasons = spec["exempt_reasons"]
-    undocumented = [name for name in exempt if not reasons.get(name)]
-    if undocumented:
-        fail(
-            f"admission_sites.exempt names {', '.join(undocumented)} without a stated "
-            "reason — an unexplained exemption is a hole nobody is watching"
-        )
-    stale = [name for name in exempt if name not in touchers]
-    if stale:
-        fail(
-            f"admission_sites.exempt names {', '.join(stale)}, which no longer touches "
-            "the subscription set — a stale exemption is a hole nobody is watching"
-        )
-    _check_exemptions_are_not_reusable(spec, production_src, exempt)
+    _check_unsafe_code_is_forbidden(ROOT)
 
-    required = sorted(name for name in touchers if name not in exempt)
-    declared = list(spec["functions"])
-    missing = [name for name in declared if name not in required]
-    if missing:
-        fail(
-            f"declared admission site(s) {', '.join(missing)} no longer touch the "
-            "subscription set — the contract and the source disagree"
+    crate_src = (ROOT / spec["crate_path"]).parent
+    for path in sorted(crate_src.rglob("*.rs")):
+        # The owning module is read from the text under test, the rest from disk.
+        if path == ROOT / spec["module"]:
+            masked = module_src
+        else:
+            masked = _mask_non_code(_without_test_module(path.read_text(encoding="utf-8")))
+        asked = re.search(
+            r"\b(RestartWindow|market_data_admission|admits_market_data_requests)\b", masked
         )
-    undeclared = [name for name in required if name not in declared]
-    if undeclared:
-        fail(
-            f"unclassified function(s) {', '.join(undeclared)} can reach the "
-            f"consolidated subscription set. Add each to admission_sites.functions and "
-            f"gate it on `{guard_call}`, or to admission_sites.exempt with a stated "
-            "reason for why it cannot admit"
-        )
+        if asked:
+            fail(
+                f"{path.relative_to(ROOT)} names `{asked.group(1)}`. atp-market-data must "
+                "take its admission decisions from the gate port only; a window it builds "
+                "itself is one whose inputs it chooses, so it could admit at will"
+            )
 
-    # Each body is read ON ITS OWN, from masked text in both files, so a comment
-    # or a string that merely MENTIONS the guard cannot satisfy it (the crate-root
-    # half once could), and a second function sharing a gated site's name is
-    # read rather than shadowed by the first.
-    ungated = sorted(
-        {name for name, body in toucher_spans if name not in exempt and guard_call not in body}
-    )
-    if ungated:
-        fail(
-            f"atp-market-data::{', '.join(ungated)} can admit a subscription without "
-            f"calling `{guard_call}` — SyRS SYS-75(a) requires market-data requests to "
-            "be suspended at EVERY admission point, not just the outermost"
-        )
     return (
-        f"atp-market-data gates {len(required)} subscription admission site(s) "
-        f"({', '.join(required)}) on `{guard_call}`. The set is closed by RUST: "
-        f"`{field}` is private to this file, so the functions naming it are all the "
-        f"code that can reach the consolidated set — {len(exempt)} classified as unable "
-        f"to admit, each with a stated reason ({', '.join(exempt)})"
+        f"atp-market-data cannot grow its subscription set without an admission proof: "
+        f"`{field}` is a private `{spec['field_type']}` whose only add method spends an "
+        f"`{spec['admission_proof']['type']}`, which only `RestartWindow` can make "
+        f"(both files pinned by sha256, both rules proved by compile_fail doctests); "
+        f"`{spec['acceptance_envelope']}` carries the proof, the crate never asks a "
+        "window itself, and every crate forbids `unsafe` code"
     )
+
+
+def _check_unsafe_code_is_forbidden(root: Path) -> None:
+    """The proof is unforgeable only in SAFE Rust.
+
+    `unsafe { std::mem::transmute::<(), AdmissionProof>(()) }` and
+    `std::mem::zeroed()` both make a zero-sized proof without its constructor,
+    and a raw pointer can write the private map. The workspace has forbidden
+    `unsafe_code` since SRS-ARCH-001; MD-005 now rests on that, so it is pinned:
+    the workspace forbids it, and every crate inherits the workspace lints and
+    nothing else. `forbid`, unlike `deny`, cannot be lowered by an
+    `#![allow(unsafe_code)]` inside a crate (rustc E0453).
+    """
+    manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    level = manifest.get("workspace", {}).get("lints", {}).get("rust", {}).get("unsafe_code")
+    if isinstance(level, dict):
+        level = level.get("level")
+    if level != "forbid":
+        fail(
+            f'the workspace sets `unsafe_code = {level!r}`, not "forbid"; unsafe code '
+            "can fabricate an AdmissionProof (transmute or zeroed) and write the "
+            "admitted set behind the type system"
+        )
+    for toml_path in sorted((root / "crates").glob("*/Cargo.toml")):
+        lints = tomllib.loads(toml_path.read_text(encoding="utf-8")).get("lints")
+        if lints != {"workspace": True}:
+            fail(
+                f"{toml_path.relative_to(root)} does not inherit the workspace lints "
+                f"(`[lints]` is {lints!r}, expected `workspace = true` alone), so it "
+                "may compile unsafe code that forges an AdmissionProof"
+            )
 
 
 def check_restart_window_producer(config: dict, producer_src: str) -> str:
@@ -1146,7 +877,8 @@ def _local_aliases(source: str, trait: str) -> set[str]:
                     f"(`{rename.group(0)}`); the name it binds is chosen at the call site, "
                     f"so this scan cannot tell whether it is an alias for `{trait}`"
                 )
-            if item == trait:
+            # `as _` binds no name, so nothing can be written under it.
+            if item == trait and alias != "_":
                 out.add(alias)
     return out
 
@@ -1176,6 +908,17 @@ def _refuse_code_outside_the_scan(root: Path) -> None:
     for member in manifest.get("workspace", {}).get("members", []):
         if not re.fullmatch(r"crates/(?:\*|[\w.-]+)", member):
             fail(f"workspace member `{member}` is outside crates/, so this scan cannot see it")
+    # rustc follows a symlinked module file or directory; `Path.rglob` does not
+    # descend into a symlinked directory, so an implementor behind one was never
+    # read (red team, after r31). None is used by this tree.
+    for dirpath, dirnames, filenames in os.walk(root / "crates"):
+        for name in (*dirnames, *filenames):
+            link = Path(dirpath) / name
+            if link.is_symlink():
+                fail(
+                    f"{link.relative_to(root)} is a symlink; rustc follows it and this "
+                    "scan cannot see what it points at"
+                )
     for crate in sorted(p for p in (root / "crates").iterdir() if p.is_dir()):
         if (crate / "build.rs").exists():
             fail(f"{crate.name} has a build script, whose generated code this scan cannot see")
@@ -1317,15 +1060,24 @@ def _strip_generic_args(text: str) -> str:
     const-generic BRACE either: `Wrapper<{ N > 1 }>` closes nothing until its
     braces do (review r27).
     """
-    out, angle, brace, prev = [], 0, 0, ""
+    out, angle, brace, nest, prev = [], 0, 0, 0, ""
     for ch in text:
         if angle and ch == "{":
             brace += 1
         elif brace and ch == "}":
             brace -= 1
-        elif not brace and ch == "<":
+        elif not brace and ch in "([":
+            nest += 1
+            if angle == 0:
+                out.append(ch)
+        elif not brace and ch in ")]":
+            nest = max(0, nest - 1)
+            if angle == 0:
+                out.append(ch)
+        # _ANGLE_RULE: inside `(..)` / `[..]` an angle bracket is a comparison.
+        elif not brace and not nest and ch == "<":
             angle += 1
-        elif not brace and ch == ">" and prev != "-":
+        elif not brace and not nest and ch == ">" and prev != "-":
             angle = max(0, angle - 1)
         elif angle == 0:
             out.append(ch)
@@ -1368,9 +1120,10 @@ def _impl_headers(masked: str) -> list[str]:
                 break
             elif ch == "{":
                 brace += 1
-            elif ch == "<":
+            # _ANGLE_RULE: inside `(..)` / `[..]` an angle bracket is a comparison.
+            elif ch == "<" and paren == bracket == 0:
                 angle += 1
-            elif ch == ">" and prev != "-":
+            elif ch == ">" and prev != "-" and paren == bracket == 0:
                 angle -= 1
             elif ch == "(":
                 paren += 1
@@ -1405,9 +1158,10 @@ def _top_level_keyword(text: str, word: str) -> int:
             brace += {"{": 1, "}": -1}.get(ch, 0)
         elif ch == "{":
             brace += 1
-        elif ch == "<":
+        # _ANGLE_RULE: inside `(..)` / `[..]` an angle bracket is a comparison.
+        elif ch == "<" and paren == bracket == 0:
             angle += 1
-        elif ch == ">" and prev != "-":
+        elif ch == ">" and prev != "-" and paren == bracket == 0:
             angle -= 1
         elif ch == "(":
             paren += 1
@@ -1441,15 +1195,20 @@ def _split_impl_header(header: str) -> tuple[str, str] | None:
     """
     text = header.lstrip()
     if text.startswith("<"):
-        angle, brace, prev, close = 0, 0, "", -1
+        angle, brace, paren, bracket, prev, close = 0, 0, 0, 0, "", -1
         for index, ch in enumerate(text):
             if brace:
                 brace += {"{": 1, "}": -1}.get(ch, 0)
             elif ch == "{":
                 brace += 1
-            elif ch == "<":
+            elif ch in "([":
+                paren, bracket = paren + (ch == "("), bracket + (ch == "[")
+            elif ch in ")]":
+                paren, bracket = paren - (ch == ")"), bracket - (ch == "]")
+            # _ANGLE_RULE: inside `(..)` / `[..]` an angle bracket is a comparison.
+            elif ch == "<" and paren == bracket == 0:
                 angle += 1
-            elif ch == ">" and prev != "-":
+            elif ch == ">" and prev != "-" and paren == bracket == 0:
                 angle -= 1
                 if angle == 0:
                     close = index
@@ -1643,8 +1402,8 @@ def check_restart_window_gate_implementors(config: dict, _unused: str, root: Pat
     return (
         f"exactly {len(found)} production type implements `{spec['trait']}` "
         f"({', '.join(f'{name}, once, at {sites[name]}' for name in sorted(found))}) — "
-        "the port buys freshness, and this enumeration "
-        "is what makes it unforgeable"
+        "the port buys freshness; `Admitted` itself is unforgeable by type "
+        "(AdmissionProof), and this enumeration bounds which types may ask the window"
     )
 
 

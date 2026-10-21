@@ -86,7 +86,7 @@ class ConnectivityCheckScriptTest(unittest.TestCase):
             "MarketDataAdmission with 3 outcomes",
             "60s lead / 300s window",
             "RestartPhase::Elapsed onto ConnectivityState::Unreachable",
-            "request_subscription, subscribe",
+            "cannot grow its subscription set without an admission proof",
             "ScheduledRestartConnectivity implements BrokerageConnectivity + RestartWindowGate",
             "outside the digest-pinned transport module",
             "production type implements `RestartWindowGate`",
@@ -373,570 +373,218 @@ class RestartEscalationTest(unittest.TestCase):
 
 
 class MarketDataAdmissionSitesTest(unittest.TestCase):
+    """SYS-75(a) for market data now rests on TYPES; this check pins the structure.
+
+    Seven versions of this check tried to recognise, in source text, every way
+    Rust can write to a map, and review kept finding the next one. Now an
+    addition must spend an `AdmissionProof`, which only `RestartWindow` can make,
+    so a write that skipped the decision does not compile - that half is proved
+    by the `compile_fail` doctests in the two pinned files and by the domain
+    test that hands the reviewer's shapes to `cargo check`. What is tested HERE
+    is that each structural fact the compiler relies on is refused when broken.
+
+    Each case breaks one fact in a COPY of the tree (the pinned files are read
+    from `ROOT`), so the real repository is never touched.
+    """
+
+    PINNED = ("admission_proof", "admitted_set")
+
     def setUp(self) -> None:
-        self.config = load_config()
-        self.market_data_src = market_data_source(self.config)
-
-    def _inject(self, snippet: str) -> str:
-        """Splice a bypass into PRODUCTION code, before the test module.
-
-        Appending it to the end of the file puts it inside — or after — the
-        unshipped `#[cfg(test)] mod tests`, which the check correctly ignores.
-        The test would then pass because the injection was invisible, not
-        because the guard caught it: a control that proves nothing, shaped
-        exactly like one that does.
-        """
-        head, marker, tail = self.market_data_src.partition("\n#[cfg(test)]\nmod tests {")
-        # The owning module has no test module of its own; appending is then
-        # already production code. Where a marker exists, splice before it.
-        return head + snippet + marker + tail
-
-    def test_both_admission_sites_are_gated(self) -> None:
-        evidence = check_market_data_admission_sites(self.config, self.market_data_src)
-        self.assertIn("request_subscription", evidence)
-        self.assertIn("subscribe", evidence)
-
-    def test_an_ungated_admission_site_is_caught(self) -> None:
-        # Remove the guard from the MUTATING admission point. The function still
-        # takes the port, so a checklist naming "these two functions accept a
-        # window" would still pass — only reading the body catches it.
-        # `subscribe`'s guard lives in the owning module; the manager's lives in
-        # the crate root. This test mutates the one in the file it reads.
-        marker = "        match window.admission() {"
-        self.assertEqual(
-            self.market_data_src.count(marker),
-            1,
-            "expected the registry's admission guard; the anchor has drifted",
-        )
-        mutated = self.market_data_src.replace(
-            marker, "        match MarketDataAdmission::Admitted {", 1
-        )
-        with self.assertRaises(ConnectivityCheckError):
-            check_market_data_admission_sites(self.config, mutated)
-
-    def test_a_new_ungated_admission_point_is_caught(self) -> None:
-        """The bypass the first version of this guard was blind to.
-
-        Discovery used to key on "takes a RestartWindowGate", which is circular:
-        a new path that SKIPS the port is exactly what must be caught, and
-        skipping it made the path invisible. The adversarial reviewer proved it
-        by injecting this function; the check reported "gates 2 admission
-        site(s)" and passed. Discovery now keys on the EFFECT that makes a
-        function an admission point, so omitting the port cannot hide it.
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn subscribe_bulk<S: SubscriptionChangeSink>(
-        &mut self,
-        requests: &[SubscriptionRequest],
-        events: &S,
-    ) -> Result<(), SubscriptionRegistryError> {
-        for request in requests {
-            let key = request.security_key()?;
-            self.subscribers
-                .insert(key.clone(), vec![request.strategy_id.clone()]);
-            let _ = events;
-        }
-        Ok(())
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("subscribe_bulk", str(ctx.exception))
-
-    def test_a_declared_but_ungated_admission_point_is_caught(self) -> None:
-        """Declaring it in the contract must not be enough — it must be gated."""
-        config = json.loads(json.dumps(self.config))
-        block = config["connectivity_contract"]["restart_window"]["admission_sites"]
-        block["functions"] = [*block["functions"], "subscribe_bulk"]
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn subscribe_bulk(&mut self, request: &SubscriptionRequest) {
-        self.subscribers
-            .insert(request.symbol.clone(), vec![request.strategy_id.clone()]);
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(config, self._inject(bypass))
-        self.assertIn("without calling", str(ctx.exception))
-
-    def test_the_reviewers_entry_or_default_form_is_caught(self) -> None:
-        """The bypass that walked past the SECOND version of this guard.
-
-        That version discovered admission points by two literal effect forms;
-        `subscribers.entry(k).or_default().push(..)` opens a consolidated line
-        just as well and matched neither. A checklist cannot catch the arm
-        nobody added to it, so discovery is now a CLOSED set over the type's
-        `&mut self` surface — a new admission path has to be in it whatever
-        expression it uses.
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force_subscribe(&mut self, request: &SubscriptionRequest, key: SecurityKey) {
-        self.subscribers
-            .entry(key)
-            .or_default()
-            .push(request.strategy_id.clone());
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("force_subscribe", str(ctx.exception))
-
-    def test_a_mutator_is_required_to_be_gated_exactly_when_it_can_admit(self) -> None:
-        """Where the closure draws its line, in both directions.
-
-        The round-4 version of this guard required EVERY public `&mut self`
-        method to be classified, including one that touched no subscriber map.
-        The privacy-based closure is narrower and more honest: a method that
-        cannot reach the consolidated set cannot admit, so demanding a
-        restart-window guard on it would be noise. What matters is that the
-        moment it DOES reach the set it is caught — which is the second half
-        below.
-        """
-        harmless = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn retune(&mut self, limit: u32) {
-        self.line_limit = limit;
-    }
-}
-"""
-        # It cannot admit, so it needs no guard and no exemption.
-        check_market_data_admission_sites(self.config, self._inject(harmless))
-
-        # One line later it touches the map — and is caught immediately.
-        admitting = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn retune(&mut self, limit: u32, k: SecurityKey, s: StrategyId) {
-        self.line_limit = limit;
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(admitting))
-        self.assertIn("retune", str(ctx.exception))
-
-    def test_an_exempt_name_cannot_be_reused_by_a_new_function(self) -> None:
-        """Exempting by bare NAME is a hole.
-
-        A trait impl reusing an exempt name inherits the exemption and is never
-        asked to consult the window — the same trait-impl shape that had
-        already defeated an earlier version of this guard. An exemption now has
-        to resolve to exactly one function.
-        """
-        bypass = """
-trait Sneaky { fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId); }
-impl Sneaky for ConsolidatedSubscriptionRegistry {
-    fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("is_subscribed", str(ctx.exception))
-
-    def test_a_parenthesised_generic_bound_cannot_hide_a_second_declaration(self) -> None:
-        """The hole the round-16 fix left one line away from the one it closed.
-
-        `<[^{}();]*?>` excludes `(`, so a bound like `<F: Fn() -> bool>` ends the
-        match early and the declaration is invisible. The scan then still counts
-        exactly ONE `is_subscribed`, the exemption is inherited, and the new
-        function reaches the consolidated registry without consulting the
-        window - with every guard, the L7 suite and all three CLI proofs green.
-
-        `Fn() -> _` is not an exotic shape here: the producer's own injected
-        clock is one.
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn is_subscribed<F: Fn() -> bool>(&mut self, k: SecurityKey, s: StrategyId, f: F) {
-        if f() {
-            self.subscribers.insert(k, vec![s]);
-        }
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("is_subscribed", str(ctx.exception))
-
-    def test_a_nested_generic_bound_cannot_hide_a_second_declaration(self) -> None:
-        """One level of nesting was enough until `<T: Into<Vec<u8>>>` arrived.
-
-        Every regex attempt at bounding a generic list failed on a shape it did
-        not anticipate: a `->` closed it early, then a parenthesis, then two
-        levels of nesting. The scan counts brackets now, so it has no depth
-        limit at all.
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn is_subscribed<T: Into<Vec<u8>>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
-        let _ = v;
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("is_subscribed", str(ctx.exception))
-
-    def test_a_semicolon_inside_a_generic_bound_cannot_hide_a_declaration(self) -> None:
-        """The counter FAILED OPEN, which is worse than the regex it replaced.
-
-        `<T: Into<[u8; 4]>>` contains a `;` - legal, inside an array type. The
-        counter bailed on it and returned the start index, so the declaration
-        was silently DROPPED, the count stayed at 1, and the exemption was
-        inherited by a function the scan could not read. Unparseable is not
-        absent (CLAUDE.md rule 3).
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn is_subscribed<T: Into<[u8; 4]>>(&mut self, k: SecurityKey, s: StrategyId, v: T) {
-        let _ = v;
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("is_subscribed", str(ctx.exception))
-
-    def test_an_exempt_reader_that_becomes_a_mutator_is_caught(self) -> None:
-        """The exemption says the function CANNOT admit. Changing its receiver
-        makes that claim false, so the claim has to be re-checked."""
-        mutated = self.market_data_src.replace(
-            "pub fn is_subscribed(&self,", "pub fn is_subscribed(&mut self,", 1
-        )
-        self.assertNotEqual(mutated, self.market_data_src, "the receiver anchor moved")
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("&mut self", str(ctx.exception))
-
-    def test_the_one_write_exemption_may_remove_but_never_add(self) -> None:
-        """`unsubscribe` is exempt because releasing a line cannot admit one.
-        The moment it can add, the exemption is false."""
-        marker = "pub fn unsubscribe"
-        start = self.market_data_src.index(marker)
-        brace = self.market_data_src.index("{", self.market_data_src.index(")", start))
-        mutated = (
-            self.market_data_src[: brace + 1]
-            + "\n        self.subscribers.insert(key.clone(), Vec::new());"
-            + self.market_data_src[brace + 1 :]
-        )
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("unsubscribe", str(ctx.exception))
-
-    def test_every_function_that_reaches_the_map_is_read_not_just_the_first(self) -> None:
-        """The identity class (r30) in this check: names are not functions.
-
-        A second `fn subscribe` - a trait-impl method sharing the gated site's
-        name - was never read: the check looked up "the body of `subscribe`" and
-        got the first one, which is gated. Every function body is now checked on
-        its own. And a function the span finder could not see at all reached the
-        map unclassified: a `;` in an array parameter or a `{` in a const-generic
-        argument ended its signature early, and a `"}"` in a string ended its body
-        early, leaving the write outside the span it was searched in.
-        """
-        write = "        self.subscribers.insert(key, vec![id]);\n"
-        shapes = {
-            "a second fn with a gated site's name": (
-                "pub trait Sneak { fn subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
-                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
-                "    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                f"{write}    }}\n}}\n"
-            ),
-            "a `;` in an array parameter": (
-                "impl ConsolidatedSubscriptionRegistry {\n"
-                "    pub fn sneak(&mut self, keys: [SecurityKey; 1], id: StrategyId) {\n"
-                "        let [key] = keys;\n"
-                f"{write}    }}\n}}\n"
-            ),
-            "a `{` in a const-generic argument": (
-                "pub trait HasWidth<const N: usize> {}\n"
-                "impl ConsolidatedSubscriptionRegistry {\n"
-                "    pub fn sneak<T: HasWidth<{ 1 + 1 }>>(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                f"{write}    }}\n}}\n"
-            ),
-            "a `}` in a string before the write": (
-                "impl ConsolidatedSubscriptionRegistry {\n"
-                "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                '        let _ = "}";\n'
-                f"{write}    }}\n}}\n"
-            ),
-        }
-        for label, bypass in shapes.items():
-            with self.subTest(shape=label):
-                with self.assertRaises(ConnectivityCheckError):
-                    check_market_data_admission_sites(self.config, self._inject(bypass))
-
-    def test_the_map_named_outside_any_function_is_refused(self) -> None:
-        """A macro body is not a function, so a write inside one was in no span.
-
-        `macro_rules! sneak { .. $r.subscribers.insert(..) .. }` invoked from
-        `fn add` left `add` never naming the field, so it was never classified.
-        Outside its declaration, the field may now appear only inside a function
-        body of its own module.
-        """
-        bypass = (
-            "macro_rules! sneak {\n"
-            "    ($r:expr, $k:expr, $id:expr) => { $r.subscribers.insert($k, vec![$id]) };\n"
-            "}\n"
-            "impl ConsolidatedSubscriptionRegistry {\n"
-            "    pub fn add(&mut self, key: SecurityKey, id: StrategyId) { sneak!(self, key, id); }\n"
-            "}\n"
-        )
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("outside", str(ctx.exception))
-
-    def test_a_submodule_with_any_visibility_is_refused(self) -> None:
-        for decl in ("pub(crate) mod inner;", "pub(super) mod inner;", "pub(in crate) mod inner;"):
-            with self.subTest(decl=decl):
-                with self.assertRaises(ConnectivityCheckError) as ctx:
-                    check_market_data_admission_sites(
-                        self.config, self.market_data_src + f"\n{decl}\n"
-                    )
-                self.assertIn("submodule", str(ctx.exception))
-
-    def test_a_raw_identifier_is_the_same_name(self) -> None:
-        """Adversarial review r31 [high]: `r#is_subscribed` IS `is_subscribed`.
-
-        The span walker stripped `r#`; the declaration counter did not. So a trait
-        method `fn r#is_subscribed(&mut self, ..)` that inserts into the map was
-        read as `is_subscribed` - exempt - while the count still saw ONE
-        declaration, and it inherited the read-only exemption. Two parsers that
-        disagree about one name are two guards with a gap between them. The
-        lexer now erases every raw-identifier prefix once, for every scan, and
-        one parser serves both the spans and the exemption check.
-        """
-        write = "        self.subscribers.insert(key, vec![id]);\n"
-        decl = "    subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,"
-        self.assertEqual(self.market_data_src.count(decl), 1, "the field declaration moved")
-        shapes = {
-            "the reviewer's: a raw-named exempt mutator": self._inject(
-                "pub trait Sneak { fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId); }\n"
-                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
-                "    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                f"{write}    }}\n}}\n"
-            ),
-            "a raw-named gated site without the gate": self._inject(
-                "pub trait Sneak { fn r#subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
-                "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
-                "    fn r#subscribe(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                f"{write}    }}\n}}\n"
-            ),
-            "a raw-named submodule": self.market_data_src + "\nmod r#inner;\n",
-            "a raw-named public field": self.market_data_src.replace(
-                decl, "    pub r#subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,"
-            ),
-            "a raw field access in a new function": self._inject(
-                "impl ConsolidatedSubscriptionRegistry {\n"
-                "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
-                "        self.r#subscribers.insert(key, vec![id]);\n    }\n}\n"
-            ),
-        }
-        for label, mutated in shapes.items():
-            with self.subTest(shape=label):
-                with self.assertRaises(ConnectivityCheckError):
-                    check_market_data_admission_sites(self.config, mutated)
-
-    def test_a_comment_cannot_declare_the_owning_module(self) -> None:
-        # The crate-root declaration was matched in RAW text, so a comment saying
-        # `pub mod subscriptions;` satisfied it with the real one gone.
         import connectivity_check as cc
 
-        lib = cc.market_data_lib_source(self.config)
-        self.assertEqual(lib.count("pub mod subscriptions;"), 1, "the declaration moved")
-        gutted = lib.replace(
-            "pub mod subscriptions;", "mod subscriptions; // pub mod subscriptions;"
+        self.cc = cc
+        self.config = load_config()
+        self.market_data_src = market_data_source(self.config)
+        self.spec = self.config["connectivity_contract"]["restart_window"]["admission_sites"]
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for rel in ("crates/atp-market-data/src", "crates/atp-types/src"):
+            shutil.copytree(ROOT / rel, self.tmp / rel)
+        for manifest in (ROOT / "Cargo.toml", *sorted((ROOT / "crates").glob("*/Cargo.toml"))):
+            target = self.tmp / manifest.relative_to(ROOT)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(manifest, target)
+
+    def _path(self, key: str) -> Path:
+        return self.tmp / self.spec[key]["module"]
+
+    def _edit(self, key: str, old: str, new: str) -> None:
+        path = self._path(key)
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual(text.count(old), 1, f"anchor `{old}` moved in {path.name}")
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    def _repinned(self) -> dict:
+        """The contract with both digests matching the COPY - so a test reaches
+        the structural rule it targets instead of stopping at the digest pin."""
+        import hashlib
+
+        config = json.loads(json.dumps(self.config))
+        spec = config["connectivity_contract"]["restart_window"]["admission_sites"]
+        for key in self.PINNED:
+            spec[key]["sha256"] = hashlib.sha256(self._path(key).read_bytes()).hexdigest()
+        return config
+
+    def _check(self, config: dict | None = None, source: str | None = None) -> str:
+        with mock.patch.object(self.cc, "ROOT", self.tmp):
+            return check_market_data_admission_sites(
+                config or self.config, self.market_data_src if source is None else source
+            )
+
+    def test_the_real_tree_passes(self) -> None:
+        evidence = check_market_data_admission_sites(self.config, self.market_data_src)
+        self.assertIn("cannot grow its subscription set without an admission proof", evidence)
+        # Non-vacuity for every case below: the untouched copy passes too.
+        self.assertIn("admission proof", self._check())
+
+    def test_an_edit_to_either_pinned_file_is_refused(self) -> None:
+        for key in self.PINNED:
+            with self.subTest(file=key):
+                path = self._path(key)
+                original = path.read_text(encoding="utf-8")
+                path.write_text(original + "\n// a second way in would go here\n", encoding="utf-8")
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self._check()
+                    self.assertIn("update its sha256", str(ctx.exception))
+                finally:
+                    path.write_text(original, encoding="utf-8")
+
+    def test_a_public_proof_field_is_refused(self) -> None:
+        self._edit(
+            "admission_proof",
+            "pub struct AdmissionProof {\n    _sealed: (),",
+            "pub struct AdmissionProof {\n    pub _sealed: (),",
         )
-        with mock.patch.object(cc, "market_data_lib_source", lambda config, root=None: gutted):
-            with self.assertRaises(ConnectivityCheckError) as ctx:
-                check_market_data_admission_sites(self.config, self.market_data_src)
-        self.assertIn("pub mod subscriptions", str(ctx.exception))
-
-    def test_a_submodule_of_the_owning_module_is_refused(self) -> None:
-        """Rust exposes a private item to the defining module AND its
-        descendants, so a submodule would be an unscanned file able to write the
-        map — the closure would be one level short."""
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self.market_data_src + "\nmod inner;\n")
-        self.assertIn("submodule", str(ctx.exception))
+            self._check(self._repinned())
+        self.assertIn("public field", str(ctx.exception))
 
-    def test_a_deref_assignment_admission_point_is_caught(self) -> None:
-        """The comment stripper used to delete real code.
-
-        It dropped every line whose first non-space character was `*`, meaning
-        to catch block-comment continuations — and took
-        `*self.subscribers.entry(k).or_default() = vec![s];` with it, so an
-        ungated admission point vanished from the scanned source. A stripper
-        that removes code is worse than the false positive it was added for.
-        """
-        bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force(&mut self, k: SecurityKey, s: StrategyId) {
-        *self.subscribers.entry(k).or_default() = vec![s];
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(bypass))
-        self.assertIn("force", str(ctx.exception))
-
-    def test_the_write_exemption_cannot_add_through_an_alias(self) -> None:
-        """`unsubscribe` claims it can remove but never add.
-
-        Checking that against `subscribers.insert(` is not enough: a local alias
-        (`let map = &mut self.subscribers; map.insert(..)`) walks straight past
-        any check anchored on the field name, so the body must contain no add
-        expression at all.
-        """
-        marker = "pub fn unsubscribe"
-        start = self.market_data_src.index(marker)
-        brace = self.market_data_src.index("{", self.market_data_src.index(")", start))
-        mutated = (
-            self.market_data_src[: brace + 1]
-            + "\n        let map = &mut self.subscribers;"
-            + "\n        map.insert(key.clone(), Vec::new());"
-            + self.market_data_src[brace + 1 :]
+    def test_a_public_map_in_the_set_is_refused(self) -> None:
+        self._edit(
+            "admitted_set",
+            "    lines: BTreeMap<SecurityKey, Vec<StrategyId>>,",
+            "    pub lines: BTreeMap<SecurityKey, Vec<StrategyId>>,",
         )
         with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("unsubscribe", str(ctx.exception))
+            self._check(self._repinned())
+        self.assertIn("exposes its map", str(ctx.exception))
 
-    def test_interior_mutability_in_the_owning_module_is_refused(self) -> None:
-        """The `&self` exemptions rest on the borrow checker, so ANYTHING that
-        lets `&self` mutate dissolves them.
+    def test_a_removed_compile_fail_proof_is_refused(self) -> None:
+        for key, code in (
+            ("admission_proof", "E0451"),
+            ("admitted_set", "E0616"),
+            ("admitted_set", "E0451"),
+        ):
+            with self.subTest(file=key, code=code):
+                path = self._path(key)
+                original = path.read_text(encoding="utf-8")
+                path.write_text(
+                    original.replace(f"```compile_fail,{code}", "```ignore"), encoding="utf-8"
+                )
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self._check(self._repinned())
+                    self.assertIn(f"compile_fail,{code}", str(ctx.exception))
+                finally:
+                    path.write_text(original, encoding="utf-8")
 
-        The first version of this check banned three shapes and the test
-        exercised one of them, while asserting the whole class — so a `Cell`,
-        `OnceCell` or atomic would have reintroduced interior mutability and let
-        an exempt reader admit a subscription with no guard failure.
-        """
-        for snippet in (
-            "use std::cell::RefCell;",
-            "use std::cell::Cell;",
-            "use std::cell::OnceCell;",
-            "use std::sync::atomic::AtomicUsize;",
-            "use std::sync::OnceLock;",
-            "    fn sneak(&self) { unsafe { } }",
+    def test_the_registry_field_must_stay_a_private_admitted_set(self) -> None:
+        decl = "    subscribers: AdmittedSet,"
+        self.assertEqual(self.market_data_src.count(decl), 1, "the field declaration moved")
+        for label, replacement, needle in (
+            (
+                "a plain map",
+                "    subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,",
+                "no longer an",
+            ),
+            ("another set type", "    subscribers: OpenSet,", "no longer an"),
+            ("pub(crate)", "    pub(crate) subscribers: AdmittedSet,", "must stay private"),
+            ("raw-named pub", "    pub r#subscribers: AdmittedSet,", "must stay private"),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    self._check(source=self.market_data_src.replace(decl, replacement))
+                self.assertIn(needle, str(ctx.exception))
+
+    def test_an_acceptance_envelope_without_a_proof_is_refused(self) -> None:
+        lib = self.cc.market_data_lib_source(self.config)
+        field = "    pub admission: AdmissionProof,\n"
+        self.assertEqual(lib.count(field), 1, "the envelope's proof field moved")
+        with mock.patch.object(
+            self.cc, "market_data_lib_source", lambda config, root=None: lib.replace(field, "")
         ):
             with self.assertRaises(ConnectivityCheckError) as ctx:
-                check_market_data_admission_sites(
-                    self.config, self.market_data_src + "\n" + snippet + "\n"
-                )
-            self.assertIn("interior mutability", str(ctx.exception), snippet)
+                self._check()
+        self.assertIn("without a restart-window decision", str(ctx.exception))
 
-        # Non-vacuity: the real module passes, so the refusals above are about
-        # the snippets rather than about a check that refuses everything.
-        check_market_data_admission_sites(self.config, self.market_data_src)
+    def test_market_data_code_that_asks_a_window_itself_is_refused(self) -> None:
+        """A window the registry builds is one whose inputs it chooses.
 
-    def test_any_widened_visibility_on_the_field_is_caught(self) -> None:
-        """The closure IS Rust's privacy, so any widening breaks it.
-
-        `pub(crate)` re-opens the field to every sibling module — including
-        `live_feed`, the exact module the registry was moved into its own file
-        to escape — and the earlier check's `\\bpub\\s+` matched none of the
-        parenthesised forms.
+        `RestartWindow::with_defaults(far_future).market_data_admission(0, true)`
+        compiles and yields a REAL proof - the one route around the gate port the
+        type system cannot see. So atp-market-data may not name it at all.
         """
-        for visibility in ("pub", "pub(crate)", "pub(super)", "pub(in crate::live_feed)"):
-            mutated = self.market_data_src.replace(
-                "    subscribers: BTreeMap", f"    {visibility} subscribers: BTreeMap", 1
-            )
-            self.assertNotEqual(mutated, self.market_data_src, "the field anchor moved")
+        ask = "\nfn sneak() { let _ = atp_types::RestartWindow::with_defaults(0); }\n"
+        with self.subTest(where="the owning module"):
             with self.assertRaises(ConnectivityCheckError) as ctx:
-                check_market_data_admission_sites(self.config, mutated)
-            self.assertIn(visibility, str(ctx.exception))
-
-    def test_the_crate_root_guard_cannot_be_satisfied_by_a_comment(self) -> None:
-        """The manager's half of the guard read its source WITHOUT stripping
-        comments, so deleting the real `match window.admission()` and leaving a
-        comment that merely mentions it passed — a guard a docstring could
-        satisfy. It also had no mutation test, because the module move left this
-        class's fixture pointing only at the registry."""
-        import connectivity_check as module
-
-        lib_src = module.market_data_lib_source(self.config)
-        start = lib_src.index("        match window.admission() {")
-        end = lib_src.index("        match counter.try_acquire(&request) {")
-        gutted = lib_src[:start] + "        // match window.admission() { removed\n" + lib_src[end:]
-
-        original = module.market_data_lib_source
-        module.market_data_lib_source = lambda config, root=None: gutted
-        try:
+                self._check(source=self.market_data_src + ask)
+            self.assertIn("RestartWindow", str(ctx.exception))
+        with self.subTest(where="a sibling module"):
+            runtime = self.tmp / "crates/atp-market-data/src/runtime.rs"
+            runtime.write_text(runtime.read_text(encoding="utf-8") + ask, encoding="utf-8")
             with self.assertRaises(ConnectivityCheckError) as ctx:
-                check_market_data_admission_sites(self.config, self.market_data_src)
-            self.assertIn("request_subscription", str(ctx.exception))
-        finally:
-            module.market_data_lib_source = original
+                self._check()
+            self.assertIn("runtime.rs", str(ctx.exception))
 
-        # Non-vacuity: with the real source restored the check passes again, so
-        # the failure above was the mutation and not the monkeypatch.
-        check_market_data_admission_sites(self.config, self.market_data_src)
-
-    def test_a_stale_exemption_is_caught(self) -> None:
-        """An exemption for a function that no longer exists is a hole nobody
-        is watching."""
-        config = json.loads(json.dumps(self.config))
-        block = config["connectivity_contract"]["restart_window"]["admission_sites"]
-        block["exempt"] = [*block["exempt"], "long_gone"]
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(config, self.market_data_src)
-        self.assertIn("long_gone", str(ctx.exception))
-
-    def test_exempting_a_real_admission_site_is_visible_in_the_evidence(self) -> None:
-        """An exemption must not be silent: the evidence names how many there
-        are, so removing a gate by exempting it shows up in the record."""
-        evidence = check_market_data_admission_sites(self.config, self.market_data_src)
-        self.assertIn("classified as unable to admit", evidence)
-        self.assertIn("unsubscribe", evidence)
-
-    def test_a_reformat_cannot_hide_an_admission_point(self) -> None:
-        """rustfmt wraps `self.subscribers\n.insert(` across lines. A raw
-        substring match would then miss the call that DEFINES an admission
-        point, and a guard a reformat can disarm is not a guard."""
-        wrapped = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn subscribe_wrapped(&mut self, request: &SubscriptionRequest) {
-        self
-            .subscribers
-            .insert(
-                request.symbol.clone(),
-                vec![request.strategy_id.clone()],
-            );
-    }
-}
-"""
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, self._inject(wrapped))
-        self.assertIn("subscribe_wrapped", str(ctx.exception))
-
-    def test_a_scan_that_matches_nothing_fails_rather_than_reporting_clean(self) -> None:
-        # A broken discovery reports a clean tree, which is the failure mode
-        # that looks most like the guard working.
-        mutated = self.market_data_src.replace("    subscribers: BTreeMap", "    renamed: BTreeMap")
-        self.assertNotEqual(mutated, self.market_data_src, "the private-field anchor moved")
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("no longer a private field", str(ctx.exception))
-
-    def test_a_public_subscriber_map_is_caught(self) -> None:
-        """The closure IS Rust's privacy. If the field goes public, any crate
-        can admit without passing through a gated function and no source scan
-        can close that — so the check must refuse rather than keep reporting."""
-        mutated = self.market_data_src.replace(
-            "    subscribers: BTreeMap", "    pub subscribers: BTreeMap"
+    def test_a_comment_naming_the_window_is_not_asking_it(self) -> None:
+        # The legal direction: prose is not code.
+        source = (
+            self.market_data_src
+            + "\n// RestartWindow::market_data_admission decides; we only ask the port.\n"
         )
-        self.assertNotEqual(mutated, self.market_data_src, "the private-field anchor moved")
-        with self.assertRaises(ConnectivityCheckError) as ctx:
-            check_market_data_admission_sites(self.config, mutated)
-        self.assertIn("not private", str(ctx.exception))
+        self.assertIn("admission proof", self._check(source=source))
+
+    def _edit_manifest(self, rel: str, old: str, new: str) -> None:
+        path = self.tmp / rel
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual(text.count(old), 1, f"anchor `{old}` moved in {rel}")
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    def test_unsafe_code_must_stay_forbidden_workspace_wide(self) -> None:
+        """Unsafe code forges a zero-sized proof (`transmute`, `zeroed`) and writes
+        a private map through a raw pointer; only `forbid` keeps it out of every
+        crate, because a crate cannot `#![allow]` its way under a forbid."""
+        forbid = 'unsafe_code = "forbid"'
+        for label, rel, old, new, needle in (
+            ("lint lowered to deny", "Cargo.toml", forbid, 'unsafe_code = "deny"', "'deny'"),
+            ("lint removed", "Cargo.toml", forbid, "", "None"),
+            (
+                "the market-data crate opts out",
+                "crates/atp-market-data/Cargo.toml",
+                "[lints]\nworkspace = true",
+                "",
+                "atp-market-data/Cargo.toml",
+            ),
+            (
+                "a crate adds its own lints",
+                "crates/atp-orchestrator/Cargo.toml",
+                "[lints]\nworkspace = true",
+                '[lints.rust]\nunsafe_code = "allow"',
+                "atp-orchestrator/Cargo.toml",
+            ),
+        ):
+            with self.subTest(shape=label):
+                original = (self.tmp / rel).read_text(encoding="utf-8")
+                self._edit_manifest(rel, old, new)
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self._check()
+                    self.assertIn(needle, str(ctx.exception))
+                    self.assertIn("AdmissionProof", str(ctx.exception))
+                finally:
+                    (self.tmp / rel).write_text(original, encoding="utf-8")
+        self.assertIn("forbids `unsafe` code", self._check())
 
 
 class RestartWindowProducerTest(unittest.TestCase):
@@ -1907,6 +1555,75 @@ pub fn takes(gate: impl atp_market_data::RestartWindowGate) -> String {
         with self.assertRaises(ConnectivityCheckError) as ctx:
             check_restart_window_gate_implementors(config, "", root=self.tmp)
         self.assertIn("elsewhere.rs", str(ctx.exception))
+
+    def test_a_test_module_inside_a_macro_is_not_stripped(self) -> None:
+        """A `#[cfg(test)] mod` handed to a macro is whatever the macro emits.
+
+        `keep! { #[cfg(test)] mod tests { impl Gate for AlwaysOpen {..} } }` with
+        `($(#[$a:meta])* mod $n:ident { $($b:tt)* }) => { $($b)* }` drops the cfg
+        and compiles the impl into production, while the stripper cut it as a
+        test module and the scan reported one implementor (red team, after r31).
+        """
+        self._inject(
+            "atp-orchestrator",
+            "macro_rules! keep { (#[$a:meta] mod $n:ident { $($b:tt)* }) => { $($b)* }; }\n"
+            "pub struct AlwaysOpen;\n"
+            "keep! { #[cfg(test)] mod tests {\n"
+            f"    impl atp_market_data::RestartWindowGate for super::AlwaysOpen {{\n{self.ALWAYS_ADMITS}    }}\n"
+            "} }\n",
+        )
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("macro", str(ctx.exception))
+
+    def test_a_comparison_in_an_impl_header_does_not_hide_it(self) -> None:
+        """A `>` that closes no `<` used to read as `impl Trait` in a type.
+
+        Inside `[..]` or `(..)` an angle bracket is a comparison, not generics:
+        `where [(); 2 >> 1]: Sized` and `AlwaysOpen<[u8; (2 > 1) as usize]>` sent
+        the angle count negative and the whole impl was skipped (red team).
+        """
+        gate = "atp_market_data::RestartWindowGate"
+        for label, body in {
+            "a shift in a where clause": (
+                "pub struct AlwaysOpen;\n"
+                f"impl {gate} for AlwaysOpen where [(); 2 >> 1]: Sized {{\n{self.ALWAYS_ADMITS}}}\n"
+            ),
+            "a comparison in a const array length": (
+                "pub struct AlwaysOpen<T>(core::marker::PhantomData<T>);\n"
+                f"impl {gate} for AlwaysOpen<[u8; (2 > 1) as usize]> {{\n{self.ALWAYS_ADMITS}}}\n"
+            ),
+        }.items():
+            with self.subTest(shape=label):
+                self._inject("atp-orchestrator", body)
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+                self.assertIn("AlwaysOpen", str(ctx.exception))
+
+    def test_a_symlink_under_crates_is_refused(self) -> None:
+        # rustc follows a symlinked module directory; Path.rglob does not.
+        outside = self.tmp / "vendor_evil"
+        outside.mkdir()
+        (outside / "mod.rs").write_text(
+            f"pub struct AlwaysOpen;\nimpl atp_market_data::RestartWindowGate for AlwaysOpen {{\n{self.ALWAYS_ADMITS}}}\n",
+            encoding="utf-8",
+        )
+        link = self.tmp / "crates/atp-orchestrator/src/evil"
+        link.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ConnectivityCheckError) as ctx:
+            check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("symlink", str(ctx.exception))
+
+    def test_an_underscore_import_is_not_an_alias(self) -> None:
+        # `use Gate as _;` binds no name; treating `_` as one made every `_`
+        # inside any macro look like the gate handed to it (red team).
+        self._inject(
+            "atp-orchestrator",
+            "use atp_market_data::RestartWindowGate as _;\n"
+            "pub fn odd(x: Option<u8>) -> bool { matches!(x, Some(_)) }\n",
+        )
+        evidence = check_restart_window_gate_implementors(self.config, "", root=self.tmp)
+        self.assertIn("exactly 1 production type", evidence)
 
     def test_a_nested_comment_that_closes_properly_is_not_an_implementor(self) -> None:
         # The legal direction: commented-out code is not code, at any depth.

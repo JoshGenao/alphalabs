@@ -29,9 +29,9 @@ pub use runtime::{
 };
 
 use atp_types::{
-    HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataAdmission,
-    MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,
-    SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionLimitEvent,
+    AdmissionProof, HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition,
+    MarketDataAdmission, MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService,
+    SecurityKey, SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionLimitEvent,
     SubscriptionLimitState, SubscriptionRequest, HEARTBEAT_STALENESS_THRESHOLD_MS,
 };
 
@@ -91,13 +91,14 @@ pub trait SubscriptionLimitEventSink {
 /// rather than whenever the caller last looked, so a window that opened between
 /// those two moments still refuses.
 ///
-/// It does NOT buy unforgeability, and an earlier version of this comment
-/// claimed it did. An `impl RestartWindowGate` returning `Admitted` is exactly
-/// as forgeable as passing `false`; three test files write one. What actually
-/// closes that is `tools/connectivity_check.py`, which enumerates every
-/// PRODUCTION implementor from the crate sources and refuses any not declared
-/// in `connectivity_contract.restart_window.gate_port.production_implementors`
-/// — because a comment saying the test double is not exported is not a guard.
+/// Unforgeability comes from the TYPE, not the port: `Admitted` carries an
+/// `atp_types::AdmissionProof`, which only a `RestartWindow` decision can make,
+/// so an implementor cannot simply return `Admitted` - it has to ask a window.
+/// What remains is a window fed false inputs (a clock or schedule an
+/// implementor chose), so `tools/connectivity_check.py` still enumerates every
+/// PRODUCTION implementor and refuses any not declared in
+/// `connectivity_contract.restart_window.gate_port.production_implementors`.
+/// Test doubles ask a real window whose restart is decades away.
 ///
 /// The implementation is the composition layer's restart-window producer,
 /// which derives the answer from [`atp_types::RestartWindow`] so that this
@@ -122,10 +123,16 @@ pub trait RestartWindowGate {
 
 /// Happy-path admission envelope. Echoes back the request identity so the
 /// caller can correlate the acceptance with the originating strategy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It carries the [`AdmissionProof`] its acceptance was decided by, so an
+/// acceptance cannot be built without a restart-window decision (SRS-MD-005):
+/// the proof is only made by `atp_types::RestartWindow`. That also makes it
+/// neither `Clone` nor `Copy`.
+#[derive(Debug, PartialEq, Eq)]
 pub struct SubscriptionAccepted {
     pub strategy_id: StrategyId,
     pub symbol: String,
+    pub admission: AdmissionProof,
 }
 
 impl MarketDataSubscriptionManager {
@@ -206,19 +213,20 @@ impl MarketDataSubscriptionManager {
         // it, and the second predates this feature. Recorded in
         // `connectivity_contract.restart_window.deferred[]` with ERR-4 as the
         // owner, and pinned by a test so it cannot drift unnoticed.
-        match window.admission() {
-            MarketDataAdmission::Admitted => {}
+        let admission = match window.admission() {
+            MarketDataAdmission::Admitted(proof) => proof,
             MarketDataAdmission::SuspendedForScheduledRestart => {
                 return Err(StructuredSubscriptionError::suspended_for_scheduled_restart(request));
             }
             MarketDataAdmission::ConnectivityLost => {
                 return Err(StructuredSubscriptionError::connectivity_lost(request));
             }
-        }
+        };
         match counter.try_acquire(&request) {
             SubscriptionLimitState::WithinLimit => Ok(SubscriptionAccepted {
                 strategy_id: request.strategy_id,
                 symbol: request.symbol,
+                admission,
             }),
             SubscriptionLimitState::ExceededLimit => {
                 let current_lines = counter.lines_in_use();
@@ -986,7 +994,12 @@ mod tests {
     struct OpenWindow;
     impl RestartWindowGate for OpenWindow {
         fn admission(&self) -> MarketDataAdmission {
-            MarketDataAdmission::Admitted
+            // A REAL decision: `AdmissionProof` can only come from a window, so
+            // the open window here is one whose restart is decades away.
+            const RESTART_2100_NS: i64 = 4_102_444_800 * 1_000_000_000;
+            atp_types::RestartWindow::with_defaults(RESTART_2100_NS)
+                .expect("SYS-75 defaults are valid")
+                .market_data_admission(0, true)
         }
     }
 

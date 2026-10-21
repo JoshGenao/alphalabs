@@ -60,9 +60,8 @@ use atp_execution::{
 use atp_market_data::MarketDataSubscriptionManager;
 use atp_notification::{DeliveryOutcome, OperatorNotifier, SharedChannelClient};
 use atp_types::{
-    AssetClass, ConnectivityEvent, ConnectivityState, MarketDataAdmission, OrderSide,
-    OrderSubmission, OrderType, RestartPhase, RestartWindow, RestartWindowError, StrategyId,
-    SubscriptionRequest,
+    AdmissionOutcome, AssetClass, ConnectivityEvent, ConnectivityState, OrderSide, OrderSubmission,
+    OrderType, RestartPhase, RestartWindow, RestartWindowError, StrategyId, SubscriptionRequest,
 };
 
 use crate::connectivity_notification::{
@@ -177,7 +176,8 @@ pub struct RestartWindowEvidence {
     /// WHY the market-data request was refused. Carried separately from the
     /// boolean because "suspended for scheduled maintenance" and "connectivity
     /// is lost" are opposite instructions to an operator.
-    pub market_data_admission: MarketDataAdmission,
+    /// The decision as a plain label: evidence records it, it does not admit.
+    pub market_data_admission: AdmissionOutcome,
     pub market_data_refusal: Option<String>,
     /// Upstream IB lines the REGISTRY holds after the run. Zero while suspended
     /// is the witness that the mutating admission point opened none.
@@ -349,7 +349,7 @@ pub fn run_restart_window_scenario(
     };
     let subscription =
         manager.request_subscription(request.clone(), &connectivity, &registry, &limit_events);
-    let market_data_admission = connectivity.market_data_admission();
+    let market_data_admission = connectivity.market_data_admission().outcome();
     let (market_data_admitted, market_data_refusal) = match subscription {
         Ok(_) => (true, None),
         Err(err) => (false, Some(err.error_type)),

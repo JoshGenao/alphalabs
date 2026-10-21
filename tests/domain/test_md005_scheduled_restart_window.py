@@ -292,12 +292,16 @@ def test_the_window_carries_no_clock_of_its_own() -> None:
     the boundaries are the whole requirement."""
     types_source = TYPES_SOURCE.read_text(encoding="utf-8")
     start = types_source.index("pub struct RestartWindow {")
-    end = types_source.index("pub enum MarketDataAdmission", start)
-    window_span = types_source[start:end]
-    for forbidden in ("SystemTime::now", "Instant::now"):
-        assert forbidden not in window_span, (
-            f"RestartWindow reads the wall clock via {forbidden}; the instant must be injected"
-        )
+    end = types_source.index("\n// ------", start)
+    # The admission decision is a RestartWindow method too, in its own module
+    # (the proof's private field is what makes `Admitted` unforgeable).
+    admission = (TYPES_SOURCE.parent / "admission.rs").read_text(encoding="utf-8")
+    for window_span in (types_source[start:end], admission):
+        assert "impl RestartWindow" in window_span, "the window's code moved"
+        for forbidden in ("SystemTime::now", "Instant::now"):
+            assert forbidden not in window_span, (
+                f"RestartWindow reads the wall clock via {forbidden}; the instant must be injected"
+            )
 
 
 def test_the_escalation_arm_exists_and_has_no_catch_all() -> None:
@@ -474,123 +478,6 @@ def test_a_proof_line_never_outruns_the_phase_it_names() -> None:
         _assert_one_passed(_cli_test(name), name)
 
 
-def test_the_admission_guard_is_closed_by_rusts_own_privacy() -> None:
-    """The guard's fourth and final shape.
-
-    Three earlier versions each described the dangerous code — by the port it
-    took, by two effect forms, by public `&mut self` on the inherent impl — and
-    a reviewer walked past each in turn. The closure that holds is not a
-    description: `subscribers` is a PRIVATE field, so the complete set of code
-    that can reach the consolidated set is "the functions in this file naming
-    it", bounded by the compiler rather than by imagination.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-    # The owning module carries no `#[cfg(test)]` block, so appending is already
-    # production code; where a marker exists the bypass is spliced before it, so
-    # the check (which correctly ignores the unshipped test module) still sees
-    # the injection.
-    head, marker, tail = source.partition("\n#[cfg(test)]\nmod tests {")
-
-    shapes = {
-        "a trait impl with &mut self": """
-trait Sneaky { fn admit(&mut self, k: SecurityKey, s: StrategyId); }
-impl Sneaky for ConsolidatedSubscriptionRegistry {
-    fn admit(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-""",
-        "a public free function writing the map": """
-pub fn force_register(r: &mut ConsolidatedSubscriptionRegistry, k: SecurityKey, s: StrategyId) {
-    r.subscribers.insert(k, vec![s]);
-}
-""",
-        "entry().or_default().push()": """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force_subscribe(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.entry(k).or_default().push(s);
-    }
-}
-""",
-        "a PRIVATE helper writing the map": """
-impl ConsolidatedSubscriptionRegistry {
-    fn quietly_admit(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-""",
-    }
-    for injected in shapes.values():
-        with pytest.raises(ConnectivityCheckError):
-            check_market_data_admission_sites(config, head + injected + marker + tail)
-
-    # Non-vacuity: the real source must still pass.
-    check_market_data_admission_sites(config, source)
-
-
-def test_an_exemption_cannot_be_inherited_by_a_new_function() -> None:
-    """Exempting by bare NAME is a hole.
-
-    A trait impl reusing an exempt name inherits the exemption and is never
-    asked to consult the window — the same trait-impl shape that had already
-    defeated an earlier version of this guard. An exemption now has to resolve
-    to exactly one function, keep its declared receiver, and stay unable to add
-    a subscriber.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-
-    reused_name = """
-trait Sneaky { fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId); }
-impl Sneaky for ConsolidatedSubscriptionRegistry {
-    fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-    with pytest.raises(ConnectivityCheckError, match="is_subscribed"):
-        check_market_data_admission_sites(config, source + reused_name)
-
-    # A DESCENDANT module would inherit visibility and go unscanned, leaving the
-    # closure one level short.
-    with pytest.raises(ConnectivityCheckError, match="submodule"):
-        check_market_data_admission_sites(config, source + "\nmod inner;\n")
-
-    # An exempt reader that becomes a mutator makes its own exemption false.
-    became_mutator = source.replace(
-        "pub fn is_subscribed(&self,", "pub fn is_subscribed(&mut self,", 1
-    )
-    assert became_mutator != source, "the receiver anchor moved"
-    with pytest.raises(ConnectivityCheckError, match="&mut self"):
-        check_market_data_admission_sites(config, became_mutator)
-
-    # Non-vacuity: the real source still passes.
-    check_market_data_admission_sites(config, source)
-
-
 def test_a_derived_instant_refuses_overflow_rather_than_panicking() -> None:
     """A panic exits non-zero, so a check reading only the exit code counts it
     as the guard working — while the operator gets a backtrace instead of a
@@ -642,47 +529,12 @@ def test_a_backwards_clock_re_probes_rather_than_reusing() -> None:
     _assert_one_passed(_producer_test(name), name)
 
 
-def test_the_admission_scan_reads_deref_assignments_too() -> None:
-    """The comment stripper used to delete real code.
-
-    It dropped every line starting with `*`, taking
-    `*self.subscribers.entry(k).or_default() = vec![s];` with it — so an ungated
-    admission point was invisible. A stripper that removes code is worse than
-    the false positive it was added for.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-    bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force(&mut self, k: SecurityKey, s: StrategyId) {
-        *self.subscribers.entry(k).or_default() = vec![s];
-    }
-}
-"""
-    with pytest.raises(ConnectivityCheckError, match="force"):
-        check_market_data_admission_sites(config, source + bypass)
-
-    # Non-vacuity: the real source still passes.
-    check_market_data_admission_sites(config, source)
-
-
 def test_the_privacy_closure_survives_any_widened_visibility() -> None:
-    """The closure IS Rust's privacy, so any widening breaks it.
+    """The registry's set stays private, in any spelling of a widening.
 
-    `pub(crate)` re-opens the field to every sibling module — including
-    `live_feed`, the exact module the registry was moved into its own file to
-    escape — and the earlier check matched only a bare `pub`.
+    It no longer has to: an `AdmittedSet` reached from anywhere still adds only
+    by spending a proof. It is kept private anyway, because a narrower surface
+    is a smaller review, and the check refuses any visibility at all.
     """
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     try:
@@ -697,12 +549,15 @@ def test_the_privacy_closure_survives_any_widened_visibility() -> None:
 
     config = load_config()
     source = market_data_source(config)
-    for visibility in ("pub", "pub(crate)", "pub(super)"):
-        mutated = source.replace(
-            "    subscribers: BTreeMap", f"    {visibility} subscribers: BTreeMap", 1
-        )
+    for widened in (
+        "    pub subscribers: AdmittedSet",
+        "    pub(crate) subscribers: AdmittedSet",
+        "    pub(super) subscribers: AdmittedSet",
+        "    pub r#subscribers: AdmittedSet",
+    ):
+        mutated = source.replace("    subscribers: AdmittedSet", widened, 1)
         assert mutated != source, "the field anchor moved"
-        with pytest.raises(ConnectivityCheckError, match="not private"):
+        with pytest.raises(ConnectivityCheckError, match="must stay private"):
             check_market_data_admission_sites(config, mutated)
 
     # Non-vacuity: the real source still passes.
@@ -992,102 +847,109 @@ impl RestartWindowGate for bypass::ScheduledRestartConnectivity {
     assert len(assert_connectivity_static(config)) == 13
 
 
-def test_a_second_function_sharing_a_gated_name_is_read() -> None:
-    """The identity class (r30) in the admission-site check, in the REAL module.
+def test_the_compiler_refuses_every_write_that_skips_the_window() -> None:
+    """Every shape review used against the text scan now fails to COMPILE.
 
-    The check read "the body of `subscribe`" - the first one - so a trait-impl
-    `fn subscribe` that writes the map without consulting the window hid behind
-    the gated one. Every function that reaches the map is now read on its own.
+    Rounds 21-31 each walked a different ungated write past a source scan of
+    `subscriptions.rs`: a trait-impl method, an exempt name reused (also raw,
+    `r#is_subscribed`), `entry().or_default().push()`, a deref assignment, a
+    second `fn subscribe`. The set is now an `AdmittedSet` whose only add method
+    spends an `AdmissionProof`, which only `RestartWindow` can make. This plants
+    each shape in the REAL module and asks rustc: each must be refused, with the
+    error that proves WHY, at the planted line. One proof also cannot be spent
+    twice - it is neither `Clone` nor `Copy`.
     """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            assert_connectivity_static,
-            load_config,
+    if shutil.which("cargo") is None:
+        pytest.skip(reason=_NO_CARGO)
+
+    def check() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["cargo", "check", "-p", "atp-market-data", "--lib", "--message-format", "short"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    finally:
-        sys.path.pop(0)
 
-    config = load_config()
-    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
-
-    target = REPO_ROOT / "crates/atp-market-data/src/subscriptions.rs"
-    original = target.read_text(encoding="utf-8")
-    injected = (
-        original
-        + """
-pub trait Sneak {
-    fn subscribe(&mut self, key: SecurityKey, id: StrategyId);
-}
-impl Sneak for ConsolidatedSubscriptionRegistry {
-    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {
-        self.subscribers.insert(key, vec![id]);
+    write = "self.subscribers.insert(key, vec![id]);"
+    shapes = {
+        "a trait-impl mutator reusing an exempt name, raw (r31)": (
+            "pub trait Sneak { fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId); }\n"
+            "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
+            f"    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {{ {write} }}\n}}\n",
+            "E0599",
+        ),
+        "a second `fn subscribe` in a trait impl (r30)": (
+            "pub trait Sneak2 { fn subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
+            "impl Sneak2 for ConsolidatedSubscriptionRegistry {\n"
+            f"    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {{ {write} }}\n}}\n",
+            "E0599",
+        ),
+        "entry().or_default().push() (r5)": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.entry(key).or_default().push(id);\n    }\n}\n",
+            "E0599",
+        ),
+        "reaching the set's private map": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.lines.insert(key, vec![id]);\n    }\n}\n",
+            "E0616",
+        ),
+        "a forged proof": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.admit(atp_types::AdmissionProof { _sealed: () }, key, id);\n    }\n}\n",
+            "E0451",
+        ),
+        "one proof spent twice": (
+            "impl ConsolidatedSubscriptionRegistry {\n"
+            "    pub fn twice<W: RestartWindowGate>(&mut self, w: &W, key: SecurityKey, id: StrategyId) {\n"
+            "        if let MarketDataAdmission::Admitted(proof) = w.admission() {\n"
+            "            self.subscribers.admit(proof, key.clone(), id.clone());\n"
+            "            self.subscribers.admit(proof, key, id);\n        }\n    }\n}\n",
+            "E0382",
+        ),
+        # Unsafe code fabricates the zero-sized proof without its constructor.
+        # The workspace forbids `unsafe_code`, so rustc refuses the block itself
+        # (a lint error, which has no code), and `forbid` cannot be lowered locally.
+        "a proof transmuted from ()": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof: atp_types::AdmissionProof = unsafe { std::mem::transmute(()) };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "usage of an `unsafe` block",
+        ),
+        "a zeroed proof": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof = unsafe { std::mem::zeroed::<atp_types::AdmissionProof>() };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "usage of an `unsafe` block",
+        ),
+        "unsafe allowed locally, under the forbid": (
+            "#[allow(unsafe_code)]\nimpl ConsolidatedSubscriptionRegistry {\n"
+            "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof = unsafe { std::mem::zeroed::<atp_types::AdmissionProof>() };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "E0453",
+        ),
     }
-}
-"""
-    )
+    original = SUBSCRIPTIONS_SOURCE.read_text(encoding="utf-8")
+    assert "#[cfg(test)]" not in original, "appending would land inside a test module"
+    baseline = check()
+    assert baseline.returncode == 0, "the real tree must compile:\n" + baseline.stderr[-3000:]
     try:
-        target.write_text(injected, encoding="utf-8")
-        with pytest.raises(ConnectivityCheckError, match="subscribe"):
-            assert_connectivity_static(config)
+        for label, (planted, code) in shapes.items():
+            SUBSCRIPTIONS_SOURCE.write_text(original + "\n" + planted, encoding="utf-8")
+            result = check()
+            output = result.stdout + result.stderr
+            assert result.returncode != 0, f"{label}: rustc ACCEPTED it\n{output[-2000:]}"
+            needle = f"error[{code}]" if re.fullmatch(r"E\d{4}", code) else f"error: {code}"
+            assert needle in output, f"{label}: expected {needle}\n{output[-2000:]}"
+            assert "subscriptions.rs" in output, f"{label}: refused elsewhere\n{output[-2000:]}"
     finally:
         # Restore and stamp the mtime forward: a mtime-preserving restore leaves
         # cargo serving the mutant on the next run.
-        target.write_text(original, encoding="utf-8")
-        target.touch()
-
-    assert len(assert_connectivity_static(config)) == 13
-
-
-def test_a_raw_identifier_cannot_inherit_an_exemption() -> None:
-    """Adversarial review r31 [high], in the REAL module, through the FULL gate.
-
-    `fn r#is_subscribed(&mut self, ..)` in a trait impl inserted into the map. The
-    span walker read it as `is_subscribed` - exempt - while the declaration counter
-    did not see it at all, so the read-only exemption was inherited and all 13
-    checks passed. Raw identifiers are now erased once, in the lexer, and one
-    parser serves both readers.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            assert_connectivity_static,
-            load_config,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
-
-    target = REPO_ROOT / "crates/atp-market-data/src/subscriptions.rs"
-    original = target.read_text(encoding="utf-8")
-    injected = (
-        original
-        + """
-pub trait Sneak {
-    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId);
-}
-impl Sneak for ConsolidatedSubscriptionRegistry {
-    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {
-        self.subscribers.insert(key, vec![id]);
-    }
-}
-"""
-    )
-    try:
-        target.write_text(injected, encoding="utf-8")
-        with pytest.raises(ConnectivityCheckError, match="is_subscribed"):
-            assert_connectivity_static(config)
-    finally:
-        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
-        # cargo serving the mutant on the next run.
-        target.write_text(original, encoding="utf-8")
-        target.touch()
-
-    assert len(assert_connectivity_static(config)) == 13
+        SUBSCRIPTIONS_SOURCE.write_text(original, encoding="utf-8")
+        SUBSCRIPTIONS_SOURCE.touch()
+    assert check().returncode == 0, "the restored tree must compile again"
 
 
 def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
@@ -1445,7 +1307,9 @@ def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
             str(checker),
             "-q",
             "-k",
-            "renamed_trait_import or nested_generic_bound",
+            # The nested-bound half pinned exempt-declaration parsing, which the
+            # compiler replaced (see test_the_compiler_refuses_every_write_...).
+            "renamed_trait_import",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -1453,7 +1317,7 @@ def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
-    assert "2 passed" in combined, combined[-2000:]
+    assert "1 passed" in combined, combined[-2000:]
 
 
 def test_the_implementor_enumeration_refuses_what_it_cannot_parse() -> None:
@@ -1524,7 +1388,9 @@ def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
             str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
             "-q",
             "-k",
-            "semicolon_inside_a_generic_bound or semicolon_in_the_header or two_hop_rename",
+            # The array-`;` half also pinned exempt-declaration parsing, which
+            # the compiler replaced; the implementor scan's `;` case remains.
+            "semicolon_in_the_header or two_hop_rename",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -1532,7 +1398,7 @@ def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2000:]
-    assert "3 passed" in combined, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
 
 
 def test_the_admission_guard_does_not_cry_wolf_on_legal_code() -> None:

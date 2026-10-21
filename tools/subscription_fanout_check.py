@@ -340,10 +340,11 @@ def check_dedup_invariant(config: dict, md_src: str) -> str:
             f"`{spec['dedup_push']}` — the dedup path must reuse the existing line"
         )
     return (
-        "atp-market-data::subscribe matches on self.subscribers.get_mut, inserts a new "
-        "upstream subscription EXACTLY ONCE (first subscriber → Opened) and appends "
-        "additional subscribers via existing.push (→ SubscriberAdded, no new line) — "
-        "the SRS-MD-001 consolidation invariant"
+        f"atp-market-data::subscribe short-circuits an existing subscriber "
+        f"(`{spec['match_scrutinee']}`), adds EXACTLY ONCE (`{spec['new_line_insert']}`), "
+        "and reports Opened only for the first subscriber of a security and "
+        "SubscriberAdded (no new line) for every later one — the SRS-MD-001 "
+        "consolidation invariant"
     )
 
 
