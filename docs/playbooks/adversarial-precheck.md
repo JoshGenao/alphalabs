@@ -145,7 +145,14 @@ Three corollaries worth having before you write the guard:
   `unsafe_code = "forbid"` workspace-wide - unsafe code transmutes `()` into a
   zero-sized proof, so the type-level guarantee holds only in safe Rust. Name
   the residual out loud: a caller can still hand the decision a false clock.
-  `(SRS-MD-005, after r31)`
+  `(SRS-MD-005, after r31)` The scan that is left must bind IDENTITY too:
+  r32 kept the real types intact and swapped the registry's field for a
+  same-named type through a `use`, because the check compared the spelling
+  `AdmittedSet` while hashing a different file. Spell every load-bearing type
+  as an absolute path (`crate::...`, `::extern_crate::...`) and prove each
+  segment resolves to the pinned file: one plain `mod` declaration per
+  segment, the real crate behind the extern name, and the holder's whole field
+  list pinned. `(SRS-MD-005 r32)`
 
 `(SRS-MD-005)`
 

@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 31 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 32 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 31 - the loop has not reached APPROVE.** The feature first
+  standing at round 32 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +244,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 31 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 32 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -697,6 +697,31 @@ count.
       rustc ACCEPTED it"). Residual, stated not hidden: a caller can feed the
       window a false clock or schedule - configuration integrity, not a code
       path.
+  r32 block/1  - 2026-10-21, at 8530553 (the redesign). Codex, one high
+      finding, and the r30 class again one level up: the check compared the
+      registry field's SPELLING (`AdmittedSet`) while hashing the file that
+      defines the real one, so a `use` that swapped in a same-named set with a
+      proof-free add method passed all 13 checks. The compiler guarantee was
+      sound; the check's claim that the registry USES it was not. Fixed by
+      identity, not spelling: the field is now
+      `crate::subscriptions::admitted_set::AdmittedSet` and the envelope's proof
+      `::atp_types::admission::AdmissionProof`, absolute paths no `use` or local
+      item can redirect, and the check resolves every segment - each module
+      declared exactly once with no attribute (`#[path]`, `#[cfg]` twin) and no
+      inline body; `atp_types` the real crate (exact path dependency, no
+      `package` rename, library name kept, no `extern crate`); no other
+      atp-types code naming `market_data_admission`, so no wrapper hands out a
+      proof under another name; and the registry's whole field list pinned, so
+      a second, ungated set cannot sit beside the gated one. Reproduced first
+      (the shape passed the real check), then 14 regression shapes in the
+      contract tests and the r32 shape planted in the real tree in the domain
+      test; each rule mutation-verified. The first gate run then caught a
+      test whose anchor had silently moved: the widened-visibility test
+      replaced the first `    subscribers: AdmittedSet`, which after the
+      rename matched `new()`'s struct literal, not the field, so its
+      `mutated != source` guard passed while the field was never touched. It
+      now matches the whole declaration line exactly once. A "the text
+      changed" guard does not prove the TARGET changed.
 
 ## Playbook updates
 
@@ -775,7 +800,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 31**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 32**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer
