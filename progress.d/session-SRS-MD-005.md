@@ -2,7 +2,7 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 32 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 33 rounds.
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +208,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 32 - the loop has not reached APPROVE.** The feature first
+  standing at round 33 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -722,6 +722,26 @@ count.
       `mutated != source` guard passed while the field was never touched. It
       now matches the whole declaration line exactly once. A "the text
       changed" guard does not prove the TARGET changed.
+  r33 block/1  - 2026-10-23, at 3eb1f73 (the r32 fix). Codex, one high
+      finding, the r32 class one level up again: the check bound every module
+      under `src/lib.rs` but never proved Cargo builds the library FROM
+      `src/lib.rs`. Pointing atp-market-data's `[lib] path` at a copy of lib.rs
+      whose `SubscriptionAccepted` carried no proof passed all 13 checks, which
+      read the original file that no longer compiled. Fixed for every file any
+      static check reads, not only the two crates the reviewer named:
+      `_check_cargo_compiles_the_files_read` requires each crate's library root
+      to be `src/lib.rs` and walks the module chain from that root to the file
+      (each segment declared once, no attribute, no inline body). It replaces
+      r32's hand-listed `module_wiring` (three entries, market-data only), so
+      the execution crate, the producer and the reachability seam, which had
+      the same gap, are now bound too, through the gate's one source loader.
+      Build scripts, proc-macro crates, symlinks and `include!` were already
+      refused tree-wide by `_refuse_code_outside_the_scan`. Reproduced first
+      (all 13 checks passed on the planted copy), then 5 regression shapes in
+      the contract tests plus a `./src/lib.rs` non-vacuity case, and the r33
+      shape planted in the real manifest in the domain test; each of the three
+      parts mutation-verified. Round 34 was NOT run: the operator asked to fix
+      and stop for review, leaving 1 BLOCK round of the granted budget.
 
 ## Playbook updates
 
@@ -800,7 +820,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 32**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 33**, so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer

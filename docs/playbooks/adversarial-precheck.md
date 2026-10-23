@@ -152,7 +152,13 @@ Three corollaries worth having before you write the guard:
   as an absolute path (`crate::...`, `::extern_crate::...`) and prove each
   segment resolves to the pinned file: one plain `mod` declaration per
   segment, the real crate behind the extern name, and the holder's whole field
-  list pinned. `(SRS-MD-005 r32)`
+  list pinned. `(SRS-MD-005 r32)` And bind the chain at its START: r33
+  pointed `[lib] path` at another file, so every module check passed on a
+  `src/lib.rs` Cargo no longer compiled. Derive the chain from each file's
+  path instead of listing it by hand, and run it for EVERY file any check
+  reads by name: crate library root is `src/lib.rs`, then one plain `mod`
+  per segment. A hand list covers the files the last finding named; the
+  derived one covers the files the next finding will. `(SRS-MD-005 r33)`
 
 `(SRS-MD-005)`
 
