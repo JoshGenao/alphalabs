@@ -982,8 +982,28 @@
         "module": "crates/atp-market-data/src/subscriptions.rs",
         "module_name": "subscriptions",
         "private_field": "subscribers",
-        "field_type": "AdmittedSet",
+        "field_type": "crate::subscriptions::admitted_set::AdmittedSet",
+        "registry": {
+          "struct": "ConsolidatedSubscriptionRegistry",
+          "fields": {
+            "subscribers": "crate::subscriptions::admitted_set::AdmittedSet",
+            "line_limit": "u32"
+          }
+        },
         "acceptance_envelope": "SubscriptionAccepted",
+        "envelope_proof_type": "::atp_types::admission::AdmissionProof",
+        "module_wiring": [
+          {"declared_in": "crates/atp-types/src/lib.rs", "module": "admission"},
+          {"declared_in": "crates/atp-market-data/src/lib.rs", "module": "subscriptions"},
+          {"declared_in": "crates/atp-market-data/src/subscriptions.rs", "module": "admitted_set"}
+        ],
+        "types_crate": {
+          "manifest": "crates/atp-types/Cargo.toml",
+          "package": "atp-types",
+          "dependent_manifest": "crates/atp-market-data/Cargo.toml",
+          "dependency": {"path": "../atp-types"}
+        },
+        "$identity_why": "Review r32 swapped the registry's set for a same-named type through a `use`: the check compared spellings, not identities. Every name the guarantee rests on is now spelled as an absolute path (`crate::...`, `::atp_types::...`) that no `use` or local item can redirect, and each path is resolved here: each module is declared exactly once with no attribute (so no `#[path]` or `#[cfg]` twin) and no inline body, `atp_types` is the real atp-types crate (no rename, no `extern crate`), and the registry holds exactly the pinned fields, so a second, ungated set cannot sit beside the gated one.",
         "admission_proof": {
           "module": "crates/atp-types/src/admission.rs",
           "type": "AdmissionProof",
@@ -992,7 +1012,7 @@
         "admitted_set": {
           "module": "crates/atp-market-data/src/subscriptions/admitted_set.rs",
           "type": "AdmittedSet",
-          "sha256": "d6874f14f7b96e69fb81d35539b832b68fceeb5211f15d2dda1194de489db5a8"
+          "sha256": "f44e945ddbd157fb89b96c02cada2292bf5f251fb294e641aba4bbaf1fa246dc"
         },
         "why": "SYS-75(a) suspends market-data requests as well as order submission, so nothing may join the consolidated subscription set without a restart-window decision. Seven versions of a source scan tried to recognise every way Rust can write to a map and review kept finding the next (entry().or_default(), a trait-impl method, a sibling module, a macro body, a raw identifier, Vec::push(..), mem::swap, a gate call whose answer is ignored). The guarantee now rests on types: atp_types::AdmissionProof has a private field and is built only by RestartWindow::market_data_admission; the registry's map is an AdmittedSet whose only add method consumes a proof; the acceptance envelope carries one. Any write that skipped the decision is a compile error. tools/connectivity_check.py pins the two files that alone can make a proof or grow the set by sha256, keeps the proof's field and the registry's field private, keeps the compile_fail doctests that prove both rules, and refuses atp-market-data code that asks a RestartWindow itself. Residual, stated rather than hidden: a caller can hand a window a false clock or schedule; that is configuration integrity, not a code path."
       },

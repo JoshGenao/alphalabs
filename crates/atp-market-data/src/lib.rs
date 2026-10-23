@@ -29,9 +29,9 @@ pub use runtime::{
 };
 
 use atp_types::{
-    AdmissionProof, HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition,
-    MarketDataAdmission, MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService,
-    SecurityKey, SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionLimitEvent,
+    HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataAdmission,
+    MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,
+    SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionLimitEvent,
     SubscriptionLimitState, SubscriptionRequest, HEARTBEAT_STALENESS_THRESHOLD_MS,
 };
 
@@ -124,15 +124,16 @@ pub trait RestartWindowGate {
 /// Happy-path admission envelope. Echoes back the request identity so the
 /// caller can correlate the acceptance with the originating strategy.
 ///
-/// It carries the [`AdmissionProof`] its acceptance was decided by, so an
+/// It carries the [`AdmissionProof`](atp_types::admission::AdmissionProof) its acceptance was decided by, so an
 /// acceptance cannot be built without a restart-window decision (SRS-MD-005):
 /// the proof is only made by `atp_types::RestartWindow`. That also makes it
-/// neither `Clone` nor `Copy`.
+/// neither `Clone` nor `Copy`. The type is spelled from the extern crate root
+/// (`::atp_types`), so no local item of the same name can stand in for it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SubscriptionAccepted {
     pub strategy_id: StrategyId,
     pub symbol: String,
-    pub admission: AdmissionProof,
+    pub admission: ::atp_types::admission::AdmissionProof,
 }
 
 impl MarketDataSubscriptionManager {

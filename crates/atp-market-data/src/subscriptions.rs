@@ -202,8 +202,9 @@ impl std::error::Error for SubscriptionRegistryError {}
 pub struct ConsolidatedSubscriptionRegistry {
     // SecurityKey -> subscribers in subscription order, kept duplicate-free
     // by `subscribe`. Only an admission can grow it: `AdmittedSet::admit` is the
-    // one way to add, and it consumes an `AdmissionProof` (SRS-MD-005).
-    subscribers: AdmittedSet,
+    // one way to add, and it consumes an `AdmissionProof` (SRS-MD-005). Spelled
+    // as an absolute path so no `use` can swap in a same-named set (review r32).
+    subscribers: crate::subscriptions::admitted_set::AdmittedSet,
     line_limit: u32,
 }
 

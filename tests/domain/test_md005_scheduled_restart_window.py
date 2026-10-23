@@ -549,16 +549,18 @@ def test_the_privacy_closure_survives_any_widened_visibility() -> None:
 
     config = load_config()
     source = market_data_source(config)
-    for widened in (
-        "    pub subscribers: AdmittedSet",
-        "    pub(crate) subscribers: AdmittedSet",
-        "    pub(super) subscribers: AdmittedSet",
-        "    pub r#subscribers: AdmittedSet",
-    ):
-        mutated = source.replace("    subscribers: AdmittedSet", widened, 1)
-        assert mutated != source, "the field anchor moved"
-        with pytest.raises(ConnectivityCheckError, match="must stay private"):
-            check_market_data_admission_sites(config, mutated)
+    # The whole declaration line, matched exactly once: a prefix such as
+    # "    subscribers: AdmittedSet" also matches `new()`'s struct literal, and
+    # widening THAT changes the text without touching the field (found when the
+    # field became an absolute path, r32).
+    decl = "    subscribers: crate::subscriptions::admitted_set::AdmittedSet,\n"
+    assert source.count(decl) == 1, "the field declaration moved"
+    for visibility in ("pub ", "pub(crate) ", "pub(super) "):
+        for name in ("subscribers", "r#subscribers"):
+            widened = decl.replace("    subscribers", f"    {visibility}{name}")
+            mutated = source.replace(decl, widened)
+            with pytest.raises(ConnectivityCheckError, match="must stay private"):
+                check_market_data_admission_sites(config, mutated)
 
     # Non-vacuity: the real source still passes.
     check_market_data_admission_sites(config, source)
@@ -991,6 +993,67 @@ def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
         # cargo serving the mutant on the next run.
         target.write_text(original, encoding="utf-8")
         target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_same_named_set_in_the_real_registry_is_refused() -> None:
+    """Review r32, planted in the REAL `subscriptions.rs`: a `use` swaps in a set
+    that is also called `AdmittedSet` but adds without a proof, and a registry
+    method calls it. The gate compared the field's SPELLING, so all 13 checks
+    passed. The field is now an absolute path whose every segment the gate
+    resolves, and the full static gate must refuse both the swap and a module
+    redirected under the same path."""
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    original = SUBSCRIPTIONS_SOURCE.read_text(encoding="utf-8")
+    use = "use admitted_set::{AdmittedSet, Removal};"
+    field = "subscribers: crate::subscriptions::admitted_set::AdmittedSet,"
+    for anchor in (use, field, "pub mod admitted_set;"):
+        assert original.count(anchor) == 1, f"anchor `{anchor}` moved"
+    impostor = (
+        "use admitted_set::Removal;\nuse impostor::AdmittedSet;\nmod impostor {\n"
+        "    #[derive(Debug, Default)]\n"
+        "    pub struct AdmittedSet(Vec<(atp_types::SecurityKey, atp_types::StrategyId)>);\n"
+        "    impl AdmittedSet {\n"
+        "        pub fn add(&mut self, k: atp_types::SecurityKey, s: atp_types::StrategyId) {\n"
+        "            self.0.push((k, s));\n        }\n    }\n}\n"
+    )
+    writer = (
+        "\nimpl ConsolidatedSubscriptionRegistry {\n"
+        "    pub fn ungated(&mut self, k: SecurityKey, s: StrategyId) { self.subscribers.add(k, s); }\n}\n"
+    )
+    shapes = {
+        "r32 as found": (
+            original.replace(use, impostor).replace(field, "subscribers: AdmittedSet,") + writer,
+            "no longer an",
+        ),
+        "the absolute path, the module redirected": (
+            original.replace(
+                "pub mod admitted_set;", '#[path = "impostor.rs"]\npub mod admitted_set;'
+            ),
+            "exactly once",
+        ),
+    }
+    try:
+        for mutated, refusal in shapes.values():
+            SUBSCRIPTIONS_SOURCE.write_text(mutated, encoding="utf-8")
+            with pytest.raises(ConnectivityCheckError, match=refusal):
+                assert_connectivity_static(config)
+    finally:
+        SUBSCRIPTIONS_SOURCE.write_text(original, encoding="utf-8")
+        SUBSCRIPTIONS_SOURCE.touch()
 
     assert len(assert_connectivity_static(config)) == 13
 

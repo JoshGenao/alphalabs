@@ -33,7 +33,8 @@
 
 use std::collections::BTreeMap;
 
-use atp_types::{AdmissionProof, SecurityKey, StrategyId};
+use ::atp_types::admission::AdmissionProof;
+use atp_types::{SecurityKey, StrategyId};
 
 /// SecurityKey -> subscribers in subscription order. `BTreeMap` gives
 /// deterministic key iteration for the line accounting; the per-key `Vec`

@@ -716,26 +716,39 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
             "subscription set without spending a proof"
         )
 
+    # Review r32: a `use` swapped in a same-named set and every check passed,
+    # because they compared SPELLINGS. Each type the guarantee rests on is now
+    # spelled as an absolute path no `use` or local item can redirect, and
+    # `_check_paths_resolve_to_the_pinned_items` proves where each path lands.
     module_src = _mask_non_code(_without_test_module(market_data_src))
     field = spec["private_field"]
-    declared = re.search(
-        rf"^\s*(pub(?:\s*\([^)]*\))?\s+)?{re.escape(field)}\s*:\s*(\w+)\s*,", module_src, re.M
-    )
-    if not declared or declared.group(2) != spec["field_type"]:
+    registry = spec["registry"]
+    fields = _struct_fields(module_src, registry["struct"])
+    if field not in fields or fields[field][1] != spec["field_type"]:
         fail(
-            f"the registry's `{field}` is no longer an `{spec['field_type']}`; only that "
-            "type makes an addition spend an admission proof"
+            f"the registry's `{field}` is no longer an `{spec['field_type']}` (spelled "
+            "exactly so, as an absolute path); only that type makes an addition spend an "
+            "admission proof"
         )
-    if declared.group(1):
-        fail(f"the registry's `{field}` is `{declared.group(1).strip()}`; it must stay private")
+    if fields[field][0]:
+        fail(f"the registry's `{field}` is `{fields[field][0]}`; it must stay private")
+    if {name: ty for name, (_, ty) in fields.items()} != registry["fields"]:
+        fail(
+            f"`{registry['struct']}` holds {sorted(fields)}, not exactly "
+            f"{sorted(registry['fields'])}; a field the contract does not name could hold "
+            "a second subscription set that no admission gates"
+        )
 
-    envelope = _struct_body(_mask_non_code(lib_src), spec["acceptance_envelope"])
-    if not re.search(rf":\s*{spec['admission_proof']['type']}\s*(,|$)", envelope, re.M):
+    envelope = _struct_fields(_mask_non_code(lib_src), spec["acceptance_envelope"])
+    if spec["envelope_proof_type"] not in {ty for _, ty in envelope.values()}:
         fail(
             f"`{spec['acceptance_envelope']}` no longer carries an "
-            f"`{spec['admission_proof']['type']}`, so an acceptance can be built without "
-            "a restart-window decision"
+            f"`{spec['envelope_proof_type']}` (spelled exactly so), so an acceptance can be "
+            "built without a restart-window decision"
         )
+
+    # The owning module is read from the text under test, the rest from disk.
+    _check_paths_resolve_to_the_pinned_items(ROOT, spec, {spec["module"]: market_data_src})
 
     for pinned, codes in (
         (spec["admission_proof"], ("E0451",)),
@@ -776,6 +789,115 @@ def check_market_data_admission_sites(config: dict, market_data_src: str) -> str
         f"`{spec['acceptance_envelope']}` carries the proof, the crate never asks a "
         "window itself, and every crate forbids `unsafe` code"
     )
+
+
+def _struct_fields(masked: str, struct: str) -> dict[str, tuple[str, str]]:
+    """`{name: (visibility, type)}` of a named-field struct, types without whitespace.
+
+    Refuses an attribute inside the body: `#[cfg(..)]` on a field makes two
+    declarations of one name, only one of which compiles.
+    """
+    body = _struct_body(masked, struct)
+    if "#" in body:
+        fail(f"`{struct}` has an attribute on a field; its fields must be plain")
+    items, depth, start = [], 0, 0
+    for i, ch in enumerate(body):
+        if ch in "<([{":
+            depth += 1
+        elif ch in ">)]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            items.append(body[start:i])
+            start = i + 1
+    items.append(body[start:])
+    fields: dict[str, tuple[str, str]] = {}
+    for item in filter(str.strip, items):
+        m = re.fullmatch(r"\s*(pub(?:\s*\([^)]*\))?\s+)?(\w+)\s*:(.+)", item, re.S)
+        if not m:
+            fail(f"cannot read a field of `{struct}`: {' '.join(item.split())!r}")
+        vis = re.sub(r"\s+", "", m.group(1) or "")
+        fields[m.group(2)] = (vis, re.sub(r"\s+", "", m.group(3)))
+    return fields
+
+
+def _check_paths_resolve_to_the_pinned_items(
+    root: Path, spec: dict, under_test: dict[str, str]
+) -> None:
+    """Prove that the absolute paths the check compares name the pinned files.
+
+    `crate::subscriptions::admitted_set::AdmittedSet` and
+    `::atp_types::admission::AdmissionProof` are spelled so that no `use` and no
+    local item can redirect them. What can still redirect them is the wiring
+    under each segment, so it is pinned here:
+
+    - each module is declared exactly once, with no attribute in front of it
+      (`#[path]` points it at another file; `#[cfg]` makes a twin) and no
+      inline body, so it IS the file the digest pins;
+    - `atp_types` is the real atp-types crate: the dependent's manifest names
+      it exactly by path, with no `package` rename, the crate keeps its name and
+      library name, and atp-market-data has no `extern crate`, which could bind
+      the name to something else;
+    - no other atp-types code names `market_data_admission`, so the window is the
+      only source of a proof and no wrapper hands one out under another name.
+    """
+    for wiring in spec["module_wiring"]:
+        text = under_test.get(wiring["declared_in"])
+        if text is None:
+            text = (root / wiring["declared_in"]).read_text(encoding="utf-8")
+        masked = _mask_non_code(_without_test_module(text))
+        name = wiring["module"]
+        mentions = re.findall(rf"\bmod\s+{name}\b\s*[;{{]", masked)
+        declared = re.findall(
+            rf"(?:^|[;}}])\s*(#\s*!?\s*\[[^\]]*\]\s*)?pub\s+mod\s+{name}\s*;", masked
+        )
+        if len(mentions) != 1 or len(declared) != 1 or declared[0]:
+            fail(
+                f"{wiring['declared_in']} must declare `pub mod {name};` exactly once, with "
+                "no attribute and no inline body; otherwise the path that names the pinned "
+                "type can resolve to another file"
+            )
+
+    crate = spec["types_crate"]
+    types_manifest = tomllib.loads((root / crate["manifest"]).read_text(encoding="utf-8"))
+    lib_name = types_manifest.get("lib", {}).get("name", crate["package"].replace("-", "_"))
+    if types_manifest.get("package", {}).get("name") != crate["package"] or lib_name != crate[
+        "package"
+    ].replace("-", "_"):
+        fail(f"{crate['manifest']} no longer builds the `{crate['package']}` library")
+    dependent = tomllib.loads((root / crate["dependent_manifest"]).read_text(encoding="utf-8"))
+    tables = [dependent.get("dependencies", {})]
+    tables += [t.get("dependencies", {}) for t in dependent.get("target", {}).values()]
+    want = crate["package"].replace("-", "_")
+    for table in tables:
+        for key, dep in table.items():
+            package = dep.get("package", key) if isinstance(dep, dict) else key
+            if want in (key.replace("-", "_"), package.replace("-", "_")):
+                if key != crate["package"] or dep != crate["dependency"]:
+                    fail(
+                        f"{crate['dependent_manifest']} binds `{key}` as {dep!r}, not exactly "
+                        f"{crate['dependency']!r}: `atp_types` would name another crate"
+                    )
+    if dependent.get("dependencies", {}).get(crate["package"]) != crate["dependency"]:
+        fail(f"{crate['dependent_manifest']} no longer depends on {crate['package']} by path")
+    crate_src = (root / spec["crate_path"]).parent
+    for path in sorted(crate_src.rglob("*.rs")):
+        if re.search(r"\bextern\s+crate\b", _mask_non_code(path.read_text(encoding="utf-8"))):
+            fail(
+                f"{path.relative_to(root)} has an `extern crate`, which can bind a crate "
+                "name the pinned paths rely on to another crate"
+            )
+
+    proof_module = root / spec["admission_proof"]["module"]
+    for path in sorted(proof_module.parent.rglob("*.rs")):
+        if path == proof_module:
+            continue
+        masked = _mask_non_code(_without_test_module(path.read_text(encoding="utf-8")))
+        if re.search(r"\bmarket_data_admission\b", masked):
+            fail(
+                f"{path.relative_to(root)} names `market_data_admission` outside "
+                f"{spec['admission_proof']['module']}; a wrapper there could hand "
+                "atp-market-data a proof under a name this check does not know"
+            )
 
 
 def _check_unsafe_code_is_forbidden(root: Path) -> None:

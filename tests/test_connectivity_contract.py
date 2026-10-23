@@ -490,7 +490,7 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
                     path.write_text(original, encoding="utf-8")
 
     def test_the_registry_field_must_stay_a_private_admitted_set(self) -> None:
-        decl = "    subscribers: AdmittedSet,"
+        decl = "    subscribers: crate::subscriptions::admitted_set::AdmittedSet,"
         self.assertEqual(self.market_data_src.count(decl), 1, "the field declaration moved")
         for label, replacement, needle in (
             (
@@ -499,8 +499,16 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
                 "no longer an",
             ),
             ("another set type", "    subscribers: OpenSet,", "no longer an"),
-            ("pub(crate)", "    pub(crate) subscribers: AdmittedSet,", "must stay private"),
-            ("raw-named pub", "    pub r#subscribers: AdmittedSet,", "must stay private"),
+            (
+                "pub(crate)",
+                "    pub(crate) subscribers: crate::subscriptions::admitted_set::AdmittedSet,",
+                "must stay private",
+            ),
+            (
+                "raw-named pub",
+                "    pub r#subscribers: crate::subscriptions::admitted_set::AdmittedSet,",
+                "must stay private",
+            ),
         ):
             with self.subTest(shape=label):
                 with self.assertRaises(ConnectivityCheckError) as ctx:
@@ -509,7 +517,7 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
 
     def test_an_acceptance_envelope_without_a_proof_is_refused(self) -> None:
         lib = self.cc.market_data_lib_source(self.config)
-        field = "    pub admission: AdmissionProof,\n"
+        field = "    pub admission: ::atp_types::admission::AdmissionProof,\n"
         self.assertEqual(lib.count(field), 1, "the envelope's proof field moved")
         with mock.patch.object(
             self.cc, "market_data_lib_source", lambda config, root=None: lib.replace(field, "")
@@ -544,6 +552,141 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
             + "\n// RestartWindow::market_data_admission decides; we only ask the port.\n"
         )
         self.assertIn("admission proof", self._check(source=source))
+
+    def test_a_same_named_set_cannot_stand_in_for_the_pinned_one(self) -> None:
+        """Review r32: a `use` swapped in a set that is also called `AdmittedSet`,
+        with an add method that takes no proof, and every check passed - they
+        compared spellings. The field is now an absolute path, and each segment
+        of that path is proved to land on the pinned file."""
+        src = self.market_data_src
+        use = "use admitted_set::{AdmittedSet, Removal};"
+        field = "subscribers: crate::subscriptions::admitted_set::AdmittedSet,"
+        decl = "pub mod admitted_set;"
+        for anchor in (use, field, decl):
+            self.assertEqual(src.count(anchor), 1, f"anchor `{anchor}` moved")
+        impostor = (
+            "use admitted_set::Removal;\nuse impostor::AdmittedSet;\nmod impostor {\n"
+            "    #[derive(Debug, Default)]\n    pub struct AdmittedSet;\n"
+            "    impl AdmittedSet { pub fn add(&mut self) {} }\n}\n"
+        )
+        for label, mutated, needle in (
+            (
+                "r32 as found: a swapped use, the field spelled `AdmittedSet`",
+                src.replace(use, impostor).replace(field, "subscribers: AdmittedSet,"),
+                "no longer an",
+            ),
+            (
+                "the absolute path through a module redirected by #[path]",
+                src.replace(decl, '#[path = "impostor.rs"]\npub mod admitted_set;'),
+                "exactly once",
+            ),
+            (
+                "the module given an inline body",
+                src.replace(decl, "pub mod admitted_set { pub struct AdmittedSet; }"),
+                "exactly once",
+            ),
+            (
+                "a #[cfg] twin of the module",
+                src.replace(
+                    decl,
+                    '#[cfg(any())]\npub mod admitted_set;\n#[cfg(all())]\n#[path = "x.rs"]\npub mod admitted_set;',
+                ),
+                "exactly once",
+            ),
+            (
+                "a second set beside the gated one",
+                src.replace(field, field + "\n    shadow: Vec<(SecurityKey, StrategyId)>,"),
+                "not exactly",
+            ),
+            (
+                "a field hidden behind #[cfg]",
+                src.replace(field, field + "\n    #[cfg(all())]\n    shadow: u8,"),
+                "attribute on a field",
+            ),
+        ):
+            with self.subTest(shape=label):
+                self.assertNotEqual(mutated, src, "the mutation did not apply")
+                with self.assertRaises(ConnectivityCheckError) as ctx:
+                    self._check(source=mutated)
+                self.assertIn(needle, str(ctx.exception))
+
+    def test_the_envelope_proof_must_be_the_extern_crate_type(self) -> None:
+        lib = self.cc.market_data_lib_source(self.config)
+        field = "    pub admission: ::atp_types::admission::AdmissionProof,\n"
+        self.assertEqual(lib.count(field), 1, "the envelope's proof field moved")
+        for label, replacement in (
+            ("a bare name a local item can shadow", "    pub admission: AdmissionProof,\n"),
+            ("a crate-relative path", "    pub admission: atp_types::admission::AdmissionProof,\n"),
+        ):
+            with self.subTest(shape=label):
+                mutated = lib.replace(field, replacement)
+                with mock.patch.object(
+                    self.cc, "market_data_lib_source", lambda config, root=None, text=mutated: text
+                ):
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self._check()
+                self.assertIn("without a restart-window decision", str(ctx.exception))
+
+    def test_atp_types_must_be_the_real_crate_and_module(self) -> None:
+        for label, rel, old, new, needle in (
+            (
+                "atp-types' admission module redirected",
+                "crates/atp-types/src/lib.rs",
+                "pub mod admission;",
+                '#[path = "impostor.rs"]\npub mod admission;',
+                "exactly once",
+            ),
+            (
+                "the dependency renamed to another crate",
+                "crates/atp-market-data/Cargo.toml",
+                'atp-types = { path = "../atp-types" }',
+                'atp-types = { path = "../atp-notification", package = "atp-notification" }',
+                "would name another crate",
+            ),
+            (
+                "another crate renamed to atp_types",
+                "crates/atp-market-data/Cargo.toml",
+                'atp-types = { path = "../atp-types" }',
+                'atp-types = { path = "../atp-types" }\n'
+                'atp_types = { path = "../atp-notification", package = "atp-notification" }',
+                "would name another crate",
+            ),
+            (
+                "atp-types' library renamed",
+                "crates/atp-types/Cargo.toml",
+                'path = "src/lib.rs"',
+                'path = "src/lib.rs"\nname = "atp_types_real"',
+                "no longer builds",
+            ),
+            (
+                "an extern crate in atp-market-data",
+                "crates/atp-market-data/src/runtime.rs",
+                "\n",
+                "\nextern crate core as atp_types;\n",
+                "extern crate",
+            ),
+            (
+                "a wrapper in atp-types that hands out a proof",
+                "crates/atp-types/src/lib.rs",
+                "pub mod admission;",
+                "pub mod admission;\npub fn open_now(w: RestartWindow) -> MarketDataAdmission "
+                "{ w.market_data_admission(0, true) }",
+                "names `market_data_admission`",
+            ),
+        ):
+            with self.subTest(shape=label):
+                original = (self.tmp / rel).read_text(encoding="utf-8")
+                if old == "\n":
+                    (self.tmp / rel).write_text(original.replace(old, new, 1), encoding="utf-8")
+                else:
+                    self._edit_manifest(rel, old, new)
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self._check()
+                    self.assertIn(needle, str(ctx.exception))
+                finally:
+                    (self.tmp / rel).write_text(original, encoding="utf-8")
+        self.assertIn("admission proof", self._check())
 
     def _edit_manifest(self, rel: str, old: str, new: str) -> None:
         path = self.tmp / rel
