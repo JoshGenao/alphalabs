@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was run at commit `fac39ee`. The commit that adds this document changes
+block was run at commit `fb42c36`. The commit that adds this document changes
 only files under `.harness/runs/SRS-MD-005/`, so the code it certifies is the
 code it ships with. It is a re-verification, not a replay of the session that
 built the feature.
@@ -15,13 +15,15 @@ merged into this branch: the previous capture certified `20bf2f1`, which was no
 longer the head. It was re-run once more on 2026-10-20, after the round-27
 fix: the capture before this one certified `3585315`. It was re-run again on
 2026-10-21, after the compiler-enforced redesign that followed round 31: the
-capture before this one certified `7af1b26`. Sections 4 and 5 capture
+capture before this one certified `7af1b26`. It was re-run again on
+2026-10-23, after the round-32 fix: the capture before this one certified
+`fac39ee`. Sections 4 and 5 capture
 a DELIBERATELY BROKEN tree; each mutation was applied and reverted around its
 own command, and the tree was checked clean after each revert.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 31 rounds**. This feature integrated
+The judgment critic sits at **`block` after 32 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason - see Section 6. If
 that section said `approve`, this document would be lying.
@@ -56,7 +58,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-fac39ee906b77dbefdab19c01d45b91d7b361971
+fb42c367960dce3c975e80f730674cae9e3798b1
 [exit 0]
 
 $ git log --oneline --reverse origin/main --grep='SRS-MD-005' | head -14 | cat
@@ -205,13 +207,13 @@ print("deterministic critic:", det["verdict"], "@", det["head"][:8])
 j = d["critic"]["judgment"]
 print("judgment critic    :", j["verdict"], "| rounds:", j.get("rounds"), "| reviewer:", j["reviewer"])
 PY
-step 1: PASS | exit=0 | @fac39ee9 | ./init.sh
-step 2: PASS | exit=0 | @fac39ee9 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
-step 3: PASS | exit=0 | @fac39ee9 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
-step 4: PASS | exit=0 | @fac39ee9 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
+step 1: PASS | exit=0 | @fb42c367 | ./init.sh
+step 2: PASS | exit=0 | @fb42c367 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
+step 3: PASS | exit=0 | @fb42c367 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
+step 4: PASS | exit=0 | @fb42c367 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
 
-deterministic critic: approve @ fac39ee9
-judgment critic    : block | rounds: 31 | reviewer: codex
+deterministic critic: approve @ fb42c367
+judgment critic    : block | rounds: 32 | reviewer: codex
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -221,7 +223,7 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the certified commit, straight from GitHub ===
 
-$ gh run list --commit fac39ee906b77dbefdab19c01d45b91d7b361971 --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
+$ gh run list --commit fb42c367960dce3c975e80f730674cae9e3798b1 --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
 success	security
 success	ci
 skipped	integration
@@ -234,7 +236,7 @@ $ .venv/bin/python tools/connectivity_check.py 2>&1 | tail -9
 - atp-types declares MarketDataAdmission with 3 outcomes (Admitted, SuspendedForScheduledRestart, ConnectivityLost) — a market-data refusal states WHETHER and WHY, so planned maintenance is never rendered as an outage or the reverse
 - atp-types declares RestartWindow with private fields, 3 classification methods, and the SyRS SYS-75 defaults (60s lead / 300s window)
 - atp-types::connectivity_state maps RestartPhase::Elapsed onto ConnectivityState::Unreachable with no catch-all arm — the SyRS SYS-75 escalation is exhaustive by construction
-- atp-market-data cannot grow its subscription set without an admission proof: `subscribers` is a private `AdmittedSet` whose only add method spends an `AdmissionProof`, which only `RestartWindow` can make (both files pinned by sha256, both rules proved by compile_fail doctests); `SubscriptionAccepted` carries the proof, the crate never asks a window itself, and every crate forbids `unsafe` code
+- atp-market-data cannot grow its subscription set without an admission proof: `subscribers` is a private `crate::subscriptions::admitted_set::AdmittedSet` whose only add method spends an `AdmissionProof`, which only `RestartWindow` can make (both files pinned by sha256, both rules proved by compile_fail doctests); `SubscriptionAccepted` carries the proof, the crate never asks a window itself, and every crate forbids `unsafe` code
 - atp-orchestrator::ScheduledRestartConnectivity implements BrokerageConnectivity + RestartWindowGate — one producer behind both suspensions (SRS-MD-005)
 - atp-adapters::GatewayReachability lives outside the digest-pinned transport module, probes with an explicit connect deadline, and never resolves a hostname
 - exactly 1 production type implements `RestartWindowGate` (ScheduledRestartConnectivity, once, at crates/atp-orchestrator/src/restart_window_connectivity.rs) — the port buys freshness; `Admitted` itself is unforgeable by type (AdmissionProof), and this enumeration bounds which types may ask the window
@@ -256,11 +258,11 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-145 passed, 89 subtests passed in 216.69s (0:03:36)
+149 passed, 103 subtests passed in 385.12s (0:06:25)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
-8 passed in 0.35s
+8 passed in 0.34s
 [exit 0]
 ```
 
