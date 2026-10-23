@@ -1058,6 +1058,44 @@ def test_a_same_named_set_in_the_real_registry_is_refused() -> None:
     assert len(assert_connectivity_static(config)) == 13
 
 
+def test_a_library_root_cargo_builds_elsewhere_is_refused() -> None:
+    """Review r33, planted in the REAL atp-market-data manifest: `[lib] path`
+    points Cargo at `src/alternate.rs`, a copy of lib.rs whose
+    `SubscriptionAccepted` carries no proof. The gate read the original lib.rs,
+    which no longer compiled, so all 13 checks passed. It must now refuse."""
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    manifest = MARKET_DATA_SOURCE.parents[1] / "Cargo.toml"
+    alternate = MARKET_DATA_SOURCE.with_name("alternate.rs")
+    assert not alternate.exists()
+    original = manifest.read_text(encoding="utf-8")
+    root = 'path = "src/lib.rs"'
+    proof = "    pub admission: ::atp_types::admission::AdmissionProof,\n"
+    lib = MARKET_DATA_SOURCE.read_text(encoding="utf-8")
+    assert original.count(root) == 1 and lib.count(proof) == 1, "an anchor moved"
+    try:
+        alternate.write_text(lib.replace(proof, ""), encoding="utf-8")
+        manifest.write_text(original.replace(root, 'path = "src/alternate.rs"'), encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="builds its library from"):
+            assert_connectivity_static(config)
+    finally:
+        manifest.write_text(original, encoding="utf-8")
+        alternate.unlink(missing_ok=True)
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
 def test_the_resume_proof_labels_its_readiness_scope() -> None:
     """A reachable probe means the endpoint accepted TCP.
 

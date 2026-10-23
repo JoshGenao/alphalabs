@@ -992,18 +992,13 @@
         },
         "acceptance_envelope": "SubscriptionAccepted",
         "envelope_proof_type": "::atp_types::admission::AdmissionProof",
-        "module_wiring": [
-          {"declared_in": "crates/atp-types/src/lib.rs", "module": "admission"},
-          {"declared_in": "crates/atp-market-data/src/lib.rs", "module": "subscriptions"},
-          {"declared_in": "crates/atp-market-data/src/subscriptions.rs", "module": "admitted_set"}
-        ],
         "types_crate": {
           "manifest": "crates/atp-types/Cargo.toml",
           "package": "atp-types",
           "dependent_manifest": "crates/atp-market-data/Cargo.toml",
           "dependency": {"path": "../atp-types"}
         },
-        "$identity_why": "Review r32 swapped the registry's set for a same-named type through a `use`: the check compared spellings, not identities. Every name the guarantee rests on is now spelled as an absolute path (`crate::...`, `::atp_types::...`) that no `use` or local item can redirect, and each path is resolved here: each module is declared exactly once with no attribute (so no `#[path]` or `#[cfg]` twin) and no inline body, `atp_types` is the real atp-types crate (no rename, no `extern crate`), and the registry holds exactly the pinned fields, so a second, ungated set cannot sit beside the gated one.",
+        "$identity_why": "Review r32 swapped the registry's set for a same-named type through a `use`: the check compared spellings, not identities. Every name the guarantee rests on is now spelled as an absolute path (`crate::...`, `::atp_types::...`) that no `use` or local item can redirect, and each path is resolved here: each crate builds its library from src/lib.rs (review r33 pointed `[lib] path` at another file), each module from that root to a file the check reads is declared exactly once with no attribute (so no `#[path]` or `#[cfg]` twin) and no inline body, `atp_types` is the real atp-types crate (no rename, no `extern crate`), and the registry holds exactly the pinned fields, so a second, ungated set cannot sit beside the gated one.",
         "admission_proof": {
           "module": "crates/atp-types/src/admission.rs",
           "type": "AdmissionProof",

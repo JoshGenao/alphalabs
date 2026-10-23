@@ -38,7 +38,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
@@ -830,9 +830,8 @@ def _check_paths_resolve_to_the_pinned_items(
     local item can redirect them. What can still redirect them is the wiring
     under each segment, so it is pinned here:
 
-    - each module is declared exactly once, with no attribute in front of it
-      (`#[path]` points it at another file; `#[cfg]` makes a twin) and no
-      inline body, so it IS the file the digest pins;
+    - each file the paths run through is the file Cargo compiles at that path
+      (`_check_cargo_compiles_the_files_read`), so it IS the file the digest pins;
     - `atp_types` is the real atp-types crate: the dependent's manifest names
       it exactly by path, with no `package` rename, the crate keeps its name and
       library name, and atp-market-data has no `extern crate`, which could bind
@@ -840,22 +839,16 @@ def _check_paths_resolve_to_the_pinned_items(
     - no other atp-types code names `market_data_admission`, so the window is the
       only source of a proof and no wrapper hands one out under another name.
     """
-    for wiring in spec["module_wiring"]:
-        text = under_test.get(wiring["declared_in"])
-        if text is None:
-            text = (root / wiring["declared_in"]).read_text(encoding="utf-8")
-        masked = _mask_non_code(_without_test_module(text))
-        name = wiring["module"]
-        mentions = re.findall(rf"\bmod\s+{name}\b\s*[;{{]", masked)
-        declared = re.findall(
-            rf"(?:^|[;}}])\s*(#\s*!?\s*\[[^\]]*\]\s*)?pub\s+mod\s+{name}\s*;", masked
-        )
-        if len(mentions) != 1 or len(declared) != 1 or declared[0]:
-            fail(
-                f"{wiring['declared_in']} must declare `pub mod {name};` exactly once, with "
-                "no attribute and no inline body; otherwise the path that names the pinned "
-                "type can resolve to another file"
-            )
+    _check_cargo_compiles_the_files_read(
+        root,
+        (
+            spec["module"],
+            spec["admitted_set"]["module"],
+            spec["admission_proof"]["module"],
+            f"{Path(spec['module']).parent}/lib.rs",
+        ),
+        under_test,
+    )
 
     crate = spec["types_crate"]
     types_manifest = tomllib.loads((root / crate["manifest"]).read_text(encoding="utf-8"))
@@ -897,6 +890,69 @@ def _check_paths_resolve_to_the_pinned_items(
                 f"{path.relative_to(root)} names `market_data_admission` outside "
                 f"{spec['admission_proof']['module']}; a wrapper there could hand "
                 "atp-market-data a proof under a name this check does not know"
+            )
+
+
+def _check_cargo_compiles_the_files_read(
+    root: Path, rel_paths: tuple[str, ...], under_test: dict[str, str] | None = None
+) -> None:
+    """Prove that each file a check reads by name is the file Cargo compiles there.
+
+    A check that reads `src/lib.rs` certifies nothing if Cargo builds the library
+    from somewhere else. Review r33 pointed atp-market-data's `[lib] path` at a
+    copy of `lib.rs` whose envelope carried no proof, and every check passed on
+    the original file that no longer compiled. Review r32 did the same one level
+    down, with a module the checker read by path. So for every file read:
+
+    - the crate's library root is `src/lib.rs`, the file the checks start from;
+    - each module on the way from that root to the file is declared exactly
+      once, with no attribute in front of it (`#[path]` points it at another
+      file; `#[cfg]` makes a twin) and no inline body.
+
+    The rest of what could put other code into a crate is refused for the whole
+    tree by `_refuse_code_outside_the_scan`, which this gate also runs: build
+    scripts, proc-macro crates, symlinks, and `include!` and `#[path]` in any file.
+    """
+    under_test = under_test or {}
+    for rel in rel_paths:
+        parts = Path(rel).parts
+        if len(parts) < 4 or parts[0] != "crates" or parts[2] != "src" or ".." in parts:
+            fail(
+                f"{rel} is not under crates/<crate>/src, so no check can tell that Cargo builds it"
+            )
+        crate = f"crates/{parts[1]}"
+        manifest = tomllib.loads((root / crate / "Cargo.toml").read_text(encoding="utf-8"))
+        lib_path = manifest.get("lib", {}).get("path", "src/lib.rs")
+        if PurePosixPath(lib_path) != PurePosixPath("src/lib.rs"):
+            fail(
+                f"{crate}/Cargo.toml builds its library from `{lib_path}`, not src/lib.rs; "
+                "these checks read src/lib.rs and its modules, so they would certify code "
+                "Cargo does not compile"
+            )
+        modules = list(parts[3:])
+        if modules == ["lib.rs"]:
+            continue
+        modules[-1:] = [] if modules[-1] == "mod.rs" else [modules[-1].removesuffix(".rs")]
+        declared_in = f"{crate}/src/lib.rs"
+        for depth, name in enumerate(modules):
+            text = under_test.get(declared_in)
+            if text is None:
+                text = (root / declared_in).read_text(encoding="utf-8")
+            masked = _mask_non_code(_without_test_module(text))
+            mentions = re.findall(rf"\bmod\s+{name}\b\s*[;{{]", masked)
+            declared = re.findall(
+                rf"(?:^|[;}}])\s*(#\s*!?\s*\[[^\]]*\]\s*)?(?:pub\s*(?:\([^)]*\)\s*)?)?mod\s+{name}\s*;",
+                masked,
+            )
+            if len(mentions) != 1 or len(declared) != 1 or declared[0]:
+                fail(
+                    f"{declared_in} must declare `mod {name};` exactly once, with no "
+                    "attribute and no inline body; otherwise the path to "
+                    f"{rel} can resolve to another file"
+                )
+            parent = "/".join([crate, "src", *modules[: depth + 1]])
+            declared_in = (
+                f"{parent}.rs" if (root / f"{parent}.rs").is_file() else f"{parent}/mod.rs"
             )
 
 
@@ -1635,6 +1691,21 @@ _STATIC_CHECKS = (
 
 
 def _sources(config: dict, root: Path = ROOT) -> dict[str, str]:
+    block = connectivity_block(config)
+    restart = restart_window_block(config)
+    types_src = f"{block['types_crate']['path']}/src"
+    _check_cargo_compiles_the_files_read(
+        root,
+        (
+            f"{types_src}/lib.rs",
+            f"{types_src}/admission.rs",
+            f"{block['execution_crate']['path']}/src/lib.rs",
+            f"{restart['market_data_crate']['path']}/src/lib.rs",
+            restart["admission_sites"]["module"],
+            restart["producer"]["module"],
+            restart["reachability_port"]["module"],
+        ),
+    )
     return {
         "types": types_source(config, root),
         "execution": execution_source(config, root),

@@ -688,6 +688,72 @@ class MarketDataAdmissionSitesTest(unittest.TestCase):
                     (self.tmp / rel).write_text(original, encoding="utf-8")
         self.assertIn("admission proof", self._check())
 
+    def test_cargo_must_build_the_files_the_checks_read(self) -> None:
+        """Review r33: `[lib] path` pointed Cargo at a copy of lib.rs with no proof
+        in its envelope, and every check passed on the original that no longer
+        compiled. Each file ANY static check reads by name must be the file Cargo
+        builds there - the producer and reachability seams too, not only the two
+        crates the reviewer named."""
+        for crate in ("atp-execution", "atp-orchestrator", "atp-adapters"):
+            shutil.copytree(ROOT / f"crates/{crate}/src", self.tmp / f"crates/{crate}/src")
+        lib = 'path = "src/lib.rs"'
+        for label, rel, old, new, needle in (
+            (
+                "atp-market-data built from another root (the r33 shape)",
+                "crates/atp-market-data/Cargo.toml",
+                lib,
+                'path = "src/alternate.rs"',
+                "builds its library from `src/alternate.rs`",
+            ),
+            (
+                "atp-types built from another root",
+                "crates/atp-types/Cargo.toml",
+                lib,
+                'path = "src/other.rs"',
+                "builds its library from `src/other.rs`",
+            ),
+            (
+                "the execution crate built from another root",
+                "crates/atp-execution/Cargo.toml",
+                lib,
+                'path = "src/other.rs"',
+                "builds its library from",
+            ),
+            (
+                "the producer module redirected",
+                "crates/atp-orchestrator/src/lib.rs",
+                "pub mod restart_window_connectivity;",
+                '#[path = "other.rs"]\npub mod restart_window_connectivity;',
+                "exactly once",
+            ),
+            (
+                "the reachability module given a #[cfg] twin",
+                "crates/atp-adapters/src/lib.rs",
+                "pub mod gateway_reachability;",
+                "#[cfg(any())]\npub mod gateway_reachability;\n"
+                '#[cfg(all())]\n#[path = "other.rs"]\npub mod gateway_reachability;',
+                "exactly once",
+            ),
+        ):
+            with self.subTest(shape=label):
+                original = (self.tmp / rel).read_text(encoding="utf-8")
+                self._edit_manifest(rel, old, new)
+                try:
+                    with self.assertRaises(ConnectivityCheckError) as ctx:
+                        self.cc._sources(self.config, self.tmp)
+                    self.assertIn(needle, str(ctx.exception))
+                    if "market-data" in rel or "atp-types" in rel:
+                        # The admission check binds them itself, not only through
+                        # the gate's source loader.
+                        with self.assertRaises(ConnectivityCheckError):
+                            self._check()
+                finally:
+                    (self.tmp / rel).write_text(original, encoding="utf-8")
+        # Non-vacuity: the untouched copy loads, and `./src/lib.rs` is the same root.
+        self.assertIn("types", self.cc._sources(self.config, self.tmp))
+        self._edit_manifest("crates/atp-market-data/Cargo.toml", lib, 'path = "./src/lib.rs"')
+        self.assertIn("admission proof", self._check())
+
     def _edit_manifest(self, rel: str, old: str, new: str) -> None:
         path = self.tmp / rel
         text = path.read_text(encoding="utf-8")
