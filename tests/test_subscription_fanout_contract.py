@@ -84,7 +84,7 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
             "no raw-symbol conflation",
             "IS the concrete SubscriptionLineCounter",
             "closes subscription_limit_contract deferral 'owner: SRS-MD-001'",
-            "inserts a new upstream subscription EXACTLY ONCE",
+            "adds EXACTLY ONCE",
             "enforces the IB line ceiling atomically",
             "the probe-then-mutate race",
             "fail closed via .security_key()? (SecurityKeyError -> SubscriptionRegistryError on empty symbol / option)",
@@ -290,10 +290,15 @@ class RegistryKeyTypeTest(_Fixture):
     def test_raw_string_key_is_caught(self) -> None:
         # Reverting to a raw-symbol key is the exact conflation regression
         # the canonical SecurityKey closes.
+        # The map lives in `AdmittedSet` (src/subscriptions/admitted_set.rs) since
+        # SRS-MD-005 made additions spend an admission proof.
         mutated = self.md_src.replace(
-            "subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,",
-            "subscribers: BTreeMap<String, Vec<StrategyId>>,",
+            "lines: BTreeMap<SecurityKey, Vec<StrategyId>>,",
+            "lines: BTreeMap<String, Vec<StrategyId>>,",
             1,
+        )
+        self.assertNotEqual(
+            mutated, self.md_src, "the key-field anchor moved; the mutation did nothing"
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_registry_key_type(self.config, mutated)
@@ -309,9 +314,12 @@ class AtomicAdmissionTest(_Fixture):
         # Drop the ceiling check from subscribe — the over-limit / race
         # regression Codex flagged.
         mutated = self.md_src.replace(
-            "if self.subscribers.len() as u32 >= self.line_limit {",
+            "if opens_line && self.subscribers.line_count() as u32 >= self.line_limit {",
             "if false {",
             1,
+        )
+        self.assertNotEqual(
+            mutated, self.md_src, "the limit-check anchor moved; the mutation did nothing"
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_atomic_admission(self.config, mutated)
@@ -394,22 +402,29 @@ class DedupInvariantTest(_Fixture):
         # subscription instead of deduping onto the existing line.
         mutated = self.md_src.replace(
             "Self::validate_strategy_id(&request.strategy_id)?;",
-            "Self::validate_strategy_id(&request.strategy_id)?;\n        self.subscribers.insert(String::new(), Vec::new());",
+            "Self::validate_strategy_id(&request.strategy_id)?;\n        self.subscribers.admit(proof, key.clone(), request.strategy_id.clone());",
             1,
+        )
+        self.assertNotEqual(
+            mutated, self.md_src, "the injection anchor moved; the mutation did nothing"
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_dedup_invariant(self.config, mutated)
         self.assertIn("EXACTLY ONE", str(ctx.exception))
 
     def test_removed_dedup_push_is_caught(self) -> None:
+        # Every subscriber would "open" a line: the first-subscriber test is gone.
         mutated = self.md_src.replace(
-            "existing.push(request.strategy_id.clone());",
-            "/* dedup append removed */",
+            "let opens_line = !self.subscribers.contains_key(&key);",
+            "let opens_line = true;",
             1,
+        )
+        self.assertNotEqual(
+            mutated, self.md_src, "the dedup anchor moved; the mutation did nothing"
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_dedup_invariant(self.config, mutated)
-        self.assertIn("existing.push", str(ctx.exception))
+        self.assertIn("contains_key", str(ctx.exception))
 
 
 class InputValidationTest(_Fixture):

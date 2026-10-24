@@ -397,7 +397,9 @@ where
             // happen BEFORE the upstream request, or a refused subscription
             // would still have sent one (open-then-close).
             match self.window.admission() {
-                MarketDataAdmission::Admitted => {}
+                // Only the early refusal is taken here; the proof that admits is
+                // spent by the registry's own decision in `subscribe` below.
+                MarketDataAdmission::Admitted(_) => {}
                 MarketDataAdmission::SuspendedForScheduledRestart => {
                     return Err(SubscriptionRegistryError::SuspendedForScheduledRestart.into());
                 }

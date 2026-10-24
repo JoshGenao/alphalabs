@@ -1,25 +1,18 @@
 //! SRS-MD-001 / SyRS SYS-70 — the consolidated market-data subscription
 //! registry, in its OWN module so its private state is genuinely private.
 //!
-//! The file boundary here is load-bearing, not tidiness. `subscribers` is the
-//! consolidated subscription set, and SRS-MD-005 requires every path that can
-//! ADMIT a subscription to consult the scheduled-restart window first. A static
-//! guard can only enforce that over a set it can bound — and while the registry
-//! lived in `lib.rs`, that set was unbounded in a way three successive versions
-//! of the guard each missed: Rust makes a module's private items visible to its
-//! DESCENDANTS, so `live_feed` (a child module) could have written
-//! `registry.subscribers` and opened an upstream line straight through the
-//! suspension, with no scan over `lib.rs` able to see it.
+//! `subscribers` is the consolidated subscription set, and SRS-MD-005 requires
+//! that nothing joins it without a scheduled-restart-window decision. The
+//! COMPILER enforces that: the set is an [`AdmittedSet`](crate::subscriptions::admitted_set::AdmittedSet), whose map
+//! is private to its own module and whose only add method spends an
+//! `atp_types::AdmissionProof` - a value only `RestartWindow` can make, and only
+//! when it decides a request may proceed. So no function here, in a trait impl,
+//! in a sibling module or in a macro can add a subscriber without a decision; it
+//! does not compile. (Seven versions of a source scan tried to recognise every
+//! way Rust can write to a map, and review kept finding the next one.)
 //!
-//! Privacy runs parent-to-child, never child-to-parent. Moving the field here
-//! makes `lib.rs` and every sibling module unable to name it, so "the functions
-//! in this file" really is the complete set of code that can reach the
-//! consolidated set. The guard in `tools/connectivity_check.py` scans exactly
-//! this file, and the property it relies on is now the compiler's rather than
-//! an assertion about one.
-//!
-//! Keep it that way: anything that needs the subscriber map belongs in this
-//! file, gated, not in a module that reaches in.
+//! The field is still kept private, below - not because the guarantee needs it
+//! any more, but because a narrower surface is a smaller review.
 //!
 //! The EXTERNAL half of the boundary is proved by the compiler. Neither a read
 //! nor a write of the field compiles from outside the crate:
@@ -41,17 +34,13 @@
 //! Both are mutation-verifiable: make the field `pub` and they fail with
 //! "Test compiled successfully, but it is marked `compile_fail`".
 //!
-//! **They do NOT prove the intra-crate half**, and being exact about that
-//! matters because the intra-crate case is the one that actually bit. Rustdoc
-//! compiles a doctest as a separate external crate, so no doctest here can
-//! stand in for a sibling module reaching in. What closes that case is the
-//! module boundary itself — `lib.rs` is this module's PARENT, and privacy does
-//! not flow child-to-parent, which `rustc` confirms with E0616 on a probe —
-//! together with `tools/connectivity_check.py`, which refuses if any crate-root
-//! function names the field and refuses if this module ever declares a
-//! submodule (a DESCENDANT would inherit visibility and go unscanned).
+//! The intra-crate half - a sibling, a trait impl or a second function in this
+//! file adding without a decision - is proved where rustdoc cannot reach: the
+//! `compile_fail` doctests in [`admitted_set`](crate::subscriptions::admitted_set) and `atp_types::admission` show
+//! the set's map and the proof are unreachable, and
+//! `tests/domain/test_md005_scheduled_restart_window.py` plants each shape review
+//! used in THIS file and asserts `cargo check` refuses it.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use atp_types::{
@@ -60,6 +49,9 @@ use atp_types::{
 };
 
 use crate::{RestartWindowGate, SubscriptionLineCounter};
+
+pub mod admitted_set;
+use admitted_set::{AdmittedSet, Removal};
 
 // --------------------------------------------------------------------------- //
 // Consolidated subscription registry + fan-out (SRS-MD-001 / SyRS SYS-70)
@@ -209,9 +201,10 @@ impl std::error::Error for SubscriptionRegistryError {}
 #[derive(Debug, Default)]
 pub struct ConsolidatedSubscriptionRegistry {
     // SecurityKey -> subscribers in subscription order, kept duplicate-free
-    // by `subscribe`. BTreeMap gives deterministic key iteration for the line
-    // accounting; the per-key Vec preserves fan-out order.
-    subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,
+    // by `subscribe`. Only an admission can grow it: `AdmittedSet::admit` is the
+    // one way to add, and it consumes an `AdmissionProof` (SRS-MD-005). Spelled
+    // as an absolute path so no `use` can swap in a same-named set (review r32).
+    subscribers: crate::subscriptions::admitted_set::AdmittedSet,
     line_limit: u32,
 }
 
@@ -223,7 +216,7 @@ impl ConsolidatedSubscriptionRegistry {
     /// `try_acquire` to produce the operator-facing structured error.
     pub fn new(line_limit: u32) -> Self {
         Self {
-            subscribers: BTreeMap::new(),
+            subscribers: AdmittedSet::default(),
             line_limit,
         }
     }
@@ -233,18 +226,20 @@ impl ConsolidatedSubscriptionRegistry {
     /// SRS-MD-001 consolidation evidence and the count the SRS-MD-002 limit
     /// gate reads through `lines_in_use`.
     pub fn distinct_subscriptions(&self) -> u32 {
-        self.subscribers.len() as u32
+        self.subscribers.line_count() as u32
     }
 
     /// Number of subscribers fanned out to for `key` (0 if none).
     pub fn subscriber_count(&self, key: &SecurityKey) -> u32 {
-        self.subscribers.get(key).map_or(0, |s| s.len() as u32)
+        self.subscribers
+            .subscribers(key)
+            .map_or(0, |s| s.len() as u32)
     }
 
     /// True when `strategy_id` is a registered subscriber of `key`.
     pub fn is_subscribed(&self, strategy_id: &StrategyId, key: &SecurityKey) -> bool {
         self.subscribers
-            .get(key)
+            .subscribers(key)
             .is_some_and(|s| s.contains(strategy_id))
     }
 
@@ -288,38 +283,42 @@ impl ConsolidatedSubscriptionRegistry {
         // either still leaves the registry exactly as it found it.
         let key = request.security_key()?;
         Self::validate_strategy_id(&request.strategy_id)?;
-        match window.admission() {
-            MarketDataAdmission::Admitted => {}
+        // The proof is the ONLY thing that can add to the set below, so a path
+        // that skipped this decision would not compile.
+        let proof = match window.admission() {
+            MarketDataAdmission::Admitted(proof) => proof,
             MarketDataAdmission::SuspendedForScheduledRestart => {
                 return Err(SubscriptionRegistryError::SuspendedForScheduledRestart);
             }
             MarketDataAdmission::ConnectivityLost => {
                 return Err(SubscriptionRegistryError::ConnectivityLost);
             }
-        }
+        };
 
-        let change = if let Some(existing) = self.subscribers.get_mut(&key) {
-            if existing.contains(&request.strategy_id) {
-                SubscriptionChange::AlreadySubscribed
-            } else {
-                // Dedup: additional subscriber, SAME upstream line.
-                existing.push(request.strategy_id.clone());
-                SubscriptionChange::SubscriberAdded
-            }
-        } else {
-            // First subscriber for this security → one NEW upstream line.
+        if self.is_subscribed(&request.strategy_id, &key) {
+            let change = SubscriptionChange::AlreadySubscribed;
+            self.publish(change, &request.strategy_id, &key, events);
+            return Ok(change);
+        }
+        // Dedup: only the FIRST subscriber of a security opens a new upstream
+        // line; every later one joins the existing line.
+        let opens_line = !self.subscribers.contains_key(&key);
+        if opens_line && self.subscribers.line_count() as u32 >= self.line_limit {
             // Enforce the configured ceiling ATOMICALLY in the same &mut
             // borrow that performs the insert: a new line past the limit is
             // refused here, so no caller — and no probe-then-mutate race —
             // can push the consolidated set past the IB line cap.
-            if self.subscribers.len() as u32 >= self.line_limit {
-                return Err(SubscriptionRegistryError::LineLimitReached {
-                    configured_limit: self.line_limit,
-                });
-            }
-            self.subscribers
-                .insert(key.clone(), vec![request.strategy_id.clone()]);
+            return Err(SubscriptionRegistryError::LineLimitReached {
+                configured_limit: self.line_limit,
+            });
+        }
+        // The ONE addition, and it spends the proof.
+        self.subscribers
+            .admit(proof, key.clone(), request.strategy_id.clone());
+        let change = if opens_line {
             SubscriptionChange::Opened
+        } else {
+            SubscriptionChange::SubscriberAdded
         };
         self.publish(change, &request.strategy_id, &key, events);
         Ok(change)
@@ -338,21 +337,11 @@ impl ConsolidatedSubscriptionRegistry {
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
         Self::validate_strategy_id(strategy_id)?;
 
-        let change = match self.subscribers.get_mut(key) {
-            None => SubscriptionChange::NotSubscribed,
-            Some(existing) => {
-                let before = existing.len();
-                existing.retain(|s| s != strategy_id);
-                if existing.len() == before {
-                    SubscriptionChange::NotSubscribed
-                } else if existing.is_empty() {
-                    // Last subscriber left → release the upstream line.
-                    self.subscribers.remove(key);
-                    SubscriptionChange::Closed
-                } else {
-                    SubscriptionChange::SubscriberRemoved
-                }
-            }
+        let change = match self.subscribers.remove(key, strategy_id) {
+            Removal::NotSubscribed => SubscriptionChange::NotSubscribed,
+            Removal::Removed => SubscriptionChange::SubscriberRemoved,
+            // Last subscriber left → release the upstream line.
+            Removal::Closed => SubscriptionChange::Closed,
         };
         self.publish(change, strategy_id, key, events);
         Ok(change)
@@ -370,7 +359,11 @@ impl ConsolidatedSubscriptionRegistry {
         tick: &MarketDataTick,
     ) -> Result<Vec<StrategyId>, SubscriptionRegistryError> {
         let key = tick.security_key()?;
-        Ok(self.subscribers.get(&key).cloned().unwrap_or_default())
+        Ok(self
+            .subscribers
+            .subscribers(&key)
+            .map(<[StrategyId]>::to_vec)
+            .unwrap_or_default())
     }
 
     fn publish<S: SubscriptionChangeSink>(

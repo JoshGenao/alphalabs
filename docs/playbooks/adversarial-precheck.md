@@ -80,6 +80,85 @@ Three corollaries worth having before you write the guard:
   4001/4002", and a `compile_fail` doctest declaring `fn sibling_reach` that
   names the very field the scan forbids. Strip comments before scanning, and
   keep a non-vacuity assertion that the stripper did not eat the code.
+- **When no boundary can close it, WALK; do not match.** "Who implements this
+  `pub` trait" has no module boundary to hide behind, so it must be scanned. Two
+  regexes (a strict match and a "loose" backstop) were walked past eight times,
+  each by a legal header they did not anticipate: an arrow in a bound, a
+  reference target, a rename, generics on the trait, a `;` in an array type, and
+  finally a brace inside a const-generic argument, which defeated BOTH because
+  both assumed no `{` before the trait name. Blank literals and comments once,
+  with one lexer every scan shares; bound each header by bracket depth; fail on
+  any header you cannot bound. A backstop that shares the strict pattern's
+  assumptions shares its blind spot. `(SRS-MD-005 r27)`
+- **A lexer is a claim about the compiler's rules: copy them, never a likeness.**
+  The one lexer r27 introduced closed a block comment at its first `*/`, but Rust
+  comments nest, so `/* a /* b */ " */` left a phantom `"` that blanked the
+  implementor after it and all 13 checks passed (r28). Every point where your
+  lexer and the compiler disagree about where code is, is a place to hide code.
+  Check each rule against the language reference - comment nesting, nothing
+  tokenized inside a comment, the exact escape forms - and REFUSE any span that
+  never closes instead of blanking to end of file. A line-based shortcut (drop
+  lines starting `//`) is a second lexer with its own disagreements: inside a
+  block comment, `// */ code` ends the comment. The repo-wide sweep found the
+  non-nesting regex `/\*.*?\*/` in four other check tools. `(SRS-MD-005 r28)`
+- **A closed-set claim covers what is COMPILED, not what you read.** An
+  enumeration that says "exactly one implementor" is only as wide as its file
+  list and its view of each file. r29 hid a rename in a nested use group; the
+  sweep after it found two more routes no reviewer had tried yet: code the scan
+  never reads (`#[path]`, `include!`, build scripts, targets outside `src/`,
+  proc-macro crates, members outside the scanned directory) and a macro handed
+  the trait's name, whose expansion no source scan sees. Enumerate every route
+  by which the compiler can see code you do not, and refuse each one the tree
+  does not use. When rounds keep finding new shapes of one hole, stop answering
+  the round and sweep for the next shape yourself. `(SRS-MD-005 r29)`
+- **Key an allowlist by identity, never by spelling.** A set of names collapses
+  two things that share one: `bypass::ScheduledRestartConnectivity` was filed
+  under the real producer's entry (r30), and a second `fn subscribe` in a trait
+  impl hid behind the gated one because the check read "the body of
+  `subscribe`" - the first. Record OCCURRENCES (what, where), key each by its
+  whole path, pin each allowed item to the one site it may live at, and check
+  every occurrence on its own. A rewrite that replaces a regex can drop an
+  accidental guarantee the regex gave - r30's hole was introduced by r27's fix.
+  `(SRS-MD-005 r30)`
+- **One parser per syntax, and normalize identity in the lexer.** r31 put a
+  raw-named mutator (`fn r#is_subscribed`) through the gap between two parsers:
+  the span walker stripped `r#`, the declaration counter did not, so one called
+  it exempt and the other never counted it. Every second parser for the same
+  syntax is a second set of opinions; delete it and route both readers through
+  the first. Erase spelling variants (`r#x` is `x`) once, in the lexer, so no
+  later scan has a rule to forget, and never match a guard against unlexed text
+  - a comment or a struct literal satisfied two "is declared" checks here.
+  `(SRS-MD-005 r31)`
+- **When a text scan keeps losing, move the guarantee into the types.** After
+  r31 a red team found six more bypasses of the same scan (a test module inside
+  a macro, a comparison read as a generic bracket, a symlinked directory, ...).
+  Each fix made the scan bigger, and every new rule was one more place to be
+  wrong. The fix that ended it: make the forbidden act unwritable. A proof type
+  with a private field, built in ONE function, neither `Clone` nor `Copy`; a
+  set whose map is private to its own module and whose only add method spends
+  that proof. Then every bypass review ever found (`entry().or_default()`, a
+  trait-impl mutator, a raw name, a second `fn subscribe`, a forged or reused
+  proof) is a compile error, and the domain test hands each shape to
+  `cargo check` and asserts the exact error code. What stays a scan is small
+  and structural: digest-pin the two files that may make a proof or grow the
+  set, keep the field private, keep the `compile_fail` doctests, and keep
+  `unsafe_code = "forbid"` workspace-wide - unsafe code transmutes `()` into a
+  zero-sized proof, so the type-level guarantee holds only in safe Rust. Name
+  the residual out loud: a caller can still hand the decision a false clock.
+  `(SRS-MD-005, after r31)` The scan that is left must bind IDENTITY too:
+  r32 kept the real types intact and swapped the registry's field for a
+  same-named type through a `use`, because the check compared the spelling
+  `AdmittedSet` while hashing a different file. Spell every load-bearing type
+  as an absolute path (`crate::...`, `::extern_crate::...`) and prove each
+  segment resolves to the pinned file: one plain `mod` declaration per
+  segment, the real crate behind the extern name, and the holder's whole field
+  list pinned. `(SRS-MD-005 r32)` And bind the chain at its START: r33
+  pointed `[lib] path` at another file, so every module check passed on a
+  `src/lib.rs` Cargo no longer compiled. Derive the chain from each file's
+  path instead of listing it by hand, and run it for EVERY file any check
+  reads by name: crate library root is `src/lib.rs`, then one plain `mod`
+  per segment. A hand list covers the files the last finding named; the
+  derived one covers the files the next finding will. `(SRS-MD-005 r33)`
 
 `(SRS-MD-005)`
 
@@ -184,3 +263,112 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   turned a compare-and-swap back into read-and-clobber while every commit message said
   otherwise. When you strengthen an identity, grep every caller that *names* that identity
   and check what each one COMPARES, not just what it passes. `(RESV-006 r27)`
+
+- **A character class you wrote to bound a generic list will terminate on the `>` of a
+  `->` return arrow.** `impl(?:<[^>]*>)?\s+Trait\s+for\s+(\w+)` cannot match
+  `impl<C: Fn() -> i64> Trait for AlwaysOpen` - and an injected clock closure is exactly
+  the idiom this codebase uses, so the guard was blind to the shape it would actually
+  meet. Bound the span by what CANNOT appear in it (`[^{};]*?`) rather than by the
+  delimiter you expect to close it. Then inject the shape and watch it get caught.
+  `(SRS-MD-005 r14)`
+- **A scan whose subject list is hard-coded is bounded by the day it was written, not by
+  the tree.** The gate-implementor enumeration listed the four crates that had the trait
+  in view; the contract beside it claimed it "walks the crate sources". A fifth crate
+  gaining the dependency later would be unscanned with every guard still green. Glob the
+  tree, and `fail()` when the glob returns nothing - a scan that finds nothing must be
+  red, never a clean report. `(SRS-MD-005 r14)`
+- **Make a guard's exemption self-expiring, not asserted.** `cmd_gate` legitimately need
+  not refresh the rendered page - because the renderer emits no gate state. Writing that
+  reason in a comment leaves the exemption silently wrong the day gates reach the page.
+  Assert the *condition that justifies it* (`"gates" not in inspect.getsource(render)`),
+  so the exemption fails the moment its premise does. `(SRS-MD-005 r14)`
+
+- **An impl target is a TYPE, not an identifier.** `for\s+(\w+)` misses
+  `impl Gate for &AlwaysOpen`, `impl<'a> Gate for &'a AlwaysOpen` and
+  `impl Gate for (AlwaysOpen, u8)` - all legal Rust, all production implementors, all
+  invisible to a "closed set" enumeration. Capture the span up to `where` or `{`, strip
+  its generic arguments (or `P` and `C` in `Foo<P, C>` each read as a type and the guard
+  cries wolf on the declared producer), then take the type names. `(SRS-MD-005 r15)`
+- **When you fix a regex defect, grep the file for the same shape before you write the
+  playbook entry about it.** The `[^>]*` fix landed 54 lines below two siblings carrying
+  the identical class, one of which would have `fail()`ed claiming the producer did not
+  implement the trait the moment it grew an `Fn() -> i64` bound. `(SRS-MD-005 r15)`
+- **A "class" guard that keys on a DIRECT call sees only the odd path.** The recorder
+  check looked for `save_record` by name, which caught the two commands that call it
+  directly and missed `run`, `record` and `artifact` - the three that persist through
+  `_store_step`, i.e. the normal way to write one. Close the relation transitively and
+  assert the closure reaches the known helper, so the walk itself is tested.
+  `(SRS-MD-005 r15)`
+- **Scope a cross-file consistency check to the LINE, not the file.** Comparing every
+  "N rounds" claim in the queue against every feature id in the queue produced seven
+  false accusations on its first run. A row is one line; keep the claim and its subject
+  together. `(SRS-MD-005 r15)`
+
+- **A `->` will defeat your bracket matcher. Again.** Three separate patterns in one
+  feature: `(?:<[^>]*>)?` for an impl's generics (r14), `for\s+(\w+)` for its target
+  (r15), and `<[^{}();]*?>` for a `fn` declaration's generics (r17, where excluding `(`
+  broke on `<F: Fn() -> bool>`). Write ONE named pattern for "a generic list" that admits
+  `->` explicitly, use it everywhere, and test it against a bound containing both a
+  parenthesis and an arrow. `(SRS-MD-005 r17)`
+- **A gate that is real is not automatically a gate that is RELEVANT.**
+  `cargo build && echo 'builds clean'` is honest; `ls && echo '176 suites ok'` is not, and
+  a check that only asked "is the gating command a no-op?" accepted both. Require the
+  claim and its gate to be about the same thing - at least one substantial word of what
+  is printed appearing in the command that gates it. `(SRS-MD-005 r17)`
+
+- **When the same defect class appears a fourth time, stop patching call sites and go
+  count them.** A `->` defeated four separate patterns in this one feature: impl generics
+  (r14), the impl target (r15), a `fn` declaration's generics (r17), and the manual depth
+  counter in `_strip_generic_args` (r18), which decremented on the `>` of the arrow and so
+  reported a RETURN TYPE as an undeclared production implementor. Each fix was correct and
+  each round found the next one, because the fix was always local. `grep -n '\[^>\]\|>' `
+  over every pattern in the file, once, would have ended it four rounds earlier.
+  `(SRS-MD-005 r18)`
+- **Test the false-positive direction of a guard, not only the bypass.** A guard that
+  `fail()`s on a legal shape gets disabled by the next person who meets it, so it is as
+  dead as one that never fires. Every bypass test here now has a sibling asserting the
+  legal shape stays quiet. `(SRS-MD-005 r18)`
+
+- **Stop writing regexes for nested syntax; count.** Bounding a Rust generic list by
+  pattern failed four times in a row on shapes each version had not anticipated: a `->`
+  closed it early, then a parenthesised bound, then `<T: Into<Vec<u8>>>` exceeded the one
+  nesting level the regex allowed. A bracket counter has no depth limit and needs no
+  alternation for the arrow, which is simply "a `>` whose predecessor is `-`". Twenty
+  lines, and the class is closed. `(SRS-MD-005 r19)`
+- **A guard keyed on a NAME is defeated by a rename.** `use atp_market_data::RestartWindowGate as Gate;`
+  then `impl Gate for AlwaysOpen` produced no match, while the check went on printing
+  "this enumeration is what makes it unforgeable". Collect the file's `use ... as` aliases
+  (braced groups too) and search for every name the trait answers to.
+  `(SRS-MD-005 r19)`
+
+- **A backstop bounded like the pattern it backs up is not a backstop.** The completeness
+  check written to end five rounds of "your regex missed this shape" counted with `[^;]`,
+  the same boundary the strict pattern used - so any shape a `;` defeated defeated BOTH,
+  and `expected == matched == 0` read as a clean, closed set with an always-admitting
+  implementor sitting in it. A backstop must be bounded by something the thing it guards
+  genuinely cannot contain (here: braces), and it must be TESTED against a shape the
+  strict pass fails. `(SRS-MD-005 r21)`
+- **A hand-written parser must return "unparseable", never "nothing".** Replacing the
+  regex with a bracket counter fixed the depth problem and introduced a worse one: on a
+  `;` inside `<T: Into<[u8; 4]>>` it returned the start index, so the caller silently
+  DROPPED that declaration and the exemption was inherited by a function the scan could
+  not read. Return a sentinel and make the caller refuse. Failing open is the one outcome
+  a guard may never have. `(SRS-MD-005 r21)`
+- **A rename can be two hops.** Collecting `use ... as` aliases from the file being scanned
+  missed `pub use Trait as Gate;` in one module followed by `use crate::gates::Gate;` in
+  another - no strict match, no loose match, clean report. Collect aliases across the whole
+  tree and close over them, because an alias can itself be renamed. `(SRS-MD-005 r21)`
+
+- **A bounded closure that has not converged has not answered the question.** The
+  trait-alias closure added to end the two-hop rename bypass ran a fixed number of passes
+  and then fell through and scanned with whatever it had - the exact fail-open shape that
+  had just been removed from the parser beside it. If the set is still growing when the
+  budget runs out, `fail()`. `(SRS-MD-005 r22)`
+- **When you correct a claim, grep for its PEER SURFACES in the same commit.** The
+  verification queue's "close over a standing block" route was removed as having no
+  mechanism; the identical false route stayed in the session note's Resume block and was
+  found one round later. Same class, same feature, two files. `grep` the corrected phrase
+  across `docs/`, `progress.d/` and the rustdoc before you call it fixed - this feature
+  paid for that lesson three separate times (r18 the Outcome line, r23 two of five
+  invariant copies, r24 the Resume block). `(SRS-MD-005 r24)`
+
