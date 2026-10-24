@@ -348,7 +348,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-EXE-001 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, with \"at least 30 paper strategies\" read as \"5 paper strategies\", and the 1,000 ms p95 acknowledgement measured with the host monotonic clock. Out of MVP scope (R2): 30-paper load; PTP measurement.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): As written, with \"at least 30 paper strategies\" read as \"5 paper strategies\", and the 1,000 ms p95 acknowledgement measured with the host monotonic clock. Out of MVP scope (R2): 30-paper load; PTP measurement.",
       "Step 4: Record objective evidence from integration test, structural test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -623,7 +623,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): A nightly job retrieves daily OHLCV bars from Databento for every watchlist symbol and the benchmark (default SPY), writes validated data to the SSD, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day. Out of MVP scope (R2): 8,000+ securities; NAS sync.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): A nightly job retrieves daily OHLCV bars from Databento for every watchlist symbol and the benchmark (default SPY), writes validated data to the SSD, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day. Out of MVP scope (R2): 8,000+ securities; NAS sync.",
       "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -657,7 +657,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Backfill retrieves the maximum available Databento daily and minute history for the watchlist symbols and the benchmark, with floors of ≥ 15 years daily and ≥ 6 months minute for each symbol that has that much history; a symbol with less records a deviation note. A symbol added to the watchlist later is backfilled the same way. Data is stored through the same validation and catalog path as incremental ingestion. Out of MVP scope (R2): Full-universe backfill.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): Backfill retrieves the maximum available Databento daily and minute history for the watchlist symbols and the benchmark, with floors of \u2265 15 years daily and \u2265 6 months minute for each symbol that has that much history; a symbol with less records a deviation note. A symbol added to the watchlist later is backfilled the same way. Data is stored through the same validation and catalog path as incremental ingestion. Out of MVP scope (R2): Full-universe backfill.",
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -674,7 +674,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, limited to option chains whose underlying is on the watchlist, stored on the SSD. Out of MVP scope (R2): Underlyings beyond the watchlist; NAS.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): As written, limited to option chains whose underlying is on the watchlist, stored on the SSD. Out of MVP scope (R2): Underlyings beyond the watchlist; NAS.",
       "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -936,7 +936,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-019 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Detect and halt, live. When corporate-action data marks a split, reverse split, dividend, delisting, merger, or symbol change effective today on a security in which the live strategy has a resting order or an open position: (1) the strategy's resting orders in that security are cancelled before the regular session opens; (2) new orders in that security are rejected with structured error CORPORATE_ACTION_HALT until the operator clears the halt through the dashboard, CLI, or REST API; (3) the operator is notified through the strategy callback, the dashboard, and the notification subsystem. Out of MVP scope (R2): Automatic adjustment of resting order quantities and prices.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): Detect and halt, live. When corporate-action data marks a split, reverse split, dividend, delisting, merger, or symbol change effective today on a security in which the live strategy has a resting order or an open position: (1) the strategy's resting orders in that security are cancelled before the regular session opens; (2) new orders in that security are rejected with structured error CORPORATE_ACTION_HALT until the operator clears the halt through the dashboard, CLI, or REST API; (3) the operator is notified through the strategy callback, the dashboard, and the notification subsystem. Out of MVP scope (R2): Automatic adjustment of resting order quantities and prices.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -953,7 +953,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-020 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Live position quantity and cost basis are never adjusted by the software. When the operator clears a halt, the live position in that security is re-read from the IB account, and any difference from stored state is shown on the dashboard. Out of MVP scope (R2): Automatic adjustment and successor remapping of live positions.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): Live position quantity and cost basis are never adjusted by the software. When the operator clears a halt, the live position in that security is re-read from the IB account, and any difference from stored state is shown on the dashboard. Out of MVP scope (R2): Automatic adjustment and successor remapping of live positions.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -970,7 +970,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-DATA-021 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Detect and halt, paper. On the SRS-DATA-019 trigger, for each paper strategy holding or ordering the security: its virtual resting orders in the security are cancelled; its virtual position is closed at the prior session's closing price and recorded as a corporate-action close; new virtual orders in the security are rejected with CORPORATE_ACTION_HALT until the halt is cleared. One clear action per security covers the live strategy and all paper strategies. Out of MVP scope (R2): Automatic adjustment of virtual positions and orders.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): Detect and halt, paper. On the SRS-DATA-019 trigger, for each paper strategy holding or ordering the security: its virtual resting orders in the security are cancelled; its virtual position is closed at the prior session's closing price and recorded as a corporate-action close; new virtual orders in the security are rejected with CORPORATE_ACTION_HALT until the halt is cleared. One clear action per security covers the live strategy and all paper strategies. Out of MVP scope (R2): Automatic adjustment of virtual positions and orders.",
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1312,7 +1312,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-RESV-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): One live strategy and 5 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements. Out of MVP scope (R2): 30 paper strategies.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): One live strategy and 5 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements. Out of MVP scope (R2): 30 paper strategies.",
       "Step 4: Record objective evidence from system test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1401,7 +1401,7 @@
       "Step 3: Verify acceptance criteria: After successful swap, automatic triggers are ignored for the configured cool-down period defaulting to 7 calendar days; manual swap during cool-down requires confirmation warning; the cool-down start time is the timestamp of the most recent successful swap completion.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false,
     "verification_method": "e2e"
   },
@@ -1450,7 +1450,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-UI-003 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, and each paper strategy's simulated P&L, Sharpe ratio, and Sortino ratio since it started. Out of MVP scope (R2): Paper strategy rankings and momentum scores.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, and each paper strategy's simulated P&L, Sharpe ratio, and Sortino ratio since it started. Out of MVP scope (R2): Paper strategy rankings and momentum scores.",
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1502,7 +1502,7 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-API-001 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, without Reservoir ranking. Out of MVP scope (R2): Reservoir ranking paths.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): As written, without Reservoir ranking. Out of MVP scope (R2): Reservoir ranking paths.",
       "Step 4: Record objective evidence from contract test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
@@ -1731,7 +1731,7 @@
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
       "Step 2: Navigate through the dashboard workflow for UI-1 and perform the user action or inspection described by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): As written, with \"Reservoir rankings\" read as the paper strategy list from SRS-UI-003. Out of MVP scope (R2): Reservoir rankings.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): As written, with \"Reservoir rankings\" read as the paper strategy list from SRS-UI-003. Out of MVP scope (R2): Reservoir rankings.",
       "Step 4: Confirm the UI behavior traces to SRS-UI-001, SRS-UI-002, SRS-UI-003 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
@@ -1799,7 +1799,7 @@
     "steps": [
       "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
       "Step 2: Navigate through the dashboard workflow for UI-5 and perform the user action or inspection described by the requirement.",
-      "Step 3: Verify MVP acceptance criteria (docs/SRS.md §3.1): User can trigger manual promotion, inspect demotion-pending state, and view cool-down expiry. Out of MVP scope (R2): Automatic-trigger configuration.",
+      "Step 3: Verify MVP acceptance criteria (docs/SRS.md \u00a73.1): User can trigger manual promotion, inspect demotion-pending state, and view cool-down expiry. Out of MVP scope (R2): Automatic-trigger configuration.",
       "Step 4: Confirm the UI behavior traces to SRS-RESV-003 through SRS-RESV-006 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
