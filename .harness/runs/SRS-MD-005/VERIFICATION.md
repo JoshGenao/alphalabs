@@ -1,7 +1,7 @@
 # SRS-MD-005 — independent verification transcript
 
 Every block below is **captured terminal output**, not a summary, and every
-block was run at commit `fb42c36`. The commit that adds this document changes
+block was run at commit `889710f`. The commit that adds this document changes
 only files under `.harness/runs/SRS-MD-005/`, so the code it certifies is the
 code it ships with. It is a re-verification, not a replay of the session that
 built the feature.
@@ -17,13 +17,14 @@ fix: the capture before this one certified `3585315`. It was re-run again on
 2026-10-21, after the compiler-enforced redesign that followed round 31: the
 capture before this one certified `7af1b26`. It was re-run again on
 2026-10-23, after the round-32 fix: the capture before this one certified
-`fac39ee`. Sections 4 and 5 capture
+`fac39ee`. It was re-run again later on 2026-10-23, after the round-33 fix:
+the capture before this one certified `fb42c36`. Sections 4 and 5 capture
 a DELIBERATELY BROKEN tree; each mutation was applied and reverted around its
 own command, and the tree was checked clean after each revert.
 
 ## Read this first: it is NOT fully green, and that is the point
 
-The judgment critic sits at **`block` after 32 rounds**. This feature integrated
+The judgment critic sits at **`block` after 33 rounds**. This feature integrated
 `serialized` on operator authorization, not on a green verdict, and
 `tools/evidence.py verify` refuses for exactly that reason - see Section 6. If
 that section said `approve`, this document would be lying.
@@ -58,7 +59,7 @@ mean something.
 === SECTION 1: provenance ===
 
 $ git rev-parse HEAD
-fb42c367960dce3c975e80f730674cae9e3798b1
+889710f4860effabf3bbdf00b598980e285074cf
 [exit 0]
 
 $ git log --oneline --reverse origin/main --grep='SRS-MD-005' | head -14 | cat
@@ -207,13 +208,13 @@ print("deterministic critic:", det["verdict"], "@", det["head"][:8])
 j = d["critic"]["judgment"]
 print("judgment critic    :", j["verdict"], "| rounds:", j.get("rounds"), "| reviewer:", j["reviewer"])
 PY
-step 1: PASS | exit=0 | @fb42c367 | ./init.sh
-step 2: PASS | exit=0 | @fb42c367 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
-step 3: PASS | exit=0 | @fb42c367 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
-step 4: PASS | exit=0 | @fb42c367 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
+step 1: PASS | exit=0 | @889710f4 | ./init.sh
+step 2: PASS | exit=0 | @889710f4 | cargo test -p atp-orchestrator --test srs_md_005_restart_window_
+step 3: PASS | exit=0 | @889710f4 | .venv/bin/python -m pytest tests/domain/test_md005_scheduled_res
+step 4: PASS | exit=0 | @889710f4 | .venv/bin/python -m pytest tests/integration/test_md005_restart_
 
-deterministic critic: approve @ fb42c367
-judgment critic    : block | rounds: 32 | reviewer: codex
+deterministic critic: approve @ 889710f4
+judgment critic    : block | rounds: 33 | reviewer: codex
 [exit 0]
 
 $ .venv/bin/python tools/evidence.py verify SRS-MD-005
@@ -223,7 +224,7 @@ $ .venv/bin/python tools/evidence.py verify SRS-MD-005
 
 === SECTION 7: CI on the certified commit, straight from GitHub ===
 
-$ gh run list --commit fb42c367960dce3c975e80f730674cae9e3798b1 --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
+$ gh run list --commit 889710f4860effabf3bbdf00b598980e285074cf --json workflowName,conclusion --jq '.[] | "\(.conclusion)\t\(.workflowName)"'
 success	security
 success	ci
 skipped	integration
@@ -258,11 +259,11 @@ cargo fmt --check : 0 files need reformatting
 [exit 0]
 
 $ .venv/bin/python -m pytest tests/domain/test_md005_scheduled_restart_window.py tests/test_connectivity_contract.py -q 2>&1 | tail -1
-149 passed, 103 subtests passed in 385.12s (0:06:25)
+151 passed, 108 subtests passed in 2756.41s (0:45:56)
 [exit 0]
 
 $ ATP_RUN_INTEGRATION=1 .venv/bin/python -m pytest tests/integration/test_md005_restart_fault_injection.py -q 2>&1 | tail -1
-8 passed in 0.34s
+8 passed in 0.35s
 [exit 0]
 ```
 

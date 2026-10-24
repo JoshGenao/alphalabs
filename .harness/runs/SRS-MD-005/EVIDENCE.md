@@ -76,15 +76,15 @@ cargo test -p atp-orchestrator --test srs_md_005_restart_window_cli
 
 ```
 running 15 tests
-test help_is_available_alone_and_carries_no_success_sentinel ... ok
 test a_gateway_that_returns_inside_the_window_resumes_orders_and_market_data ... ok
+test help_is_available_alone_and_carries_no_success_sentinel ... ok
 test the_resume_proof_cannot_be_printed_from_outside_the_window ... ok
-test a_one_second_lead_still_lands_inside_the_lead ... ok
-test resume_cannot_be_derived_against_a_dead_gateway ... ok
+test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
+test suspension_cannot_be_derived_outside_the_window ... ok
 test escalation_cannot_be_derived_inside_the_window ... ok
 test suspension_blocks_orders_and_market_data_and_suppresses_the_alert ... ok
-test suspension_cannot_be_derived_outside_the_window ... ok
-test a_gateway_still_dead_after_the_window_escalates_and_pages ... ok
+test resume_cannot_be_derived_against_a_dead_gateway ... ok
+test a_one_second_lead_still_lands_inside_the_lead ... ok
 test the_suspension_proof_cannot_be_printed_from_inside_the_window ... ok
 test identical_inputs_produce_identical_output_across_processes ... ok
 test the_catalogue_keys_actually_move_the_window ... ok
@@ -113,8 +113,8 @@ Step 3: Verify acceptance criteria: During the configured restart window, order 
 <details><summary>observed output (tail)</summary>
 
 ```
-.............................................................            [100%]
-61 passed in 514.34s (0:08:34)
+..............................................................           [100%]
+62 passed in 494.96s (0:08:14)
 ```
 
 </details>
@@ -133,7 +133,7 @@ Step 4: Record objective evidence from integration test, fault injection and lea
 
 ```
 ........                                                                 [100%]
-8 passed in 0.36s
+8 passed in 0.35s
 ```
 
 </details>
