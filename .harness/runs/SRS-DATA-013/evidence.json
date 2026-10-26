@@ -2,20 +2,24 @@
   "created": "2026-10-19T05:31:03+00:00",
   "critic": {
     "deterministic": {
-      "head": "4d89027269040e01def72914a9679552ed2fa750",
-      "ts": "2026-10-19T13:08:20+00:00",
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+      "ts": "2026-10-26T13:20:22+00:00",
       "verdict": "approve"
     },
     "judgment": {
-      "head": "e22729fbd67d40cee5cb765f0d92af4b184a3ead",
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
       "reviewer": "codex",
-      "rounds": 11,
-      "ts": "2026-10-19T13:07:22+00:00",
+      "rounds": 15,
+      "ts": "2026-10-26T13:20:22+00:00",
       "verdict": "approve"
     }
   },
   "feature": "SRS-DATA-013",
   "gates": {
+    "mutation_verify": {
+      "status": "pass",
+      "ts": "2026-10-26T13:20:22+00:00"
+    },
     "run_ci_locally": {
       "status": "pass",
       "ts": "2026-10-19T13:07:22+00:00"
@@ -29,13 +33,13 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "e22729fbd67d40cee5cb765f0d92af4b184a3ead",
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
       "n": 1,
       "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-DATA-013/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "69a2a4cb4921eca1",
-      "ts": "2026-10-19T13:06:46+00:00"
+      "ts": "2026-10-26T13:19:22+00:00"
     },
     {
       "argv": [
@@ -47,19 +51,97 @@
         "no:cacheprovider",
         "tests/domain/test_data013_quarantine_store.py",
         "tests/domain/test_data013_ingestion_validation.py",
-        "tests/domain/test_data013_quarantine_alert.py"
+        "tests/domain/test_data013_quarantine_alert.py",
+        "tests/unit/test_dashboard_quarantine.py",
+        "tests/boundary/test_dashboard_quarantine_wiring.py"
       ],
-      "command": ".venv/bin/python -m pytest -q -p no:cacheprovider tests/domain/test_data013_quarantine_store.py tests/domain/test_data013_ingestion_validation.py tests/domain/test_data013_quarantine_alert.py",
+      "command": ".venv/bin/python -m pytest -q -p no:cacheprovider tests/domain/test_data013_quarantine_store.py tests/domain/test_data013_ingestion_validation.py tests/domain/test_data013_quarantine_alert.py tests/unit/test_dashboard_quarantine.py tests/boundary/test_dashboard_quarantine_wiring.py",
       "executed": true,
       "exit_code": 0,
-      "head": "e22729fbd67d40cee5cb765f0d92af4b184a3ead",
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
       "n": 2,
-      "observed": "..................................                                       [100%]\n34 passed in 21.08s",
+      "observed": "........................................................................ [ 80%]\n.................                                                        [100%]\n89 passed in 24.73s",
       "status": "pass",
       "step_text": "Step 2: Exercise SRS-DATA-013 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "69a2a4cb4921eca1",
-      "ts": "2026-10-19T13:07:07+00:00"
+      "ts": "2026-10-26T13:19:48+00:00"
+    },
+    {
+      "argv": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests/e2e/test_dashboard_quarantine_browser.py"
+      ],
+      "artifacts": [
+        {
+          "bytes": 101665,
+          "caption": "quarantine pane before the alert: 6 of 10 held, one per SYS-77 rule, alert NOT YET DELIVERED",
+          "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+          "kind": "image",
+          "name": "step3-01-j6fb7l.png",
+          "sha256": "74b4722062b53597",
+          "ts": "2026-10-26T13:19:58+00:00"
+        },
+        {
+          "bytes": 100720,
+          "caption": "quarantine pane after the real notify pass: alert out on email (queued at the relay) and push (delivered)",
+          "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+          "kind": "image",
+          "name": "step3-02-j6fb7l.png",
+          "sha256": "a77627ced6760b76",
+          "ts": "2026-10-26T13:19:58+00:00"
+        },
+        {
+          "bytes": 1204444,
+          "caption": "full session recording",
+          "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+          "kind": "video",
+          "name": "step3-page@42548088de8670f2197d85118cd6eb1b.webm",
+          "sha256": "9d38a5832dc17f55",
+          "ts": "2026-10-26T13:19:58+00:00"
+        }
+      ],
+      "command": ".venv/bin/python -m pytest -q -p no:cacheprovider tests/e2e/test_dashboard_quarantine_browser.py",
+      "executed": true,
+      "exit_code": 0,
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+      "n": 3,
+      "observed": "....                                                                     [100%]\n4 passed in 13.30s",
+      "status": "pass",
+      "step_text": "Step 3: Verify acceptance criteria: Records failing structural, range, duplicate, or required-field checks are quarantined and not written to primary tables; dashboard and notification alerts include counts and reasons.",
+      "steps_digest": "69a2a4cb4921eca1",
+      "ts": "2026-10-26T13:20:01+00:00"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "atp-data",
+        "-p",
+        "atp-orchestrator",
+        "--test",
+        "srs_data_013_ingestion_validation",
+        "--test",
+        "srs_data_013_quarantine_store",
+        "--test",
+        "srs_data_013_quarantine_alert"
+      ],
+      "command": "cargo test -p atp-data -p atp-orchestrator --test srs_data_013_ingestion_validation --test srs_data_013_quarantine_store --test srs_data_013_quarantine_alert",
+      "executed": true,
+      "exit_code": 0,
+      "head": "488f111f10368009f66e7f354cf5d707f44510a5",
+      "n": 4,
+      "observed": "running 8 tests\ntest coverage_kind_is_refused_fail_closed ... ok\ntest duplicate_within_batch_is_quarantined_not_written ... ok\ntest mixed_batch_quarantines_invalid_and_writes_only_valid ... ok\ntest all_valid_batch_writes_everything_with_zero_quarantine ... ok\ntest corrupt_tier_store_fails_closed_before_ssd_write ... ok\ntest conflicting_cross_store_duplicate_is_quarantined_not_batch_abort ... ok\ntest identical_cross_store_reingest_is_idempotent_not_quarantined ... ok\ntest conflict_with_nas_archived_cold_record_is_quarantined_no_ssd_mutation ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s\n\n\nrunning 14 tests\ntest quarantining_path_writes_nothing_when_the_run_cannot_be_recorded ... ok\ntest tiered_path_records_every_reject_and_refuses_the_batch ... ok\ntest quarantining_path_records_its_rejects_when_a_catalog_cannot_be_read ... ok\ntest tiered_path_writes_nothing_when_the_run_cannot_be_recorded ... ok\ntest a_conflict_that_cannot_be_recorded_writes_nothing ... ok\ntest a_coverage_record_refuses_and_records_the_whole_batch_on_both_paths ... ok\ntest tiered_path_records_a_failed_primary_write_as_failed ... ok\ntest tiered_path_catches_a_conflict_within_the_batch_under_the_lock ... ok\ntest quarantining_path_persists_every_reject_with_its_reason ... ok\ntest a_primary_save_failure_after_a_conflict_keeps_the_conflict_recorded ... ok\ntest tiered_path_records_a_clean_batch_as_written ... ok\ntest quarantining_path_sets_aside_a_conflict_the_tier_finds_and_writes_the_rest ... ok\ntest tiered_path_records_a_conflicting_reingest_with_its_payload ... ok\ntest an_archived_key_conflict_is_caught_on_both_paths ... ok\n\ntest result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n\n\nrunning 15 tests\ntest an_unreadable_store_is_an_error_not_nothing_due ... ok\ntest an_unreadable_run_is_alerted_as_unreadable ... ok\ntest status_on_an_unreadable_store_is_an_error_not_nothing_to_report ... ok\ntest a_clean_run_is_not_alerted ... ok\ntest status_on_a_settled_run_that_became_unreadable_does_not_claim_what_it_held ... ok\ntest a_damaged_marker_cannot_hide_a_run ... ok\ntest an_alert_that_reached_no_channel_is_retried ... ok\ntest a_quarantine_run_is_alerted_once_with_its_count_and_nature ... ok\ntest status_reports_a_run_due_then_alerted_with_each_channel_outcome ... ok\ntest status_shows_a_failed_attempt_as_due_with_its_failures ... ok\ntest a_run_published_after_newer_runs_settled_is_still_alerted ... ok\ntest status_names_exactly_the_runs_the_next_pass_sends ... ok\ntest status_reports_the_same_newest_runs_as_the_summary_and_counts_them_all ... ok\ntest a_failed_alert_is_retried_however_many_runs_follow_it ... ok\ntest an_old_quarantine_run_behind_200_clean_runs_is_still_alerted ... ok\n\ntest result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.51s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s\n     Running tests/srs_data_013_ingestion_validation.rs (target/debug/deps/srs_data_013_ingestion_validation-b13e2f5d025c09f0)\n     Running tests/srs_data_013_quarantine_store.rs (target/debug/deps/srs_data_013_quarantine_store-8589d74cae568474)\n     Running tests/srs_data_013_quarantine_alert.rs (target/debug/deps/srs_data_013_quarantine_alert-d697c02fec057047)",
+      "status": "pass",
+      "step_text": "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end.",
+      "steps_digest": "69a2a4cb4921eca1",
+      "ts": "2026-10-26T13:20:22+00:00"
     }
   ],
-  "updated": "2026-10-19T13:08:20+00:00"
+  "updated": "2026-10-26T13:20:22+00:00"
 }

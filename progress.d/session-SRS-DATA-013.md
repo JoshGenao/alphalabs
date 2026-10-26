@@ -180,3 +180,97 @@ Resume / next - landing 3:
   browser evidence with screenshots + a live Email/Push run on the VM. Then evidence steps 3-4,
   a fresh whole-feature judgment review, and the operator's attested close.
   Do NOT rebuild the store, the write-path recording, the conflict screening, or the alerting.
+
+=== SESSION SRS-DATA-013 (3) - landing 3 of 3: the dashboard pane, 2026-10-26 ===
+Outcome: serialized (A: done - every step executed through evidence.py run at the reviewed
+         head, step 3 with screenshots; the close needs a named attestation because
+         verification_method is `e2e`)
+
+WHAT I BUILT
+- atp-orchestrator quarantine_notification::alert_status + `data013_quarantine_alert_cli
+  status --ssd --store [--limit 1-200]`: read-only, sends and settles nothing. Each of the
+  newest runs' alert state (NOT_NEEDED / ALERTED / ALERTED_PROVISIONAL / IN_PROGRESS /
+  AWAITING_OUTCOME / DUE / SETTLED_UNVERIFIABLE) through the SAME decide() rule and settlement
+  markers a notify pass uses, the per-channel outcome of the stored alert for that state, and
+  the run state the verdict was judged against. Reads markers, then events, then runs: the
+  reverse of the order notify writes them (r12). describe_unreadable() is now the one wording
+  the sender and the reader share.
+- python/atp_dashboard/quarantine.py QuarantinePaneProvider, GET /dashboard/api/quarantine,
+  always composed by mount_default_dashboard. Two independent legs: counts and reasons
+  (data013_ingestion_validation_cli summary over ATP_SSD_DATA_DIR) and delivery (status over
+  ATP_NOTIFICATION_STORE_DIR). Strict kv parsing; drift is unreadable, never data. Delivery is
+  attached to a run only when the status leg judged the same state the counts show (r13).
+  One read serves every request for 5 s (the status read is O(history)); 1.5 s per CLI so
+  the worst case fits the browser's 4 s poll (r12).
+- The Data Quarantine pane: the newest run as a gate (records in / admitted / held / not
+  stored, hazard-striped held segment), six SYS-77 reason tiles with rule-letter badges, the
+  operator-alert strip with EMAIL/PUSH chips, and a ledger of the newest 20 runs. Seven pane
+  states; not configured, store unreadable and no runs yet never show a count; PENDING shows
+  admitted as unknown (r13). Dark and light themes screenshotted in every state.
+- `notify` and `status` refuse a repeated flag (was last-wins).
+- tests/fixtures/operator_transports.py: loopback SMTP relay + ntfy stand-ins, so tests drive
+  the REAL notify CLI end to end.
+
+ALSO FIXED ON THE WAY (own commits)
+- c2634b1 The topbar brand title slid under the Research key at laptop widths, and below
+  ~1100px the Readiness chip overran it. tests/e2e/test_dashboard_topbar_layout.py (6 widths;
+  red at 5 of them against the old CSS). The footer named SRS-NOTIF-001 (closed) as the owner
+  of the critical-alerts feed; UI-1 owns it.
+- 6b4f028 tests/unit/test_evidence.py ran a bare `pytest` from PATH: red in any shell without
+  the venv activated (the one failure in a 5686-test run).
+
+WHAT I TESTED (per step, all through `evidence.py run` at the final head)
+  Step 1: PASS - ./init.sh -> "✓ Environment ready".
+  Step 2: PASS - the DATA-013 domain tests (store, ingestion validation, alert incl. the new
+          status cases), the pane's unit tests and its boundary tests over real binaries:
+          89 passed.
+  Step 3: PASS - ATP_RUN_E2E=1 ATP_CAPTURE_EVIDENCE=1 tests/e2e/test_dashboard_quarantine_browser.py:
+          4 passed. Real ingest of the SYS-77 mixed fixture (10 records, one failing each of the
+          six rules); `inspect` proves only the 4 valid records reached primary; the pane, through
+          the SHIPPED composition, shows 6 held / 4 admitted / one per reason and NOT YET
+          DELIVERED; the real notify CLI sends through the loopback relay + ntfy, both bodies carry
+          "6 of 10 records quarantined" and all six REASON=1; the pane then shows "operator
+          alerted" with EMAIL · QUEUED and PUSH · DELIVERED. Two screenshots attached. Plus: an
+          unreadable store shows no count, an all-failed attempt reads "attempted" and stays DUE,
+          a PENDING run shows admitted as unknown.
+  Step 4: PASS - cargo test -p atp-data -p atp-orchestrator --test srs_data_013_ingestion_validation
+          --test srs_data_013_quarantine_store --test srs_data_013_quarantine_alert: 8 + 14 + 15.
+  Gates: full `pytest -m "not integration and not e2e"` 5686 passed (the 1 failure was the
+  PATH-dependent evidence test, fixed); full tests/e2e 78 passed, 3 skipped (jupyterlab not
+  installed locally x2; RESV-005's known skip); cargo clippy --workspace -D warnings clean;
+  tools/run_ci_locally.sh "every step ran", 85/85 + 23/23 contract checks; mutation_verify
+  33/33 red (by collection failure - see test-integrity rule 38), plus hand mutations of the
+  repeated-flag refusal, the provisional-alert mapping and the PENDING admitted cell, each red.
+
+WHAT IS NOT PROVEN HERE
+- The real transports. The alert path ran against loopback stand-ins that speak the relay's
+  SMTP and ntfy's publish protocol; SRS-NOTIF-001 proved the real Brevo relay and the operator's
+  ntfy on 2026-09-01 for its own trigger kinds. A live DATA_QUARANTINE page on the VM was
+  offered to the operator, not run. The VM checkout (~/atp) is on a 2026-09-01 commit.
+- No deterministic test for the r12 read-order fix: the race needs an interleaving the library
+  has no hook for. The argument is in alert_status's comment.
+- Nothing runs notify after an ingestion job yet (SRS-DATA-001/002, in deferred[]); the pane's
+  DUE text tells the operator to run it.
+- Known cosmetic nit: the ledger's columns shift slightly when the alert chip's text changes
+  width (auto table layout).
+
+CLASS LEFT OPEN, RECORDED NOT CHANGED: the inventory pane (inventory.py, 10 s) and the Hot-Swap
+status sources (atp_hotswap, 30 s) have CLI budgets longer than the browser's 4 s poll abort -
+the r12 defect. Owners UI-2 / UI-5; honest-surfaces rule 23b.
+
+REVIEW (landing 3): rounds 12-15.
+  r12 WARN (claude-fallback; Codex output unparseable) - read longer than the poll; markers read
+      after runs; "sent" on an all-failed attempt; DUE text promised an automatic pass; status
+      total_runs unchecked. All fixed (2b5ec04).
+  r13 WARN (codex) - delivery joined by id alone across a run that changed between reads;
+      PENDING rendered "0 admitted". Both fixed (70ea28b).
+  r14 APPROVE (codex) at 70ea28b, no findings.
+  r15 APPROVE (codex) at 488f111 - the same code plus the queue doc and two playbook rules,
+      run so the approval names the tree that ships. No findings. Evidence steps 1-4 and both
+      critic stamps were then re-recorded at 488f111; `evidence.py verify` (strict) passes.
+
+PLAYBOOK WRITE-BACKS: honest-surfaces 23b (server read vs browser poll abort);
+test-integrity 37 (first captured run attaches nothing), 38 (red by import failure).
+
+Resume / next: the operator's attested close, from the PRIMARY checkout after this branch
+integrates:  python3 tools/close_feature.py SRS-DATA-013 --verified --attested-by operator
