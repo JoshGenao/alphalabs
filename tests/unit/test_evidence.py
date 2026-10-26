@@ -11,6 +11,7 @@ closed rather than reading as a pass (CLAUDE.md rule 3).
 from __future__ import annotations
 
 import json
+import sys
 
 import evidence
 import pytest
@@ -518,12 +519,16 @@ def test_a_quoted_argument_survives_the_record_and_the_replay(sandbox, tmp_path)
 
     # A shell-needing command is not re-executable, so use a real one for the argv
     # round-trip and assert on the stored shape rather than on running pytest here.
-    Args.command = ["pytest", "-m", "not integration and not e2e", "--collect-only"]
+    # The interpreter running this test, not a bare `pytest`: that resolved through
+    # PATH, so the test failed in any shell without the venv activated, and it ran a
+    # whole-repo collection to prove a fact about one argument.
+    argv = [sys.executable, "-c", "pass", "-m", "not integration and not e2e"]
+    Args.command = list(argv)
     evidence.cmd_run(Args())
     entry = evidence.load_record(FEATURE)["steps"][0]
 
     # argv is preserved exactly — the marker expression stays ONE argument
-    assert entry["argv"] == ["pytest", "-m", "not integration and not e2e", "--collect-only"]
+    assert entry["argv"] == argv
     # and the human-readable form quotes it, so a naive .split() cannot silently work
     assert "'not integration and not e2e'" in entry["command"]
     # the old bug, pinned: splitting the display string regroups it
