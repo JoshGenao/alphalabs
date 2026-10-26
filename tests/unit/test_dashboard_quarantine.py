@@ -444,3 +444,54 @@ def test_concurrent_requests_share_one_read() -> None:
         thread.join(10)
     assert len(bodies) == 4
     assert len(runner.calls) == 2, "four requests, one read"
+
+
+def test_the_worst_case_read_fits_inside_the_browser_poll() -> None:
+    """Review r12: two reads back to back must land before the browser aborts the poll.
+
+    If they cannot, every poll aborts, the next poll starts a fresh slow read, and the
+    pane never recovers from "endpoint unreachable" even though every read succeeds.
+    """
+    import re
+
+    from atp_dashboard import quarantine
+
+    app_js = (PYTHON_ROOT / "atp_dashboard" / "assets" / "app.js").read_text()
+    poll_ms = int(re.search(r"const POLL_MS = (\d+);", app_js).group(1))
+    assert quarantine.BROWSER_POLL_BUDGET_S == poll_ms / 1000, "the provider's copy drifted"
+    assert re.search(r"fetch\(QUARANTINE_ROUTE, \{[^}]*AbortSignal\.timeout\(POLL_MS\)", app_js), (
+        "the pane's fetch is no longer bounded by POLL_MS"
+    )
+    worst = 2 * quarantine._DEFAULT_TIMEOUT_S
+    assert worst <= 0.8 * quarantine.BROWSER_POLL_BUDGET_S, (
+        f"two {quarantine._DEFAULT_TIMEOUT_S}s reads ({worst}s) leave no room inside "
+        f"the {poll_ms}ms poll"
+    )
+
+
+def test_a_slow_read_still_serves_the_whole_interval() -> None:
+    clock = Clock()
+
+    class SlowRunner(FakeRunner):
+        def __call__(self, argv, *, timeout):
+            clock.now += 1.4  # each CLI takes most of its budget
+            return super().__call__(argv, timeout=timeout)
+
+    runner = SlowRunner(GOOD, _status())
+    provider = QuarantinePaneProvider(
+        ssd_dir="/ssd",
+        notification_store_dir="/alerts",
+        runner=runner,
+        min_interval_s=5.0,
+        monotonic=clock,
+    )
+    provider.quarantine_snapshot()
+    clock.now += 4.0  # the next poll: 6.8 s after the read began, 4 s after it ended
+    provider.quarantine_snapshot()
+    assert len(runner.calls) == 2, "stamped at the start, the read had already expired"
+
+
+def test_a_status_leg_returning_more_runs_than_it_has_is_refused() -> None:
+    good = _status((RUN_A, "DUE", "none"))
+    with pytest.raises(QuarantineUnavailable, match="exceeds total_runs"):
+        parse_status(good.replace("total_runs:1", "total_runs:0"))

@@ -67,9 +67,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SUMMARY_BINARY = _REPO_ROOT / "target" / "debug" / "data013_ingestion_validation_cli"
 _ALERT_BINARY = _REPO_ROOT / "target" / "debug" / "data013_quarantine_alert_cli"
 
-#: Per-invocation subprocess budget (seconds), below the pane's 4 s poll, so a
-#: wedged binary surfaces as unreadable within one poll instead of stacking up.
-_DEFAULT_TIMEOUT_S = 3.0
+#: The browser aborts each poll after this long (``POLL_MS`` in assets/app.js).
+BROWSER_POLL_BUDGET_S = 4.0
+
+#: Per-invocation subprocess budget (seconds). Both reads run one after the
+#: other under the provider's lock, so the WORST case is twice this, and it must
+#: finish inside the browser's poll budget with room to serialize and send. A
+#: budget that the browser outlasts never recovers: every poll aborts before the
+#: read lands, and the next poll starts a fresh slow read (review r12).
+#: tests/unit/test_dashboard_quarantine.py pins the sum against ``POLL_MS``.
+_DEFAULT_TIMEOUT_S = 1.5
 
 #: How many of the newest runs the pane shows. Both legs read the same number.
 RUN_LIMIT = 20
@@ -324,7 +331,10 @@ def parse_status(stdout: str) -> dict[str, object]:
 
     origin = "alert status"
     header, flat, markers = _split(_pairs(stdout, origin), _STATUS_HEADER, origin)
+    total = _count(header["total_runs"], "total_runs", origin)
     returned = _count(header["returned"], "returned", origin)
+    if returned > total:
+        raise QuarantineUnavailable(f"{origin}: returned={returned} exceeds total_runs={total}")
     invalid = _count(header["invalid_markers"], "invalid_markers", origin)
     _contiguous(flat, returned, "returned", origin)
     _contiguous(markers, invalid, "invalid_markers", origin)
@@ -432,7 +442,10 @@ class QuarantinePaneProvider:
         with self._lock:
             now = self._monotonic()
             if self._last is None or now - self._last[0] >= self._min_interval_s:
-                self._last = (now, self._read())
+                body = self._read()
+                # Stamped when the read FINISHED: a slow read must still serve the
+                # whole interval, not arrive already expired.
+                self._last = (self._monotonic(), body)
             # A copy, so no caller can edit what the next request is served.
             return copy.deepcopy(self._last[1])
 

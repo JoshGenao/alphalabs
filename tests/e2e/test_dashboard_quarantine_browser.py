@@ -167,7 +167,10 @@ def test_quarantined_records_are_held_and_the_dashboard_and_alert_show_counts_an
             assert _reason_counts(page) == dict.fromkeys(QUARANTINE_REASONS, "1")
             # Nothing has been sent yet, and the pane says so rather than showing a quiet strip.
             assert page.eval_on_selector("#qalert", "e => e.dataset.state") == "bad"
-            assert "NOT YET DELIVERED" in page.text_content("#qalert-text")
+            alert_text = page.text_content("#qalert-text")
+            assert "NOT YET DELIVERED" in alert_text
+            # Nothing runs notify on a schedule yet, so the remedy names the command.
+            assert "run data013_quarantine_alert_cli notify" in alert_text
             cap.shot(
                 page,
                 "quarantine pane before the alert: 6 of 10 held, one per SYS-77 rule, alert NOT YET DELIVERED",
@@ -199,6 +202,7 @@ def test_quarantined_records_are_held_and_the_dashboard_and_alert_show_counts_an
                 "#qalert-chans .qchan", "els => els.map(e => e.textContent)"
             )
             assert chips == ["EMAIL · QUEUED", "PUSH · DELIVERED"]
+            assert page.text_content("#qalert .qalert__at").startswith("sent ")
             ledger_alert = page.text_content("#qledger-rows tr:first-child .qalertchip")
             assert ledger_alert == "alerted"
             cap.shot(
@@ -225,6 +229,38 @@ def test_an_unreadable_store_shows_no_count(binaries, tmp_path: Path) -> None:
             assert page.text_content("#qflow-held-n") == "—"
             assert set(_reason_counts(page).values()) == {"—"}
             assert page.is_hidden("#qledger-table")
+            browser.close()
+    finally:
+        next(dashboard, None)
+
+
+def test_an_alert_no_channel_carried_reads_as_attempted_and_still_due(binaries, stores) -> None:
+    """A stored attempt whose every channel failed is not a delivery (review r12)."""
+
+    ssd, nas, alerts = stores
+    ingest = _run([str(binaries[INGEST_CLI]), "ingest", "--ssd", str(ssd), "--nas", str(nas)])
+    assert ingest.returncode == 0, ingest.stderr
+    with operator_transports(fail=True) as (_relay, _ntfy, env):
+        sent = _run(
+            [str(binaries[ALERT_CLI]), "notify", "--ssd", str(ssd), "--store", str(alerts)],
+            env={**env, "PATH": os.environ.get("PATH", "")},
+        )
+        assert sent.returncode == 1, "an alert that got out on no channel is a failed pass"
+
+    dashboard = _dashboard(ssd, alerts)
+    url = next(dashboard)
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            _open_pane(page, url)
+            assert page.eval_on_selector("#qalert", "e => e.dataset.state") == "bad"
+            assert "NOT YET DELIVERED" in page.text_content("#qalert-text")
+            chips = page.eval_on_selector_all(
+                "#qalert-chans .qchan", "els => els.map(e => e.textContent)"
+            )
+            assert chips == ["EMAIL · FAILED", "PUSH · FAILED"]
+            assert page.text_content("#qalert .qalert__at").startswith("attempted ")
             browser.close()
     finally:
         next(dashboard, None)

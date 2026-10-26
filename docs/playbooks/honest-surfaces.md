@@ -97,6 +97,16 @@ nobody verified. Every rule here is one review round somebody already paid for.
     newer. `(LOG-001 r13/r16/r38)`
 23. **Pin it with route-interception e2es** (`page.route` fulfilling fake payloads) — the
     real-feed branch is testable before the producer exists. `(UI-1 r6)`
+23b. **The server's worst-case read must finish inside the browser's poll abort.** The
+    pane fetches with `AbortSignal.timeout(POLL_MS)` (4 s); a provider whose CLI budget
+    is longer — or whose several reads run back to back — is aborted on every slow poll,
+    and the next poll starts a fresh slow read, so the pane sits on "unreachable"
+    forever while every read succeeds. It fails closed and never recovers. Sum the
+    budgets, keep the sum well inside `POLL_MS`, stamp any cache when the read
+    FINISHES, and pin the sum against `POLL_MS` in a test that reads `app.js`.
+    Still open in two peers when this was written: the strategy inventory
+    (`inventory.py`, 10 s) and the Hot-Swap status sources (`atp_hotswap`, 30 s), both
+    polled under the 4 s abort; their owners are UI-2 and UI-5. `(SRS-DATA-013 r12)`
 
 ## Mutating controls (a button that changes live state)
 

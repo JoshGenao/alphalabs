@@ -3586,7 +3586,9 @@
   const ALERT_TEXT = {
     ALERTED: ["ok", "operator alerted"],
     ALERTED_PROVISIONAL: ["warn", "alerted provisionally — the run has not finished"],
-    DUE: ["bad", "NOT YET DELIVERED — the next notify pass sends it"],
+    // Nothing runs `notify` on a schedule yet (SRS-DATA-001/002 own that), so the
+    // remedy is the operator's to run, and the text says so (review r12).
+    DUE: ["bad", "NOT YET DELIVERED — run data013_quarantine_alert_cli notify to send it"],
     IN_PROGRESS: ["dim", "waiting out the 5-minute grace — the ingest may still be running"],
     AWAITING_OUTCOME: ["warn", "run unfinished, nothing quarantined yet — nothing to send"],
     NOT_NEEDED: ["dim", "nothing to alert — no records quarantined"],
@@ -3813,7 +3815,10 @@
     if (isCount(alert.attempt_at_millis) && channels) {
       chans.append(channelChip("EMAIL", channels.EMAIL), channelChip("PUSH", channels.PUSH));
       const at = el("span", "qalert__at");
-      at.textContent = "sent " + utcStamp(alert.attempt_at_millis) + "Z";
+      // "sent" only when a channel took it; a stored attempt that reached no
+      // channel was attempted, not sent (review r12).
+      const gotOut = ["EMAIL", "PUSH"].some((c) => channels[c] === "DELIVERED" || channels[c] === "QUEUED");
+      at.textContent = (gotOut ? "sent " : "attempted ") + utcStamp(alert.attempt_at_millis) + "Z";
       chans.appendChild(at);
     }
   }

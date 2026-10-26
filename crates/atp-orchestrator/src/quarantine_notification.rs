@@ -441,13 +441,23 @@ pub fn alert_status(
     now_millis: u64,
     limit: usize,
 ) -> Result<AlertStatusReport, NotifyError> {
-    let latest = QuarantineStore::beside(ssd_dir)
-        .read_latest(limit)
-        .map_err(NotifyError::Quarantine)?;
+    // THE READ ORDER IS THE CONSISTENCY ARGUMENT (review r12). The three stores are not
+    // one snapshot, and a notify pass can run between any two reads. Every write moves
+    // forward in a fixed order: a run reaches its final state, THEN its alert event is
+    // appended, THEN its settlement marker is published. Reading in the REVERSE order -
+    // markers, then events, then runs - means anything a read sees, the later reads see
+    // the causes of: a marker read first has its event in the audit read, and its run
+    // is already final when the runs are read. The other direction (runs first) could
+    // pair a PENDING run with a marker for its final state and report ALERTED with no
+    // attempt to show. What this order can still miss is an alert stored after the audit
+    // read, which reads as DUE for one poll: the error is toward "not delivered".
+    let settlement = read_settlement(store_dir)?;
     let audit = NotificationEventStore::load_from_path(store_dir)
         .map_err(NotifyError::NotificationStore)?;
     let alerted = alerted_states(audit.events());
-    let settlement = read_settlement(store_dir)?;
+    let latest = QuarantineStore::beside(ssd_dir)
+        .read_latest(limit)
+        .map_err(NotifyError::Quarantine)?;
 
     let runs = latest
         .runs
