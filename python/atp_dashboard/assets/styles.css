@@ -113,10 +113,13 @@ body {
   box-shadow: var(--shadow);
 }
 
-.brand { display: flex; align-items: center; gap: 15px; min-width: 0; }
+/* The title sets the brand column's minimum width, so it can never slide under the
+   nav key beside it; the long subtitle does not (width 0 + min-width 100%), so it
+   ellipsizes in whatever room is left and the status chips wrap instead. */
+.brand { display: flex; align-items: center; gap: 15px; }
 .brand__mark { color: var(--accent); display: grid; place-items: center; filter: drop-shadow(0 0 10px var(--accent-soft)); }
 .brand__ring { transform-origin: 20px 20px; animation: spin 7s linear infinite; }
-.brand__text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.brand__text { display: flex; flex-direction: column; gap: 3px; }
 .brand__title {
   font-family: var(--mono); font-weight: 700; letter-spacing: 0.12em;
   font-size: clamp(14px, 1.7vw, 18px); color: var(--ink); white-space: nowrap;
@@ -125,6 +128,7 @@ body {
 .brand__sub {
   font-size: 11px; letter-spacing: 0.03em; color: var(--ink-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  width: 0; min-width: 100%;
 }
 
 /* SRS-RES-003 / SYS-43 — primary navigation to the embedded research
@@ -340,6 +344,12 @@ body {
 @keyframes pulsehit { 0% { transform: scale(1); } 40% { transform: scale(1.03); } 100% { transform: scale(1); } }
 
 /* -------------------------------------------------------------- responsive */
+/* Too narrow for one row: brand + nav key on top, status + gauge beneath, so a
+   wrapping status chip can never overrun the nav key. */
+@media (max-width: 1100px) {
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .statuscluster { justify-content: flex-start; }
+}
 @media (max-width: 760px) {
   .topbar { grid-template-columns: 1fr; justify-items: start; }
   .nav { justify-content: flex-start; }
