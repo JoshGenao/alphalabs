@@ -2,7 +2,8 @@
 Date: 2026-09-04
 Feature: SRS-MD-005 - handle the scheduled IB Gateway daily restart as planned maintenance
 Outcome: serialized (A: done - every step ran solo and is recorded; the close is
-         blocked by the JUDGMENT CRITIC, which stands at `block` after 33 rounds.
+         blocked by the JUDGMENT CRITIC, which stands at `block` after 34 rounds.
+         PARKED 2026-10-26 by the operator with the round budget spent (32/32).
          An operator attestation is also required because verification_method is
          `integration`, but it is not sufficient and never was:
          `close_feature.py --verified --attested-by operator` exits 3 while a
@@ -208,7 +209,7 @@ surfaced. Written back to `test-integrity.md`.
   times the fix was a real pin, not a token.
 
   judgment (tools/adversarial_review.py, reviewer=claude-fallback): **BLOCK,
-  standing at round 33 - the loop has not reached APPROVE.** The feature first
+  standing at round 34 - the loop has not reached APPROVE.** The feature first
   integrated on OPERATOR AUTHORIZATION at round 13, not on a green verdict; the
   operator stopped the loop there with "Close out. You are running in a loop.",
   then later asked for the rounds to continue, and 14, 15 and 16 each found real
@@ -244,7 +245,7 @@ surfaced. Written back to `test-integrity.md`.
   first-class path, not a degraded one, but the Codex leg being down on this
   machine is worth an operator's attention independently of this feature.
 
-Adversarial rounds: 32 (plus no-verdict attempts, one a fallback TIMEOUT that
+Adversarial rounds: 34 (plus no-verdict attempts, one a fallback TIMEOUT that
 was retried rather than treated as a verdict - an availability failure is not a
 BLOCK, and shrinking the diff with --base to make it finish is forbidden).
 
@@ -742,6 +743,24 @@ count.
       shape planted in the real manifest in the domain test; each of the three
       parts mutation-verified. Round 34 was NOT run: the operator asked to fix
       and stop for review, leaving 1 BLOCK round of the granted budget.
+  r34 block/1  - 2026-10-26, at 5dcb146 (the r33 fix). Codex, one high
+      finding, still on `tools/connectivity_check.py`: its module-declaration
+      regexes match `mod admitted_set;` ANYWHERE in a file, so a decoy declared
+      inside a never-compiled `#[cfg(any())] mod disabled { ... }` satisfies
+      them while an inline replacement re-exported as `admitted_set` takes the
+      pinned path. Codex reproduced all 13 static checks passing with that
+      replacement exposing its map. NOT fixed. This spent the last BLOCK round
+      of the granted budget (32/32), so the next review escalates.
+
+      PARKED by the operator on 2026-10-26, with the r34 finding open. Rounds
+      14-34 are all one class: a source-text scanner losing to deliberately
+      adversarial source layout, while the property it guards (no unadmitted
+      subscription write) is enforced by the type system and the module privacy
+      boundary, and the acceptance criteria have been green since round 5.
+      The choice offered and declined for now: grant a budget, resolve `mod`
+      declarations at their real enclosing scope (skipping cfg-disabled and
+      macro-input bodies), and narrow the check's stated claim to "drift guard"
+      with the compiler and the compile_fail doctests as the proof.
 
 ## Playbook updates
 
@@ -820,7 +839,7 @@ All four steps pass and are recorded in `.harness/runs/SRS-MD-005/evidence.json`
 with real commands and real exit codes, re-run at the shipping commit each time
 the code moved. TWO things stand between here and green:
 
-1. **The judgment verdict is `block` at round 33**, so `evidence.py verify`
+1. **The judgment verdict is `block` at round 34** (finding open, budget spent), so `evidence.py verify`
    refuses and `close_feature.py` exits 3.
 
    There is exactly ONE route: run review rounds until the judgment layer
