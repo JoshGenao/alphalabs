@@ -177,6 +177,23 @@ Read this whenever you write a test, and before you believe a green one.
     already been caught by a `compile_fail` doctest that failed for the wrong reason; both are
     the same trap, one in a regex and one in a type. `(RESV-006 r12)`
 
+37. **The FIRST captured run of a visual step attaches nothing.** `evidence.attach`
+    refuses a step that has no record yet, and on a step's first `evidence.py run` the
+    record is written only AFTER the browser test returns, so every screenshot is refused.
+    The refusal is printed, not raised (rightly: the artifact pipeline must not decide the
+    test's verdict), and `pytest -q` swallows a passing test's output, so the run reads
+    "4 passed" with nothing attached; `attach` has also already copied the files, so the
+    artifacts directory holds orphans the record does not name. `verify` refuses the close,
+    so it fails closed, but it costs a confused round. Run the step once, delete the orphan
+    files, run it again: now the record exists at the same head, the attach lands, and
+    `_store_step` carries same-head artifacts across the re-record. `(SRS-DATA-013 L3)`
+38. **"Went red without the change" by IMPORT FAILURE is dependence, not behaviour.**
+    `mutation_verify` reverts the range's source hunks; for a feature whose module is NEW,
+    that deletes the module, every added test fails to collect, and the tool reports all of
+    them red. True, and says nothing about whether any assertion bites. For each behaviour
+    a review round fixed, mutate THAT line by hand (keep a scratch copy, `cmp` it back) and
+    watch the named test go red. `(SRS-DATA-013 L3: 33 of 33 "red" by collection failure)`
+
 ## Mutation harnesses that lie to you (SRS-MD-005)
 
 45. **Restoring a mutated file with a MTIME-PRESERVING copy leaves cargo serving
