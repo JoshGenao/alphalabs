@@ -156,3 +156,32 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
   Grep the check tools for the crate path before you move a type, not after.
   `(SRS-MD-005 r6)`
 
+
+- **A rustdoc that argues for a design outlives the design by rounds.** The reachability
+  cache changed policy in r14; the constant's rustdoc still called the OLD policy "the
+  whole design" in r16, `state()` still promised "a fresh probe on every read", and
+  `last_outcome()` still told callers `None` meant the gateway had answered again. Three
+  separate reviews, three separate blocks, one root cause: prose that ARGUES is prose a
+  reader trusts, so it is worse than absent when it is stale. When you change a policy,
+  grep the constant's name and every method that reads it, and re-read those doc comments
+  in the same edit. `(SRS-MD-005 r15, r16)`
+- **A session note's "Key decisions" is a claim about the shipped code, not a diary.**
+  The note still recorded "Only an UNREACHABLE observation is reused" two rounds after
+  the code stopped doing that, and the same file said the opposite 200 lines later. Record
+  the decision that SHIPPED, and where it was reversed, say so in the same bullet.
+  Per-round narration belongs in the round log below it. `(SRS-MD-005 r16)`
+- **Distinguish a TOTAL from an ordinal before writing a consistency guard.** "Adversarial
+  rounds: 13" is a claim that goes stale; "round 12 found X" is narration that stays true
+  forever. A guard matching both raised 38 accusations against session notes doing nothing
+  wrong - and one that matched only `<digit> rounds` missed two of the three claims that
+  had actually drifted. Match `rounds: N` and `at|after N rounds`; leave ordinals alone.
+  `(SRS-MD-005 r16)`
+
+- **An invariant asserted in five places and held in none.** "`ttl_for` takes a `min`, so
+  both directions only ever shorten" appeared in two module comments, a constant's
+  rustdoc, a unit test and an L7 docstring - while the function applied `min` to one
+  branch only, so `with_probe_ttl(2s)` LENGTHENED the negative window past its own
+  default. Nothing unsafe shipped (a stale `Unreachable` errs toward blocking) but the
+  claim was false everywhere it appeared. When a stated invariant turns out not to hold,
+  ask first whether the CODE should be changed to match it - here that was a one-word fix,
+  against softening the same sentence in five places. `(SRS-MD-005 r22)`

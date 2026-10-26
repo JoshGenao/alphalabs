@@ -29,9 +29,9 @@ use atp_market_data::{
     SubscriptionRegistryError, UpstreamFeedError, UpstreamMarketDataFeed,
 };
 use atp_types::{
-    AssetClass, LatencyPercentiles, MarketDataAdmission, MarketDataTick, OrderErrorCategory,
-    Percentile, SecurityKey, StrategyId, SubscriptionChange, SubscriptionChangeEvent,
-    SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    AdmissionOutcome, AssetClass, LatencyPercentiles, MarketDataAdmission, MarketDataTick,
+    OrderErrorCategory, Percentile, RestartWindow, SecurityKey, StrategyId, SubscriptionChange,
+    SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
     SUBSCRIPTION_FANOUT_LATENCY_MS,
 };
 use std::collections::{BTreeSet, VecDeque};
@@ -105,36 +105,47 @@ impl UpstreamMarketDataFeed for Shared<FakeFeed> {
 /// Controllable SRS-MD-005 gate. Answers from a script first (one answer per
 /// `admission()` call, to model the window closing between two checks), then
 /// from the steady state.
+///
+/// It scripts plain OUTCOMES and turns each into a real decision when asked:
+/// an `AdmissionProof` can only be made by a `RestartWindow` (SRS-MD-005).
 struct FakeWindow {
-    steady: Mutex<MarketDataAdmission>,
-    script: Mutex<VecDeque<MarketDataAdmission>>,
+    steady: Mutex<AdmissionOutcome>,
+    script: Mutex<VecDeque<AdmissionOutcome>>,
 }
 
 impl Default for FakeWindow {
     fn default() -> Self {
         Self {
-            steady: Mutex::new(MarketDataAdmission::Admitted),
+            steady: Mutex::new(AdmissionOutcome::Admitted),
             script: Mutex::new(VecDeque::new()),
         }
     }
 }
 
 impl FakeWindow {
-    fn set(&self, admission: MarketDataAdmission) {
+    fn set(&self, admission: AdmissionOutcome) {
         *self.steady.lock().unwrap() = admission;
     }
-    fn script(&self, answers: &[MarketDataAdmission]) {
+    fn script(&self, answers: &[AdmissionOutcome]) {
         self.script.lock().unwrap().extend(answers.iter().copied());
     }
 }
 
 impl RestartWindowGate for Shared<FakeWindow> {
     fn admission(&self) -> MarketDataAdmission {
-        self.script
+        let outcome = self
+            .script
             .lock()
             .unwrap()
             .pop_front()
-            .unwrap_or_else(|| *self.steady.lock().unwrap())
+            .unwrap_or_else(|| *self.steady.lock().unwrap());
+        match outcome {
+            AdmissionOutcome::Admitted => admitted(),
+            AdmissionOutcome::SuspendedForScheduledRestart => {
+                MarketDataAdmission::SuspendedForScheduledRestart
+            }
+            AdmissionOutcome::ConnectivityLost => MarketDataAdmission::ConnectivityLost,
+        }
     }
 }
 
@@ -143,8 +154,17 @@ struct OpenWindow;
 
 impl RestartWindowGate for OpenWindow {
     fn admission(&self) -> MarketDataAdmission {
-        MarketDataAdmission::Admitted
+        admitted()
     }
+}
+
+/// A REAL admission. `AdmissionProof` can only be made by a `RestartWindow`, so a
+/// test that needs the window open asks one whose restart is decades away.
+fn admitted() -> MarketDataAdmission {
+    const RESTART_2100_NS: i64 = 4_102_444_800 * 1_000_000_000;
+    RestartWindow::with_defaults(RESTART_2100_NS)
+        .expect("SYS-75 defaults are valid")
+        .market_data_admission(0, true)
 }
 
 #[derive(Default)]
@@ -370,8 +390,7 @@ fn srs_md_001_suspended_window_sends_nothing_upstream() {
     let _a = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
     let _b = f.runtime.register_subscriber(id("paper-b"), 4).unwrap();
     f.runtime.subscribe(&sub("live-a", "AAPL")).unwrap();
-    f.window
-        .set(MarketDataAdmission::SuspendedForScheduledRestart);
+    f.window.set(AdmissionOutcome::SuspendedForScheduledRestart);
 
     assert_eq!(
         f.runtime.subscribe(&sub("live-a", "MSFT")),
@@ -400,7 +419,7 @@ fn srs_md_001_suspended_window_sends_nothing_upstream() {
     assert_eq!(f.feed.calls(), vec![open("AAPL"), close("AAPL")]);
 
     // After the window the identical request succeeds.
-    f.window.set(MarketDataAdmission::Admitted);
+    f.window.set(AdmissionOutcome::Admitted);
     f.runtime.subscribe(&sub("live-a", "MSFT")).unwrap();
     assert_eq!(
         f.feed.calls(),
@@ -414,7 +433,7 @@ fn srs_md_001_lost_gateway_sends_nothing_upstream() {
     // refusal says so and no upstream request is attempted.
     let f = fixture(100);
     let _a = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
-    f.window.set(MarketDataAdmission::ConnectivityLost);
+    f.window.set(AdmissionOutcome::ConnectivityLost);
     assert_eq!(
         f.runtime.subscribe(&sub("live-a", "AAPL")),
         Err(FanOutRuntimeError::Registry(
@@ -433,8 +452,8 @@ fn srs_md_001_window_closing_mid_admission_releases_the_line() {
     let f = fixture(100);
     let _a = f.runtime.register_subscriber(id("live-a"), 4).unwrap();
     f.window.script(&[
-        MarketDataAdmission::Admitted,
-        MarketDataAdmission::SuspendedForScheduledRestart,
+        AdmissionOutcome::Admitted,
+        AdmissionOutcome::SuspendedForScheduledRestart,
     ]);
     assert_eq!(
         f.runtime.subscribe(&sub("live-a", "AAPL")),
@@ -488,8 +507,7 @@ fn srs_md_001_subscribe_requires_registered_queue() {
 
     // Options still fail closed before any upstream call, even inside the
     // window (a permanently-invalid request gets its own error in every phase).
-    f.window
-        .set(MarketDataAdmission::SuspendedForScheduledRestart);
+    f.window.set(AdmissionOutcome::SuspendedForScheduledRestart);
     let option = SubscriptionRequest {
         strategy_id: id("live-a"),
         symbol: "AAPL".to_string(),

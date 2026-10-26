@@ -412,3 +412,26 @@ Read this whenever you write a test, and before you believe a green one.
     user); and a file overlaid with an mtime older than the last build is not rebuilt, so a
     "without the fix" mutation run silently tests the fixed binary. `touch` the overlay and
     grep it inside the container before trusting a green. `(EXE-001 red main)`
+47. **Never write a result you did not capture, under a document that promises captured
+    output.** `VERIFICATION.md` opened with "Every block below is captured terminal output,
+    not a summary" and then carried
+    `$ echo "cargo test --workspace : 176 suites ok, 0 failed"`, whose `[exit 0]` was
+    `echo`'s. The number was CORRECT - which is exactly why no reader could tell, and why
+    correctness is no defence. On the page a typed result and a captured one are identical.
+    If a command is slow, run it and wait; if it cannot run, say so and leave the block out.
+    There is no guard for this: one was written and then removed as out of scope for the
+    feature that produced it. The rule stands on its own. `(SRS-MD-005 r15)`
+48. **A spy whose default equals the expected value cannot fail.** The test proving the
+    dispatcher passes `root` used `def spy(config, source, root=cc.ROOT)` and asserted the
+    spy saw `ROOT` - so it passed with the fix reverted, because the default supplied the
+    answer. Spy with a SENTINEL distinct from every default, and assert the sentinel
+    arrived. Found on the guard's own first mutation run, which is the only reason it was
+    found at all. `(SRS-MD-005 r16)`
+49. **Renaming a test silently shrinks every `-k` selection that names it.** The round-27
+    fix renamed `test_the_backstop_does_not_share_the_blind_spot_it_backs_up`; a domain
+    test that shells the contract suite with `-k "... or backstop_does_not_share or ..."`
+    then ran two tests instead of three. pytest exits 0 on a smaller selection, so only the
+    shelling test's `assert "3 passed"` turned it red - and only in the full re-run, after
+    the commit. Before renaming a test, `grep -rn <old name fragment> tests/`; and a test
+    that shells a `-k` selection must assert the exact count, never just the exit code.
+    `(SRS-MD-005 r27 re-run)`

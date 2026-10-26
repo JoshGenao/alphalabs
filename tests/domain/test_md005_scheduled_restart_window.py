@@ -292,12 +292,16 @@ def test_the_window_carries_no_clock_of_its_own() -> None:
     the boundaries are the whole requirement."""
     types_source = TYPES_SOURCE.read_text(encoding="utf-8")
     start = types_source.index("pub struct RestartWindow {")
-    end = types_source.index("pub enum MarketDataAdmission", start)
-    window_span = types_source[start:end]
-    for forbidden in ("SystemTime::now", "Instant::now"):
-        assert forbidden not in window_span, (
-            f"RestartWindow reads the wall clock via {forbidden}; the instant must be injected"
-        )
+    end = types_source.index("\n// ------", start)
+    # The admission decision is a RestartWindow method too, in its own module
+    # (the proof's private field is what makes `Admitted` unforgeable).
+    admission = (TYPES_SOURCE.parent / "admission.rs").read_text(encoding="utf-8")
+    for window_span in (types_source[start:end], admission):
+        assert "impl RestartWindow" in window_span, "the window's code moved"
+        for forbidden in ("SystemTime::now", "Instant::now"):
+            assert forbidden not in window_span, (
+                f"RestartWindow reads the wall clock via {forbidden}; the instant must be injected"
+            )
 
 
 def test_the_escalation_arm_exists_and_has_no_catch_all() -> None:
@@ -474,123 +478,6 @@ def test_a_proof_line_never_outruns_the_phase_it_names() -> None:
         _assert_one_passed(_cli_test(name), name)
 
 
-def test_the_admission_guard_is_closed_by_rusts_own_privacy() -> None:
-    """The guard's fourth and final shape.
-
-    Three earlier versions each described the dangerous code — by the port it
-    took, by two effect forms, by public `&mut self` on the inherent impl — and
-    a reviewer walked past each in turn. The closure that holds is not a
-    description: `subscribers` is a PRIVATE field, so the complete set of code
-    that can reach the consolidated set is "the functions in this file naming
-    it", bounded by the compiler rather than by imagination.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-    # The owning module carries no `#[cfg(test)]` block, so appending is already
-    # production code; where a marker exists the bypass is spliced before it, so
-    # the check (which correctly ignores the unshipped test module) still sees
-    # the injection.
-    head, marker, tail = source.partition("\n#[cfg(test)]\nmod tests {")
-
-    shapes = {
-        "a trait impl with &mut self": """
-trait Sneaky { fn admit(&mut self, k: SecurityKey, s: StrategyId); }
-impl Sneaky for ConsolidatedSubscriptionRegistry {
-    fn admit(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-""",
-        "a public free function writing the map": """
-pub fn force_register(r: &mut ConsolidatedSubscriptionRegistry, k: SecurityKey, s: StrategyId) {
-    r.subscribers.insert(k, vec![s]);
-}
-""",
-        "entry().or_default().push()": """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force_subscribe(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.entry(k).or_default().push(s);
-    }
-}
-""",
-        "a PRIVATE helper writing the map": """
-impl ConsolidatedSubscriptionRegistry {
-    fn quietly_admit(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-""",
-    }
-    for injected in shapes.values():
-        with pytest.raises(ConnectivityCheckError):
-            check_market_data_admission_sites(config, head + injected + marker + tail)
-
-    # Non-vacuity: the real source must still pass.
-    check_market_data_admission_sites(config, source)
-
-
-def test_an_exemption_cannot_be_inherited_by_a_new_function() -> None:
-    """Exempting by bare NAME is a hole.
-
-    A trait impl reusing an exempt name inherits the exemption and is never
-    asked to consult the window — the same trait-impl shape that had already
-    defeated an earlier version of this guard. An exemption now has to resolve
-    to exactly one function, keep its declared receiver, and stay unable to add
-    a subscriber.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-
-    reused_name = """
-trait Sneaky { fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId); }
-impl Sneaky for ConsolidatedSubscriptionRegistry {
-    fn is_subscribed(&mut self, k: SecurityKey, s: StrategyId) {
-        self.subscribers.insert(k, vec![s]);
-    }
-}
-"""
-    with pytest.raises(ConnectivityCheckError, match="is_subscribed"):
-        check_market_data_admission_sites(config, source + reused_name)
-
-    # A DESCENDANT module would inherit visibility and go unscanned, leaving the
-    # closure one level short.
-    with pytest.raises(ConnectivityCheckError, match="submodule"):
-        check_market_data_admission_sites(config, source + "\nmod inner;\n")
-
-    # An exempt reader that becomes a mutator makes its own exemption false.
-    became_mutator = source.replace(
-        "pub fn is_subscribed(&self,", "pub fn is_subscribed(&mut self,", 1
-    )
-    assert became_mutator != source, "the receiver anchor moved"
-    with pytest.raises(ConnectivityCheckError, match="&mut self"):
-        check_market_data_admission_sites(config, became_mutator)
-
-    # Non-vacuity: the real source still passes.
-    check_market_data_admission_sites(config, source)
-
-
 def test_a_derived_instant_refuses_overflow_rather_than_panicking() -> None:
     """A panic exits non-zero, so a check reading only the exit code counts it
     as the guard working — while the operator gets a backtrace instead of a
@@ -618,16 +505,18 @@ def test_a_window_whose_suspension_predates_the_epoch_is_refused() -> None:
     _assert_one_passed(result, name)
 
 
-def test_a_reachable_outcome_is_never_reused() -> None:
-    """The dangerous direction of a cache on the order path.
+def test_a_reachable_outcome_is_reused_only_briefly() -> None:
+    """Both directions of the cache on the live-order path.
 
-    A cached POSITIVE would mean that for up to the TTL after the gateway died,
-    `state()` still answered `Connected` and the ERR-2 gate handed a live order
-    to an unreachable gateway instead of refusing — trading a safety property
-    for latency on the one path where that must never happen. Only the negative
-    outcome is reused, which is also the only expensive one.
+    Caching a positive for long means that after the gateway dies, `state()`
+    still answers `Connected` and the ERR-2 gate hands a live order to an
+    unreachable gateway. Caching nothing means `state()` — called once per
+    submission — opens a fresh connection per order against a resource this
+    feature elsewhere calls scarce. The answer is a SHORT positive window, and
+    the test pins the bound in both directions: reuse inside it, re-probe just
+    past it.
     """
-    name = "a_reachable_outcome_is_never_reused"
+    name = "a_reachable_outcome_is_reused_only_briefly_and_the_bound_is_what_protects_the_gate"
     _assert_one_passed(_producer_test(name), name)
 
 
@@ -640,47 +529,12 @@ def test_a_backwards_clock_re_probes_rather_than_reusing() -> None:
     _assert_one_passed(_producer_test(name), name)
 
 
-def test_the_admission_scan_reads_deref_assignments_too() -> None:
-    """The comment stripper used to delete real code.
-
-    It dropped every line starting with `*`, taking
-    `*self.subscribers.entry(k).or_default() = vec![s];` with it — so an ungated
-    admission point was invisible. A stripper that removes code is worse than
-    the false positive it was added for.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    try:
-        from connectivity_check import (
-            ConnectivityCheckError,
-            check_market_data_admission_sites,
-            load_config,
-            market_data_source,
-        )
-    finally:
-        sys.path.pop(0)
-
-    config = load_config()
-    source = market_data_source(config)
-    bypass = """
-impl ConsolidatedSubscriptionRegistry {
-    pub fn force(&mut self, k: SecurityKey, s: StrategyId) {
-        *self.subscribers.entry(k).or_default() = vec![s];
-    }
-}
-"""
-    with pytest.raises(ConnectivityCheckError, match="force"):
-        check_market_data_admission_sites(config, source + bypass)
-
-    # Non-vacuity: the real source still passes.
-    check_market_data_admission_sites(config, source)
-
-
 def test_the_privacy_closure_survives_any_widened_visibility() -> None:
-    """The closure IS Rust's privacy, so any widening breaks it.
+    """The registry's set stays private, in any spelling of a widening.
 
-    `pub(crate)` re-opens the field to every sibling module — including
-    `live_feed`, the exact module the registry was moved into its own file to
-    escape — and the earlier check matched only a bare `pub`.
+    It no longer has to: an `AdmittedSet` reached from anywhere still adds only
+    by spending a proof. It is kept private anyway, because a narrower surface
+    is a smaller review, and the check refuses any visibility at all.
     """
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     try:
@@ -695,13 +549,18 @@ def test_the_privacy_closure_survives_any_widened_visibility() -> None:
 
     config = load_config()
     source = market_data_source(config)
-    for visibility in ("pub", "pub(crate)", "pub(super)"):
-        mutated = source.replace(
-            "    subscribers: BTreeMap", f"    {visibility} subscribers: BTreeMap", 1
-        )
-        assert mutated != source, "the field anchor moved"
-        with pytest.raises(ConnectivityCheckError, match="not private"):
-            check_market_data_admission_sites(config, mutated)
+    # The whole declaration line, matched exactly once: a prefix such as
+    # "    subscribers: AdmittedSet" also matches `new()`'s struct literal, and
+    # widening THAT changes the text without touching the field (found when the
+    # field became an absolute path, r32).
+    decl = "    subscribers: crate::subscriptions::admitted_set::AdmittedSet,\n"
+    assert source.count(decl) == 1, "the field declaration moved"
+    for visibility in ("pub ", "pub(crate) ", "pub(super) "):
+        for name in ("subscribers", "r#subscribers"):
+            widened = decl.replace("    subscribers", f"    {visibility}{name}")
+            mutated = source.replace(decl, widened)
+            with pytest.raises(ConnectivityCheckError, match="must stay private"):
+                check_market_data_admission_sites(config, mutated)
 
     # Non-vacuity: the real source still passes.
     check_market_data_admission_sites(config, source)
@@ -788,6 +647,453 @@ impl RestartWindowGate for AlwaysOpenWindow {
         target.touch()
 
     check_restart_window_gate_implementors(config, "")
+
+
+def test_a_const_generic_brace_cannot_hide_a_second_implementor() -> None:
+    """Adversarial review r27 [high], planted in the REAL tree.
+
+    Rust permits a `{` inside a const-generic argument. The scan's two regexes
+    both assumed no brace before the trait name, so this implementor - which the
+    reviewer type-checked - was invisible to both, and the guard went on
+    reporting exactly one approved implementor while an always-admitting gate
+    bypassed the SYS-75(a) suspension. The scan now bounds each impl header by
+    bracket depth.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            check_restart_window_gate_implementors,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    check_restart_window_gate_implementors(config, "")  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub trait HasWidth<const N: usize> {}
+pub struct BracedOpenWindow<T>(T);
+impl<T: HasWidth<{ 1 + 1 }>> RestartWindowGate for BracedOpenWindow<T> {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="BracedOpenWindow"):
+            check_restart_window_gate_implementors(config, "")
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    check_restart_window_gate_implementors(config, "")
+
+
+def test_a_nested_comment_cannot_hide_a_second_implementor() -> None:
+    """Adversarial review r28 [high], planted in the REAL tree, through the FULL gate.
+
+    Rust block comments nest. The scan's lexer closed one at its first `*/`, so in
+    `/* outer /* inner */ " */` it read the last `"` as a string opener and blanked
+    the always-admitting implementor after it. The reviewer ran it through
+    `assert_connectivity_static`: all 13 checks passed, reporting exactly one
+    approved implementor. The lexer now counts comment depth, tokenizes nothing
+    inside a comment, and refuses any span it cannot close.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+pub struct CommentedOpenWindow;
+/* outer /* inner */ " */
+impl RestartWindowGate for CommentedOpenWindow {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+// "
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="CommentedOpenWindow"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_nested_use_group_cannot_hide_a_renamed_implementor() -> None:
+    """Adversarial review r29 [high], planted in the REAL tree, through the FULL gate.
+
+    The alias finder matched a braced use group up to its first `}`, so a NESTED
+    group hid the rename: `use atp_market_data::{RestartWindowGate as G,
+    live_feed::{LiveFeedLoop}};` bound no alias, and `impl G for AlwaysOpen`
+    left all 13 checks green with one approved implementor reported. The finder
+    now reads every `X as Y` between `use` and its `;`, at any depth.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-orchestrator/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+use atp_market_data::{RestartWindowGate as RenamedGate, live_feed::{LiveFeedLoop as _}};
+pub struct RenamedOpenWindow;
+impl RenamedGate for RenamedOpenWindow {
+    fn admission(&self) -> atp_market_data::MarketDataAdmission {
+        atp_market_data::MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="RenamedOpenWindow"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_namesake_of_the_producer_is_not_the_producer() -> None:
+    """Adversarial review r30 [high], planted in the REAL tree, through the FULL gate.
+
+    Implementors were recorded by bare type name, so the reviewer's
+    `bypass::ScheduledRestartConnectivity` - a different type that always admits -
+    was filed under the real producer's allowlist entry and all 13 checks passed.
+    The producer is now pinned by identity: implemented exactly once, for its
+    bare name, at the site the contract declares.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-market-data/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    injected = (
+        original
+        + """
+mod bypass {
+    pub struct ScheduledRestartConnectivity;
+}
+impl RestartWindowGate for bypass::ScheduledRestartConnectivity {
+    fn admission(&self) -> MarketDataAdmission {
+        MarketDataAdmission::Admitted
+    }
+}
+"""
+    )
+    try:
+        target.write_text(injected, encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="bypass::ScheduledRestartConnectivity"):
+            assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_the_compiler_refuses_every_write_that_skips_the_window() -> None:
+    """Every shape review used against the text scan now fails to COMPILE.
+
+    Rounds 21-31 each walked a different ungated write past a source scan of
+    `subscriptions.rs`: a trait-impl method, an exempt name reused (also raw,
+    `r#is_subscribed`), `entry().or_default().push()`, a deref assignment, a
+    second `fn subscribe`. The set is now an `AdmittedSet` whose only add method
+    spends an `AdmissionProof`, which only `RestartWindow` can make. This plants
+    each shape in the REAL module and asks rustc: each must be refused, with the
+    error that proves WHY, at the planted line. One proof also cannot be spent
+    twice - it is neither `Clone` nor `Copy`.
+    """
+    if shutil.which("cargo") is None:
+        pytest.skip(reason=_NO_CARGO)
+
+    def check() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["cargo", "check", "-p", "atp-market-data", "--lib", "--message-format", "short"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    write = "self.subscribers.insert(key, vec![id]);"
+    shapes = {
+        "a trait-impl mutator reusing an exempt name, raw (r31)": (
+            "pub trait Sneak { fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId); }\n"
+            "impl Sneak for ConsolidatedSubscriptionRegistry {\n"
+            f"    fn r#is_subscribed(&mut self, key: SecurityKey, id: StrategyId) {{ {write} }}\n}}\n",
+            "E0599",
+        ),
+        "a second `fn subscribe` in a trait impl (r30)": (
+            "pub trait Sneak2 { fn subscribe(&mut self, key: SecurityKey, id: StrategyId); }\n"
+            "impl Sneak2 for ConsolidatedSubscriptionRegistry {\n"
+            f"    fn subscribe(&mut self, key: SecurityKey, id: StrategyId) {{ {write} }}\n}}\n",
+            "E0599",
+        ),
+        "entry().or_default().push() (r5)": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.entry(key).or_default().push(id);\n    }\n}\n",
+            "E0599",
+        ),
+        "reaching the set's private map": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.lines.insert(key, vec![id]);\n    }\n}\n",
+            "E0616",
+        ),
+        "a forged proof": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        self.subscribers.admit(atp_types::AdmissionProof { _sealed: () }, key, id);\n    }\n}\n",
+            "E0451",
+        ),
+        "one proof spent twice": (
+            "impl ConsolidatedSubscriptionRegistry {\n"
+            "    pub fn twice<W: RestartWindowGate>(&mut self, w: &W, key: SecurityKey, id: StrategyId) {\n"
+            "        if let MarketDataAdmission::Admitted(proof) = w.admission() {\n"
+            "            self.subscribers.admit(proof, key.clone(), id.clone());\n"
+            "            self.subscribers.admit(proof, key, id);\n        }\n    }\n}\n",
+            "E0382",
+        ),
+        # Unsafe code fabricates the zero-sized proof without its constructor.
+        # The workspace forbids `unsafe_code`, so rustc refuses the block itself
+        # (a lint error, which has no code), and `forbid` cannot be lowered locally.
+        "a proof transmuted from ()": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof: atp_types::AdmissionProof = unsafe { std::mem::transmute(()) };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "usage of an `unsafe` block",
+        ),
+        "a zeroed proof": (
+            "impl ConsolidatedSubscriptionRegistry {\n    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof = unsafe { std::mem::zeroed::<atp_types::AdmissionProof>() };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "usage of an `unsafe` block",
+        ),
+        "unsafe allowed locally, under the forbid": (
+            "#[allow(unsafe_code)]\nimpl ConsolidatedSubscriptionRegistry {\n"
+            "    pub fn sneak(&mut self, key: SecurityKey, id: StrategyId) {\n"
+            "        let proof = unsafe { std::mem::zeroed::<atp_types::AdmissionProof>() };\n"
+            "        self.subscribers.admit(proof, key, id);\n    }\n}\n",
+            "E0453",
+        ),
+    }
+    original = SUBSCRIPTIONS_SOURCE.read_text(encoding="utf-8")
+    assert "#[cfg(test)]" not in original, "appending would land inside a test module"
+    baseline = check()
+    assert baseline.returncode == 0, "the real tree must compile:\n" + baseline.stderr[-3000:]
+    try:
+        for label, (planted, code) in shapes.items():
+            SUBSCRIPTIONS_SOURCE.write_text(original + "\n" + planted, encoding="utf-8")
+            result = check()
+            output = result.stdout + result.stderr
+            assert result.returncode != 0, f"{label}: rustc ACCEPTED it\n{output[-2000:]}"
+            needle = f"error[{code}]" if re.fullmatch(r"E\d{4}", code) else f"error: {code}"
+            assert needle in output, f"{label}: expected {needle}\n{output[-2000:]}"
+            assert "subscriptions.rs" in output, f"{label}: refused elsewhere\n{output[-2000:]}"
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        SUBSCRIPTIONS_SOURCE.write_text(original, encoding="utf-8")
+        SUBSCRIPTIONS_SOURCE.touch()
+    assert check().returncode == 0, "the restored tree must compile again"
+
+
+def test_an_implementor_the_scan_cannot_read_is_refused() -> None:
+    """The sweep after r29: code the enumeration never reads, planted in the REAL tree.
+
+    The scan reads `crates/*/src/**/*.rs`. An `include!`d file, or a macro handed
+    the gate's name (`#[delegate(RestartWindowGate)]`), puts an implementor where
+    it never looks, and the full gate used to stay green. Both are now refused.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    target = REPO_ROOT / "crates/atp-orchestrator/src/lib.rs"
+    original = target.read_text(encoding="utf-8")
+    shapes = {
+        "include": ('include!("../../../elsewhere.rs");\n', "cannot see"),
+        "macro": (
+            "#[delegate(atp_market_data::RestartWindowGate)]\npub struct Delegated(u8);\n",
+            "macro given the gate's name",
+        ),
+    }
+    try:
+        for planted, refusal in shapes.values():
+            target.write_text(original + "\n" + planted, encoding="utf-8")
+            with pytest.raises(ConnectivityCheckError, match=refusal):
+                assert_connectivity_static(config)
+    finally:
+        # Restore and stamp the mtime forward: a mtime-preserving restore leaves
+        # cargo serving the mutant on the next run.
+        target.write_text(original, encoding="utf-8")
+        target.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_same_named_set_in_the_real_registry_is_refused() -> None:
+    """Review r32, planted in the REAL `subscriptions.rs`: a `use` swaps in a set
+    that is also called `AdmittedSet` but adds without a proof, and a registry
+    method calls it. The gate compared the field's SPELLING, so all 13 checks
+    passed. The field is now an absolute path whose every segment the gate
+    resolves, and the full static gate must refuse both the swap and a module
+    redirected under the same path."""
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    original = SUBSCRIPTIONS_SOURCE.read_text(encoding="utf-8")
+    use = "use admitted_set::{AdmittedSet, Removal};"
+    field = "subscribers: crate::subscriptions::admitted_set::AdmittedSet,"
+    for anchor in (use, field, "pub mod admitted_set;"):
+        assert original.count(anchor) == 1, f"anchor `{anchor}` moved"
+    impostor = (
+        "use admitted_set::Removal;\nuse impostor::AdmittedSet;\nmod impostor {\n"
+        "    #[derive(Debug, Default)]\n"
+        "    pub struct AdmittedSet(Vec<(atp_types::SecurityKey, atp_types::StrategyId)>);\n"
+        "    impl AdmittedSet {\n"
+        "        pub fn add(&mut self, k: atp_types::SecurityKey, s: atp_types::StrategyId) {\n"
+        "            self.0.push((k, s));\n        }\n    }\n}\n"
+    )
+    writer = (
+        "\nimpl ConsolidatedSubscriptionRegistry {\n"
+        "    pub fn ungated(&mut self, k: SecurityKey, s: StrategyId) { self.subscribers.add(k, s); }\n}\n"
+    )
+    shapes = {
+        "r32 as found": (
+            original.replace(use, impostor).replace(field, "subscribers: AdmittedSet,") + writer,
+            "no longer an",
+        ),
+        "the absolute path, the module redirected": (
+            original.replace(
+                "pub mod admitted_set;", '#[path = "impostor.rs"]\npub mod admitted_set;'
+            ),
+            "exactly once",
+        ),
+    }
+    try:
+        for mutated, refusal in shapes.values():
+            SUBSCRIPTIONS_SOURCE.write_text(mutated, encoding="utf-8")
+            with pytest.raises(ConnectivityCheckError, match=refusal):
+                assert_connectivity_static(config)
+    finally:
+        SUBSCRIPTIONS_SOURCE.write_text(original, encoding="utf-8")
+        SUBSCRIPTIONS_SOURCE.touch()
+
+    assert len(assert_connectivity_static(config)) == 13
+
+
+def test_a_library_root_cargo_builds_elsewhere_is_refused() -> None:
+    """Review r33, planted in the REAL atp-market-data manifest: `[lib] path`
+    points Cargo at `src/alternate.rs`, a copy of lib.rs whose
+    `SubscriptionAccepted` carries no proof. The gate read the original lib.rs,
+    which no longer compiled, so all 13 checks passed. It must now refuse."""
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        from connectivity_check import (
+            ConnectivityCheckError,
+            assert_connectivity_static,
+            load_config,
+        )
+    finally:
+        sys.path.pop(0)
+
+    config = load_config()
+    assert len(assert_connectivity_static(config)) == 13  # non-vacuity: the real tree passes
+
+    manifest = MARKET_DATA_SOURCE.parents[1] / "Cargo.toml"
+    alternate = MARKET_DATA_SOURCE.with_name("alternate.rs")
+    assert not alternate.exists()
+    original = manifest.read_text(encoding="utf-8")
+    root = 'path = "src/lib.rs"'
+    proof = "    pub admission: ::atp_types::admission::AdmissionProof,\n"
+    lib = MARKET_DATA_SOURCE.read_text(encoding="utf-8")
+    assert original.count(root) == 1 and lib.count(proof) == 1, "an anchor moved"
+    try:
+        alternate.write_text(lib.replace(proof, ""), encoding="utf-8")
+        manifest.write_text(original.replace(root, 'path = "src/alternate.rs"'), encoding="utf-8")
+        with pytest.raises(ConnectivityCheckError, match="builds its library from"):
+            assert_connectivity_static(config)
+    finally:
+        manifest.write_text(original, encoding="utf-8")
+        alternate.unlink(missing_ok=True)
+
+    assert len(assert_connectivity_static(config)) == 13
 
 
 def test_the_resume_proof_labels_its_readiness_scope() -> None:
@@ -952,3 +1258,319 @@ def test_a_malformed_restart_schedule_is_refused_rather_than_defaulted() -> None
     accepted = RestartSchedule()
     assert accepted.window_seconds == 300
     assert accepted.suspend_lead_seconds == 60
+
+
+def test_the_reporting_surface_honours_the_same_bound_as_the_gate() -> None:
+    """A bound that only half the module respects is not a bound.
+
+    Once positives began to be cached, `last_outcome()` - the surface that
+    describes reachability to an operator - still filtered on the 1 s NEGATIVE
+    TTL, so a `Reachable` could be reported as current for ten times the 100 ms
+    bound the module installs as its safety property. Both the gate and the
+    report now route through one `ttl_for`, and this pins that they agree.
+
+    NOT proven here: that the bound is the right length. It is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time; this test only proves the two surfaces cannot drift apart.
+    """
+    name = "the_reporting_surface_honours_the_same_bound_as_the_gate"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_no_public_doc_still_describes_the_replaced_cache_policy() -> None:
+    """Prose that ARGUES for a design is worse than absent prose when it is stale.
+
+    The reachability cache changed policy once (r14: cache both outcomes, with
+    a short bound on the positive). Its documentation did not, and the drift
+    blocked three consecutive reviews:
+
+      r15  the constant's rustdoc still called the OLD policy "the whole design"
+      r15  `state()` still promised "a fresh probe on every read"
+      r16  `last_outcome()` still told callers `None` meant the gateway had
+           answered again
+
+    Each was a public doc comment a reader would reasonably trust. This pins the
+    claims that are now false, so the next policy change cannot leave them
+    behind a fourth time.
+
+    NOT proven here: that the current prose is a GOOD description. Only that the
+    specific superseded claims are gone and the replacement names both bounds.
+    """
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    docs = "\n".join(line for line in source.splitlines() if line.strip().startswith("///"))
+    # Drop QUOTED spans first. A rustdoc that says: this comment once said
+    # "a fresh probe on every read", and that stopped being true - is recording
+    # the drift, not repeating it. This guard flagged exactly that on its first
+    # run, which is the third time in this feature a source-scanning check has
+    # accused its own documentation (docs/playbooks/adversarial-precheck.md).
+    normalised = " ".join(re.sub(r'"[^"]*"', " ", docs).split())
+
+    superseded = {
+        "only-a-negative-is-cached": "Only a NEGATIVE outcome is cached",
+        "a-positive-is-never-retained": "never retained",
+        "state-probes-on-every-read": "a fresh probe on\n/// every read",
+        "none-means-healthy": "`None` once the gateway answers again",
+    }
+    still_present = {
+        label: text
+        for label, text in superseded.items()
+        if " ".join(text.replace("///", " ").split()) in normalised
+    }
+    assert not still_present, (
+        "public rustdoc still describes the cache policy replaced in round 14: "
+        f"{sorted(still_present)}"
+    )
+
+    # Non-vacuity: the replacement must actually name BOTH bounds, or this test
+    # would pass just as well against a module with no documentation at all.
+    assert "REACHABLE_CACHE_TTL_NS" in normalised
+    assert "REACHABILITY_CACHE_TTL_NS" in normalised
+    assert "Both outcomes are cached" in normalised or "Both outcomes are retained" in normalised
+
+
+def test_with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it() -> None:
+    """A public builder must not be able to widen a safety bound.
+
+    `with_probe_ttl` promised "reuse for `ttl_ns`" for a round after `ttl_for`
+    began capping a REACHABLE observation at 100 ms, so a caller passing 2 s was
+    silently getting 100 ms for a positive. It then said "2 s gets 2 s for an
+    unreachable gateway" for a round after round 22 capped that branch too.
+
+    This pins the behaviour in all three directions: asking for more gets each
+    outcome's OWN cap (100 ms reachable, 1 s unreachable - not the 2 s asked
+    for), and asking for zero disables reuse entirely.
+
+    NOT proven here: that 100 ms is the right ceiling. That is argued against
+    NFR-P1's 1,000 ms order budget in the module rustdoc and asserted at compile
+    time.
+    """
+    name = "with_probe_ttl_can_shorten_the_positive_cap_but_never_raise_it"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_a_shortened_ttl_shortens_both_directions() -> None:
+    """The compile asserts relate the DEFAULTS, not the runtime bounds.
+
+    An earlier comment claimed the cache asymmetry was compiler-enforced. It is
+    not: the negative bound is `self.ttl_ns`, which the public `with_probe_ttl`
+    may set to any non-negative value, so a caller passing 100 ms or less gets
+    equal bounds in both directions and no asymmetry at all.
+
+    That is safe, because `ttl_for` takes a `min` on BOTH branches and so a
+    configured value can only ever SHORTEN a window - shorter is the cautious
+    side of every one of these trades.
+
+    It was not always true. Until round 22 the negative branch returned the
+    configured value verbatim, so `with_probe_ttl(2s)` lengthened the
+    unreachable window past its own 1 s default while this docstring, two module
+    comments and a unit test all asserted the opposite. Nothing unsafe shipped -
+    a stale `Unreachable` errs toward blocking - but an invariant asserted in
+    five places and held in none is exactly the kind of claim these tests exist
+    to catch, so the CODE was changed to match.
+
+    NOT proven here: that any particular configured TTL is a good choice. Only
+    that lowering it lowers BOTH bounds.
+    """
+    name = "a_shortened_ttl_shortens_both_directions"
+    _assert_one_passed(_producer_test(name), name)
+
+
+def test_the_admission_guard_survives_a_rename_and_a_nested_bound() -> None:
+    """Two ways past the guard that closes SyRS SYS-75(a), both verified live.
+
+    The gate-implementor enumeration and the exempt-function scan are the only
+    things standing between the tree and a production type that always returns
+    `Admitted`. Round 19 walked past both:
+
+      * `use atp_market_data::RestartWindowGate as Gate;` then `impl Gate for X`
+        matched nothing, while the check still printed "this enumeration is what
+        makes it unforgeable".
+      * `fn is_subscribed<T: Into<Vec<u8>>>` exceeded the one nesting level the
+        generic-list pattern allowed, so the exemption was inherited by a second
+        declaration that writes the consolidated registry.
+
+    Both are exercised against the real checker in
+    `tests/test_connectivity_contract.py`; this L7 test asserts the SHIPPED
+    tools still reject them, so a refactor of either scan cannot quietly reopen
+    the bypass.
+
+    NOT proven here: that no OTHER spelling evades them. That is what the round
+    log is for.
+    """
+    import subprocess
+
+    checker = REPO_ROOT / "tests" / "test_connectivity_contract.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(checker),
+            "-q",
+            "-k",
+            # The nested-bound half pinned exempt-declaration parsing, which the
+            # compiler replaced (see test_the_compiler_refuses_every_write_...).
+            "renamed_trait_import",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "1 passed" in combined, combined[-2000:]
+
+
+def test_the_implementor_enumeration_refuses_what_it_cannot_parse() -> None:
+    """The backstop that ends "your regex did not anticipate this shape".
+
+    Five separate review rounds found a shape the gate-implementor scan could
+    not read: an arrow in the generics, a reference or tuple target, a
+    parenthesised bound, two levels of nesting, an aliased trait name. Each fix
+    was correct and each round found the next one, because a scan that fails to
+    MATCH reports nothing and nothing reads as clean.
+
+    The scan now counts what a loose pattern can see and refuses when the strict
+    pass accounts for fewer. Any future unreadable shape turns the guard red
+    instead of silently shrinking the set it calls closed - which is the only
+    property that makes the "closed set" claim honest, and the one this L7 test
+    protects because SyRS SYS-75(a) rests on it.
+
+    NOT proven here: that the loose pattern sees every impl either. It is a
+    lower bound, and a lower bound that fails closed is worth more than a
+    precise one that fails open.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "cannot_name or scan_that_finds_nothing",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_admission_guard_fails_closed_on_syntax_it_cannot_parse() -> None:
+    """The round that showed a backstop can share the blind spot it backs up.
+
+    Round 20 added a completeness count so an unreadable impl would turn the
+    gate-implementor scan red instead of shrinking the set it calls closed.
+    Round 21 showed it was bounded by `[^;]` - the SAME boundary the strict
+    pattern used - so `impl<T: Into<[u8; 4]>> RestartWindowGate for AlwaysOpen`
+    defeated both and scanned as clean. The same `;` made the exempt-declaration
+    counter drop a declaration entirely rather than refuse it, so a second
+    `fn is_subscribed<T: Into<[u8; 4]>>` inherited the exemption and reached the
+    consolidated registry without consulting the window.
+
+    Both are SyRS SYS-75(a) bypasses that leave every other guard, this suite
+    and all three CLI proofs green, which is why they are pinned at L7.
+
+    NOT proven here: that no further syntax defeats them. The backstop is what
+    converts "unreadable" into a red gate, and that is the property under test.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            # The array-`;` half also pinned exempt-declaration parsing, which
+            # the compiler replaced; the implementor scan's `;` case remains.
+            "semicolon_in_the_header or two_hop_rename",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_admission_guard_does_not_cry_wolf_on_legal_code() -> None:
+    """A guard that fails on legal code is deleted, so it is as dead as one that
+    never fires.
+
+    Round 20 added a completeness backstop so an unreadable `impl` would turn
+    the gate-implementor scan red rather than shrink the set it calls closed.
+    Round 24 found it counted ANY `impl ... RestartWindowGate ... for` span, so
+    an ordinary bound - `impl<W: RestartWindowGate> SomeOtherTrait for
+    Manager<W>` - looked like an implementor header the strict pass could never
+    match, and the whole connectivity contract gate failed on code that does
+    nothing wrong.
+
+    This is the false-positive half of the same property the sibling L7 test
+    covers from the bypass side. Both matter: SyRS SYS-75(a) rests on this
+    enumeration, and it protects nothing if the next person to hit a spurious
+    failure deletes it.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(REPO_ROOT / "tests" / "test_connectivity_contract.py"),
+            "-q",
+            "-k",
+            "ordinary_generic_bound or type_parameter_is_not_mistaken",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2000:]
+    assert "2 passed" in combined, combined[-2000:]
+
+
+def test_the_documented_ttl_ratio_is_asserted_at_compile_time() -> None:
+    """A ratio cited as the safety argument must be the ratio the assert pins.
+
+    The constants' rustdoc argued a ten-times separation between the reachable
+    and unreachable reuse windows. The compile-time assert beside it pinned only
+    FIVE, so it could not fail for the ratio being argued - and the prose said
+    "two orders of magnitude" for what is 10x, and "four orders below the 300 s
+    window" for what is a factor of 3,000.
+
+    Numbers stated as a safety argument get checked here against the source, so
+    the next change to either constant has to move the assert with it.
+
+    NOT proven here: that ten times is the right separation. That is a design
+    choice argued in the module rustdoc; this pins that the code enforces the
+    number the prose claims.
+    """
+    source = PRODUCER_SOURCE.read_text(encoding="utf-8")
+    assert "REACHABLE_CACHE_TTL_NS * 10 <= REACHABILITY_CACHE_TTL_NS" in source, (
+        "the compile assert must pin the ten-times ratio the rustdoc argues"
+    )
+    # Strip the `///` prefixes BEFORE joining. Without that, a phrase wrapped
+    # across two doc-comment lines reads as "...two orders of /// magnitude..."
+    # and the substring test misses it - which it did: one instance survived
+    # round 25's sweep for exactly this reason.
+    prose = " ".join(re.sub(r"^\s*///?", " ", source, flags=re.M).split()).lower()
+    for phrase, why in {
+        "two orders of magnitude": "10x is one order of magnitude, not two",
+        "four orders below": "100 ms against 300 s is a factor of 3,000",
+    }.items():
+        assert phrase not in prose, f"{phrase!r}: {why}"
+
+    assert "REACHABLE_CACHE_TTL_NS * 10 <= 1_000_000_000" in source, (
+        "the NFR-P1 assert must pin the ten-times claim the rustdoc makes, not four"
+    )

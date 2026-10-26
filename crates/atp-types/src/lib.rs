@@ -28,6 +28,9 @@ pub use composite_order::{
     OptionContractError, OptionContractIdentity, OptionRight,
 };
 
+pub mod admission;
+pub use admission::{AdmissionOutcome, AdmissionProof, MarketDataAdmission};
+
 pub mod json_scan;
 pub use json_scan::{
     json_string_value, parse_strict_bool, parse_strict_i64, top_level_json_field,
@@ -708,68 +711,6 @@ impl RestartWindow {
                     ConnectivityState::ScheduledRestartWindow
                 }
             }
-        }
-    }
-
-    /// Whether a market-data subscription request may be admitted, and if not,
-    /// WHY.
-    ///
-    /// SYS-75(a) suspends order submission *and market-data requests*
-    /// together, so this is derived from the SAME decision the order gate
-    /// consults rather than computed alongside it — two predicates over one
-    /// requirement drift, and the drift would be invisible.
-    ///
-    /// It returns a reason rather than a boolean because the two refusals mean
-    /// opposite things to an operator. Inside the window, "suspended" means
-    /// wait, this is scheduled. After it, the identical refusal is a genuine
-    /// outage, and labelling that as maintenance would tell the operator to
-    /// wait through an incident.
-    ///
-    /// Written as an allowlist: only `Connected` admits. A future state
-    /// inherits a refusal, which is an under-claim; a denylist would have
-    /// inherited admission, which is a fail-open.
-    pub const fn market_data_admission(self, now_ns: i64, reachable: bool) -> MarketDataAdmission {
-        match self.connectivity_state(now_ns, reachable) {
-            ConnectivityState::Connected => MarketDataAdmission::Admitted,
-            ConnectivityState::ScheduledRestartWindow => {
-                MarketDataAdmission::SuspendedForScheduledRestart
-            }
-            ConnectivityState::Unreachable => MarketDataAdmission::ConnectivityLost,
-        }
-    }
-
-    /// Convenience predicate over [`market_data_admission`](Self::market_data_admission)
-    /// for callers that only need the decision.
-    pub const fn admits_market_data_requests(self, now_ns: i64, reachable: bool) -> bool {
-        self.market_data_admission(now_ns, reachable).is_admitted()
-    }
-}
-
-/// Whether a market-data subscription request may proceed, and the reason when
-/// it may not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MarketDataAdmission {
-    /// The request may proceed to the line-limit gate.
-    Admitted,
-    /// SRS-MD-005 / SyRS SYS-75(a): planned maintenance. The identical request
-    /// succeeds unchanged once the window closes.
-    SuspendedForScheduledRestart,
-    /// SyRS SYS-45: the IB Gateway is unreachable. Not maintenance — this is
-    /// the state an operator is paged about.
-    ConnectivityLost,
-}
-
-impl MarketDataAdmission {
-    pub const fn is_admitted(self) -> bool {
-        matches!(self, Self::Admitted)
-    }
-
-    /// A stable label for operator output and structured records.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Admitted => "ADMITTED",
-            Self::SuspendedForScheduledRestart => "SCHEDULED_RESTART_WINDOW",
-            Self::ConnectivityLost => "CONNECTIVITY_LOST",
         }
     }
 }

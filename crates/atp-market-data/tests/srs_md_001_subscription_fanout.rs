@@ -36,9 +36,9 @@ use atp_market_data::{
     SubscriptionRegistryError,
 };
 use atp_types::{
-    AssetClass, MarketDataAdmission, MarketDataTick, OrderErrorCategory, SecurityKey, StrategyId,
-    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
-    SubscriptionRequest,
+    AssetClass, MarketDataAdmission, MarketDataTick, OrderErrorCategory, RestartWindow,
+    SecurityKey, StrategyId, SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent,
+    SubscriptionLimitState, SubscriptionRequest,
 };
 use std::cell::RefCell;
 
@@ -50,8 +50,17 @@ use std::cell::RefCell;
 struct OpenWindow;
 impl RestartWindowGate for OpenWindow {
     fn admission(&self) -> MarketDataAdmission {
-        MarketDataAdmission::Admitted
+        admitted()
     }
+}
+
+/// A REAL admission. `AdmissionProof` can only be made by a `RestartWindow`, so a
+/// test that needs the window open asks one whose restart is decades away.
+fn admitted() -> MarketDataAdmission {
+    const RESTART_2100_NS: i64 = 4_102_444_800 * 1_000_000_000;
+    RestartWindow::with_defaults(RESTART_2100_NS)
+        .expect("SYS-75 defaults are valid")
+        .market_data_admission(0, true)
 }
 
 #[derive(Default)]

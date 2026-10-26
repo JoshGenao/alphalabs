@@ -51,7 +51,7 @@ use atp_orchestrator::restart_window_scenario::{
     RestartWindowScenario, SCENARIO_SYMBOL,
 };
 use atp_types::{
-    ConnectivityState, MarketDataAdmission, RestartPhase, DEFAULT_RESTART_SUSPEND_LEAD_SECONDS,
+    AdmissionOutcome, ConnectivityState, RestartPhase, DEFAULT_RESTART_SUSPEND_LEAD_SECONDS,
     DEFAULT_RESTART_WINDOW_SECONDS, NANOS_PER_SECOND,
 };
 
@@ -426,7 +426,7 @@ fn cmd_prove_suspension(args: &[String]) -> Result<(), String> {
         ),
     )?;
     require(
-        evidence.market_data_admission == MarketDataAdmission::SuspendedForScheduledRestart,
+        evidence.market_data_admission == AdmissionOutcome::SuspendedForScheduledRestart,
         format!(
             "the market-data admission must read as planned maintenance, observed {}",
             evidence.market_data_admission.as_str()
@@ -537,7 +537,7 @@ fn cmd_prove_escalation(args: &[String]) -> Result<(), String> {
         ),
     )?;
     require(
-        evidence.market_data_admission == MarketDataAdmission::ConnectivityLost,
+        evidence.market_data_admission == AdmissionOutcome::ConnectivityLost,
         format!(
             "after the window a market-data refusal must read as an OUTAGE, not as \
              maintenance; observed {}",
