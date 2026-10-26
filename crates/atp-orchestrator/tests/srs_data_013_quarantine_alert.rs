@@ -417,6 +417,13 @@ fn status_reports_a_run_due_then_alerted_with_each_channel_outcome() {
     assert_eq!(run.state, AlertState::Due, "not yet sent");
     assert!(!run.settled);
     assert!(run.attempt.is_none());
+    // The state was judged against THIS read of the run, carried for the reader's join.
+    assert!(
+        matches!(&run.judged, atp_data::RunRead::Readable(r)
+            if r.run_id == run.run_id && r.quarantined_total() == 6 && r.records_in == 10),
+        "{:?}",
+        run.judged
+    );
     // Reading the status sent and stored nothing.
     assert!(NotificationEventStore::load_from_path(&store)
         .unwrap()

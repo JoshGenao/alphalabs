@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use atp_data::MAX_RUNS_READ;
+use atp_data::{PrimaryWrite, RunRead, MAX_RUNS_READ};
 use atp_notification::{DeliveryOutcome, NotificationChannel, NotificationEvent, OperatorNotifier};
 use atp_orchestrator::operator_channels::{build_channels, reject_placeholder_secrets};
 use atp_orchestrator::quarantine_notification::{alert_status, notify_quarantined_runs, RunAlert};
@@ -181,6 +181,20 @@ fn status(options: &Options) -> Result<ExitCode, String> {
         println!("run_{i}_id:{}", run.run_id);
         println!("run_{i}_alert:{}", run.state.as_str());
         println!("run_{i}_settled:{}", run.settled);
+        // The state the alert state was judged against, in the summary command's grammar,
+        // so a reader joining the two can tell when the run changed between its reads.
+        match &run.judged {
+            RunRead::Readable(judged) => {
+                println!("run_{i}_status:readable");
+                println!("run_{i}_records_in:{}", judged.records_in);
+                println!("run_{i}_primary:{}", judged.primary.as_str());
+                if let PrimaryWrite::Written { records } = judged.primary {
+                    println!("run_{i}_written:{records}");
+                }
+                println!("run_{i}_quarantined_total:{}", judged.quarantined_total());
+            }
+            RunRead::Unreadable { .. } => println!("run_{i}_status:unreadable"),
+        }
         match &run.attempt {
             None => println!("run_{i}_attempt:none"),
             Some(event) => {

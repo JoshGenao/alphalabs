@@ -3732,6 +3732,10 @@
       return;
     }
     const held = run.quarantined_total;
+    // PENDING is an UNKNOWN outcome, not zero admitted: the process may have stopped
+    // after the primary store published (review r13). Only REFUSED and FAILED mean
+    // "nothing from this batch is in primary storage".
+    const pending = run.primary === "PENDING";
     const written = run.primary === "WRITTEN" ? run.written : 0;
     const unstored = run.records_in - held - written;
     const kicker = {
@@ -3754,11 +3758,15 @@
     if (flow) {
       flow.dataset.known = "true";
       flow.dataset.primary = run.primary;
-      flow.setAttribute("aria-label", "Latest run: " + run.records_in + " records in, " + written +
-        " admitted, " + held + " held" + (unstored > 0 ? ", " + unstored + " not stored" : ""));
+      flow.setAttribute("aria-label", pending
+        ? "Latest run: " + run.records_in + " records in, " + held + " held, " + unstored +
+          " with an unknown outcome — the run has not finished"
+        : "Latest run: " + run.records_in + " records in, " + written + " admitted, " + held +
+          " held" + (unstored > 0 ? ", " + unstored + " not stored" : ""));
     }
     $("qflow-in").textContent = String(run.records_in);
-    $("qflow-admitted-n").textContent = String(written);
+    $("qflow-admitted-n").textContent = pending ? "—" : String(written);
+    $("qflow-admitted-n").parentElement.dataset.unknown = String(pending);
     $("qflow-held-n").textContent = String(held);
     $("qflow-held-n").parentElement.dataset.zero = String(held === 0);
     setSegment("qflow-admitted", written);

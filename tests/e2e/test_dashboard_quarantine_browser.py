@@ -264,3 +264,62 @@ def test_an_alert_no_channel_carried_reads_as_attempted_and_still_due(binaries, 
             browser.close()
     finally:
         next(dashboard, None)
+
+
+def test_a_pending_run_shows_its_admitted_count_as_unknown(binaries, tmp_path: Path) -> None:
+    """Review r13: PENDING may follow a published primary write, so "0 admitted" is false.
+
+    A run is left PENDING only by a process that stopped between its two writes, which
+    no public API produces, so the payload is served by route interception
+    (honest-surfaces rule 23) in exactly the shape the provider emits.
+    """
+    import json
+
+    pending = {
+        "generated_at": "2026-10-26T00:00:00Z",
+        "srs_ref": "SRS-DATA-013",
+        "reasons": list(QUARANTINE_REASONS),
+        "state": "quarantined",
+        "error": None,
+        "total_runs": 1,
+        "returned": 1,
+        "truncated": False,
+        "runs": [
+            {
+                "run_id": "00000001793014164151-0000033797-000000",
+                "status": "readable",
+                "recorded_at_millis": 1793014164151,
+                "observed_at_seconds": 1700000000,
+                "records_in": 10,
+                "primary": "PENDING",
+                "written": None,
+                "quarantined_total": 6,
+                "counts": dict.fromkeys(QUARANTINE_REASONS, 1),
+                "alert": None,
+            }
+        ],
+        "alerts": {"configured": True, "ok": True, "error": None, "invalid_markers": 0, "due": 0},
+    }
+    dashboard = _dashboard(tmp_path / "ssd", tmp_path)
+    url = next(dashboard)
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.route(
+                "**/dashboard/api/quarantine",
+                lambda route: route.fulfill(
+                    status=200, content_type="application/json", body=json.dumps(pending)
+                ),
+            )
+            _open_pane(page, url)
+            assert page.text_content("#qflow-held-n") == "6"
+            assert page.text_content("#qflow-admitted-n") == "—", "PENDING is not 0 admitted"
+            assert page.text_content("#qflow-unstored-n") == "4"
+            assert page.text_content("#qflow-unstored-cap") == "outcome unknown"
+            label = page.get_attribute("#qflow", "aria-label")
+            assert "unknown outcome" in label and "admitted" not in label, label
+            assert "primary write is unknown" in page.text_content("#qgate-title")
+            browser.close()
+    finally:
+        next(dashboard, None)

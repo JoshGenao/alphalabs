@@ -339,6 +339,7 @@ def parse_status(stdout: str) -> dict[str, object]:
     _contiguous(flat, returned, "returned", origin)
     _contiguous(markers, invalid, "invalid_markers", origin)
     by_id: dict[str, dict[str, object]] = {}
+    judged_by_id: dict[str, tuple[object, ...]] = {}
     for i in range(returned):
         fields = flat[i]
         where = f"{origin} run {i}"
@@ -347,7 +348,10 @@ def parse_status(stdout: str) -> dict[str, object]:
         if not run_id or state not in ALERT_STATES:
             raise QuarantineUnavailable(f"{where}: id {run_id!r}, alert {state!r}")
         attempt = fields.get("attempt")
-        allowed = {"id", "alert", "settled", "attempt"}
+        judged = _judged_state(fields, where)
+        allowed = {"id", "alert", "settled", "attempt"} | _JUDGED_FIELDS[judged[0]]
+        if judged[0] == "readable" and judged[2] == "WRITTEN":
+            allowed |= {"written"}
         channels: dict[str, str] = {}
         attempt_at: int | None = None
         if attempt == "stored":
@@ -375,7 +379,56 @@ def parse_status(stdout: str) -> dict[str, object]:
             # not FAILED, and the pane renders it as unknown.
             "channels": channels,
         }
-    return {"invalid_markers": invalid, "by_id": by_id}
+        judged_by_id[run_id] = judged
+    return {"invalid_markers": invalid, "by_id": by_id, "judged": judged_by_id}
+
+
+#: The run-state fields ``status`` prints beside each alert state, by run status.
+_JUDGED_FIELDS: dict[object, set[str]] = {
+    "readable": {"status", "records_in", "primary", "quarantined_total"},
+    "unreadable": {"status"},
+}
+
+
+def _judged_state(fields: dict[str, str], where: str) -> tuple[object, ...]:
+    """The run state an alert state was decided against, as a comparable tuple.
+
+    The same tuple :func:`_state_of` builds from the counts leg, so the join can
+    tell when the run changed between the two reads (review r13).
+    """
+
+    status = fields.get("status")
+    if status == "unreadable":
+        return ("unreadable",)
+    if status != "readable":
+        raise QuarantineUnavailable(f"{where}: status {status!r}")
+    primary = fields.get("primary")
+    if primary not in PRIMARY_OUTCOMES:
+        raise QuarantineUnavailable(f"{where}: primary {primary!r}")
+    if (primary == "WRITTEN") != ("written" in fields):
+        raise QuarantineUnavailable(f"{where}: written must appear exactly when WRITTEN")
+    written = _count(fields["written"], "written", where) if primary == "WRITTEN" else None
+    return (
+        "readable",
+        _count(fields.get("records_in", ""), "records_in", where),
+        primary,
+        written,
+        _count(fields.get("quarantined_total", ""), "quarantined_total", where),
+    )
+
+
+def _state_of(run: Mapping[str, object]) -> tuple[object, ...]:
+    """The counts leg's view of a run, in :func:`_judged_state`'s shape."""
+
+    if run["status"] == "unreadable":
+        return ("unreadable",)
+    return (
+        "readable",
+        run["records_in"],
+        run["primary"],
+        run["written"],
+        run["quarantined_total"],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -551,10 +604,17 @@ class QuarantinePaneProvider:
                 "due": None,
             }
         by_id: dict[str, dict[str, object]] = status["by_id"]  # type: ignore[assignment]
+        judged: dict[str, tuple[object, ...]] = status["judged"]  # type: ignore[assignment]
         unmatched = 0
         due = 0
         for run in runs:
-            alert = by_id.get(str(run["run_id"]))
+            run_id = str(run["run_id"])
+            alert = by_id.get(run_id)
+            # An alert describes ONE state of the run. If the run changed between
+            # the two reads, this delivery belongs to a state the counts beside it
+            # do not show, so it is not shown with them (review r13).
+            if alert is not None and judged.get(run_id) != _state_of(run):
+                alert = None
             run["alert"] = alert
             if alert is None:
                 unmatched += 1
@@ -565,7 +625,8 @@ class QuarantinePaneProvider:
             "ok": True,
             # Runs the two reads disagree about stay UNKNOWN; say how many.
             "error": (
-                f"{unmatched} run(s) appeared between the two reads; their alert state is unknown"
+                f"{unmatched} run(s) appeared or changed between the two reads; "
+                "their alert state is unknown"
                 if unmatched
                 else None
             ),

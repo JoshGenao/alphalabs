@@ -68,15 +68,30 @@ def _summary(*runs: str, total: int | None = None) -> str:
     return "\n".join(head + list(runs)) + "\n"
 
 
-def _status(*runs: tuple[str, str, str]) -> str:
+def _status(*runs: tuple) -> str:
+    """Status rows: ``(run_id, alert_state, attempt[, held[, primary]])``.
+
+    Each row also prints the run state its alert state was judged against; by
+    default the counts leg's default run (``_summary_run(..., held=6)``).
+    """
     lines = [
         "notification_store:/alerts",
         f"total_runs:{len(runs)}",
         f"returned:{len(runs)}",
         "invalid_markers:0",
     ]
-    for i, (run_id, state, attempt) in enumerate(runs):
+    for i, (run_id, state, attempt, *judged) in enumerate(runs):
+        held = judged[0] if judged else 6
+        primary = judged[1] if len(judged) > 1 else "WRITTEN"
         lines += [f"run_{i}_id:{run_id}", f"run_{i}_alert:{state}", f"run_{i}_settled:false"]
+        lines += [
+            f"run_{i}_status:readable",
+            f"run_{i}_records_in:10",
+            f"run_{i}_primary:{primary}",
+        ]
+        if primary == "WRITTEN":
+            lines.append(f"run_{i}_written:4")
+        lines.append(f"run_{i}_quarantined_total:{held}")
         if attempt == "stored":
             lines += [
                 f"run_{i}_attempt:stored",
@@ -495,3 +510,35 @@ def test_a_status_leg_returning_more_runs_than_it_has_is_refused() -> None:
     good = _status((RUN_A, "DUE", "none"))
     with pytest.raises(QuarantineUnavailable, match="exceeds total_runs"):
         parse_status(good.replace("total_runs:1", "total_runs:0"))
+
+
+def test_delivery_for_a_state_the_counts_do_not_show_is_withheld() -> None:
+    """Review r13: the run finished and was alerted between the two reads.
+
+    The counts leg saw it PENDING with nothing held; the status leg judged its final,
+    alerted state. Joining by id alone showed "operator alerted" beside counts the
+    alert never described.
+    """
+    counts = _summary(_summary_run(0, RUN_A, held=0, primary="PENDING"))
+    status = _status((RUN_A, "ALERTED", "stored", 6, "WRITTEN"))
+    body = _provider(FakeRunner(counts, status)).quarantine_snapshot()
+    assert body["runs"][0]["alert"] is None
+    assert body["alerts"]["due"] is None
+    assert "changed between the two reads" in body["alerts"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "needle"),
+    [
+        (lambda s: s.replace("run_0_status:readable", "run_0_status:maybe"), "status"),
+        (lambda s: s.replace("run_0_primary:WRITTEN", "run_0_primary:SOON"), "primary"),
+        (lambda s: s.replace("run_0_written:4\n", ""), "exactly when WRITTEN"),
+        (lambda s: s.replace("run_0_records_in:10", "run_0_records_in:ten"), "not a count"),
+    ],
+    ids=["unknown-status", "unknown-primary", "written-missing", "records-not-a-count"],
+)
+def test_the_judged_state_is_parsed_strictly(mutate, needle: str) -> None:
+    good = _status((RUN_A, "ALERTED", "stored"))
+    parse_status(good)
+    with pytest.raises(QuarantineUnavailable, match=needle):
+        parse_status(mutate(good))

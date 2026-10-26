@@ -419,6 +419,10 @@ pub struct RunAlertStatus {
     /// got out; otherwise the newest attempt (a `Due` run whose every channel failed has one).
     /// `None` when nothing for this state is stored.
     pub attempt: Option<NotificationEvent>,
+    /// The run exactly as it was read when `state` was decided. A reader that joins this
+    /// status to a separate read of the same run must compare the two: the run can change
+    /// between them (gain conflicts, finish), and an alert describes one state (review r13).
+    pub judged: RunRead,
 }
 
 /// The alert status of the newest runs.
@@ -478,6 +482,7 @@ pub fn alert_status(
                 state,
                 settled,
                 attempt,
+                judged: run.clone(),
             }
         })
         .collect();

@@ -210,6 +210,16 @@ def test_status_needs_no_transport_and_stores_nothing() -> None:
         assert "returned:1" in lines
         assert "run_0_alert:DUE" in lines, "an unsent alert is DUE, never NOT_NEEDED"
         assert "run_0_attempt:none" in lines
+        # The run state the alert state was judged against, so the pane can tell when
+        # the run changed between its two reads (review r13).
+        for line in (
+            "run_0_status:readable",
+            "run_0_records_in:10",
+            "run_0_primary:WRITTEN",
+            "run_0_written:4",
+            "run_0_quarantined_total:6",
+        ):
+            assert line in lines, line
         assert not any(store.iterdir()), "status stored nothing: it sent nothing"
 
 

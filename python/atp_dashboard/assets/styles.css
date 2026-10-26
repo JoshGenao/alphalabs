@@ -1582,6 +1582,7 @@ body {
 .qflow__leg--held[data-zero="true"] .qflow__num { color: var(--ink-faint); }
 .qflow__leg--unstored .qflow__num { color: var(--ink-dim); }
 .qflow[data-known="false"] .qflow__leg .qflow__num { color: var(--ink-faint); }
+.qflow__leg[data-unknown="true"] .qflow__num { color: var(--ink-faint); }
 
 /* --- the six SYS-77 reasons ------------------------------------------- */
 .qreasons {
