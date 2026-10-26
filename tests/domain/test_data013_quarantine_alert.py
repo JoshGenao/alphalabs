@@ -11,6 +11,9 @@ transports must refuse before sending anything rather than report a clean pass.
      real dispatcher (fake channels mirroring the real adapters), and the real audit store.
   2. Behavioral (operator CLI) — ``data013_quarantine_alert_cli`` refuses unusable configuration
      with exit 2 and sends nothing.
+  3. Behavioral (``status``, landing 3) — the read the dashboard pane polls needs no transport
+     configuration and stores nothing, so polling the pane can never page the operator; an
+     unreadable store is exit 2, never "nothing due".
 """
 
 from __future__ import annotations
@@ -50,6 +53,12 @@ def _cargo() -> str:
         "a_failed_alert_is_retried_however_many_runs_follow_it",
         "a_run_published_after_newer_runs_settled_is_still_alerted",
         "a_damaged_marker_cannot_hide_a_run",
+        # Landing 3: the read-only status the dashboard pane reads agrees with what a pass does.
+        "status_reports_a_run_due_then_alerted_with_each_channel_outcome",
+        "status_shows_a_failed_attempt_as_due_with_its_failures",
+        "status_names_exactly_the_runs_the_next_pass_sends",
+        "status_on_a_settled_run_that_became_unreadable_does_not_claim_what_it_held",
+        "status_on_an_unreadable_store_is_an_error_not_nothing_to_report",
     ],
 )
 def test_rust_quarantine_alert_behaviour(rust_test: str) -> None:
@@ -154,3 +163,71 @@ def test_a_missing_notification_store_is_refused() -> None:
         )
         assert result.returncode == 2
         assert "does not exist" in result.stderr
+
+
+def _ingest_mixed(ssd: Path) -> None:
+    build = subprocess.run(
+        [_cargo(), "build", "-q", "-p", "atp-data", "--bin", "data013_ingestion_validation_cli"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+    nas = ssd.parent / "nas"
+    nas.mkdir(exist_ok=True)
+    ingest = subprocess.run(
+        [
+            str(REPO_ROOT / "target" / "debug" / "data013_ingestion_validation_cli"),
+            "ingest",
+            "--ssd",
+            str(ssd),
+            "--nas",
+            str(nas),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert ingest.returncode == 0, ingest.stderr
+
+
+def test_status_needs_no_transport_and_stores_nothing() -> None:
+    binary = _binary()
+    with tempfile.TemporaryDirectory(prefix="atp_data013_alert_l7_") as tmp:
+        ssd, store = Path(tmp) / "ssd", Path(tmp) / "alerts"
+        store.mkdir()
+        _ingest_mixed(ssd)
+        result = subprocess.run(
+            [str(binary), "status", "--ssd", str(ssd), "--store", str(store)],
+            env=_clean_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = result.stdout.splitlines()
+        assert "returned:1" in lines
+        assert "run_0_alert:DUE" in lines, "an unsent alert is DUE, never NOT_NEEDED"
+        assert "run_0_attempt:none" in lines
+        assert not any(store.iterdir()), "status stored nothing: it sent nothing"
+
+
+def test_status_on_an_unreadable_store_is_exit_2_not_nothing_due() -> None:
+    binary = _binary()
+    with tempfile.TemporaryDirectory(prefix="atp_data013_alert_l7_") as tmp:
+        store = Path(tmp) / "alerts"
+        store.mkdir()
+        (store / "notification_events.store").write_text("not a store\n")
+        ssd = Path(tmp) / "ssd"
+        _ingest_mixed(ssd)
+        result = subprocess.run(
+            [str(binary), "status", "--ssd", str(ssd), "--store", str(store)],
+            env=_clean_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "notification store unreadable" in result.stderr
+        assert "run_0_alert" not in result.stdout

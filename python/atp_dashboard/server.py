@@ -66,6 +66,7 @@ from .logs import LogPaneProvider
 from .navigation import PrimaryNavigationProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
+from .quarantine import QuarantinePaneProvider
 from .research import RESEARCH_PREFIX, UPSTREAM_ENV_KNOB, ResearchEnvironmentProvider
 from .reservoir import ReservoirRankingProvider
 
@@ -151,6 +152,15 @@ HOT_SWAP_SNAPSHOT_PATH = "/dashboard/api/hot-swap"
 #: mutation affordance.
 LOGS_SNAPSHOT_PATH = "/dashboard/api/logs"
 
+#: The SRS-DATA-013 quarantine pane's REST poll route: the newest ingestion runs
+#: with their quarantine counts and reasons (SyRS SYS-77), and each run's operator
+#: alert delivery. READ-ONLY: sending alerts is `data013_quarantine_alert_cli notify`.
+QUARANTINE_SNAPSHOT_PATH = "/dashboard/api/quarantine"
+
+#: Env knob naming the SRS-NOTIF-001 notification audit store directory the
+#: quarantine pane reads alert delivery from (the `--store` of the notify CLIs).
+NOTIFICATION_STORE_ENV_KNOB = "ATP_NOTIFICATION_STORE_DIR"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -176,6 +186,7 @@ def mount_dashboard(
     kill_switch: KillSwitchStatusProvider | None = None,
     hot_swap: HotSwapStatusProvider | None = None,
     logs: LogPaneProvider | None = None,
+    quarantine: QuarantinePaneProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -262,6 +273,12 @@ def mount_dashboard(
     pane never overstates that a stream is running. Strictly a READ: an audit
     trail has no dashboard-side mutation affordance. Without it the pane renders
     its explicit "not mounted" state — never an empty log table.
+
+    ``quarantine`` (optional — the SRS-DATA-013 quarantine-pane provider) adds the
+    ``GET /dashboard/api/quarantine`` poll route the Data Quarantine pane reads:
+    the newest ingestion runs with their counts and reasons, and each run's
+    operator-alert delivery. REST-served, no publisher channel, strictly a READ.
+    Without it the pane renders its explicit "not mounted" state.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -311,6 +328,8 @@ def mount_dashboard(
         runtime.register_meta_route(HOT_SWAP_SNAPSHOT_PATH, hot_swap.hot_swap_snapshot)
     if logs is not None:
         runtime.register_meta_route(LOGS_SNAPSHOT_PATH, logs.logs_snapshot)
+    if quarantine is not None:
+        runtime.register_meta_route(QUARANTINE_SNAPSHOT_PATH, quarantine.quarantine_snapshot)
     return DashboardPublisher(
         runtime,
         provider,
@@ -593,6 +612,15 @@ def mount_default_dashboard(
         kill_switch=kill_switch,
         hot_swap=HotSwapStatusProvider(hot_swap_source),
         logs=log_pane_provider(env),
+        # SRS-DATA-013: ALWAYS composed, so the shipped entrypoint serves the pane. Its
+        # sources are opt-in and independent: ATP_SSD_DATA_DIR (the catalogued SSD
+        # primary, beside which the quarantine store lives) and ATP_NOTIFICATION_STORE_DIR
+        # (the notification audit store). Unset, the pane says which one is missing —
+        # never "no quarantined records".
+        quarantine=QuarantinePaneProvider(
+            ssd_dir=env.get("ATP_SSD_DATA_DIR") or None,
+            notification_store_dir=env.get(NOTIFICATION_STORE_ENV_KNOB) or None,
+        ),
     )
 
 

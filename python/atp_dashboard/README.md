@@ -46,6 +46,15 @@ ReadinessBackedProvider ──payloads──▶ DashboardPublisher ──runtime
   is a fail-closed allow-list, so a navigation target is structurally incapable of
   carrying a direct service URL (the SYS-43 acceptance criterion); a rejected
   target is never echoed back.
+* **`quarantine.py`** (`SRS-DATA-013` / SyRS SYS-77) — the Data Quarantine pane,
+  served at `GET /dashboard/api/quarantine` and always composed by
+  `mount_default_dashboard`. It reads two legs independently: the counts and
+  reasons of the newest ingestion runs (`data013_ingestion_validation_cli summary`
+  over `ATP_SSD_DATA_DIR`), and each run's operator-alert delivery
+  (`data013_quarantine_alert_cli status` over `ATP_NOTIFICATION_STORE_DIR`, the
+  notification audit store). Read-only: sending alerts is
+  `data013_quarantine_alert_cli notify`. "Not configured", "store unreadable" and
+  "no runs yet" are distinct states, and none of them shows a count.
 
 ## Run
 

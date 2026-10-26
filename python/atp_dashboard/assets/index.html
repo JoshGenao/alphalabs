@@ -425,6 +425,85 @@
         </div>
       </section>
 
+      <!-- SRS-DATA-013 / SyRS SYS-77: the data-quarantine gate. Every ingestion
+           batch is a run in the durable quarantine store; the pane shows the
+           newest run as a GATE (records in → admitted to the SSD primary / held
+           in quarantine / not stored), the six SYS-77 reasons with their counts,
+           whether the operator alert got out on each channel, and a ledger of
+           the newest runs. Unconfigured, unreadable and "no runs yet" are three
+           different states, and none of them renders a count: a "0" here only
+           ever means a store was read and the run held nothing. -->
+      <section class="panel panel--wide panel--quarantine" data-panel="quarantine" style="--i:10">
+        <div class="panel__head">
+          <h2 class="panel__title">Data Quarantine</h2>
+          <span class="panel__meta"><span class="tag tag--chan">SYS-77</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-quarantine" aria-live="polite">
+          <div class="qgate" id="qgate" data-state="loading">
+            <div class="qgate__head">
+              <span class="qgate__glyph" aria-hidden="true">
+                <svg viewBox="0 0 32 32" width="30" height="30">
+                  <path d="M5 27 V9 L16 4 L27 9 V27" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                  <path d="M10 27 V14 H22 V27" fill="none" stroke="currentColor" stroke-width="1.6"/>
+                  <path class="qgate__bars" d="M14 14 V27 M18 14 V27" stroke="currentColor" stroke-width="1.6"/>
+                </svg>
+              </span>
+              <div class="qgate__headline">
+                <span class="qgate__kicker" id="qgate-kicker">latest run</span>
+                <span class="qgate__title" id="qgate-title">reading the quarantine store…</span>
+              </div>
+              <span class="qgate__stamp" id="qgate-stamp" title="">—</span>
+            </div>
+
+            <div class="qflow" id="qflow" role="img" aria-label="Latest run: no data">
+              <div class="qflow__in"><span class="qflow__num" id="qflow-in">—</span><span class="qflow__cap">records in</span></div>
+              <div class="qflow__track" id="qflow-track">
+                <span class="qflow__seg qflow__seg--admitted" id="qflow-admitted"></span>
+                <span class="qflow__seg qflow__seg--held" id="qflow-held"></span>
+                <span class="qflow__seg qflow__seg--unstored" id="qflow-unstored"></span>
+              </div>
+              <div class="qflow__out">
+                <span class="qflow__leg qflow__leg--admitted"><span class="qflow__num" id="qflow-admitted-n">—</span><span class="qflow__cap">admitted</span></span>
+                <span class="qflow__leg qflow__leg--held"><span class="qflow__num" id="qflow-held-n">—</span><span class="qflow__cap">held</span></span>
+                <span class="qflow__leg qflow__leg--unstored" id="qflow-unstored-leg" hidden><span class="qflow__num" id="qflow-unstored-n">—</span><span class="qflow__cap" id="qflow-unstored-cap">not stored</span></span>
+              </div>
+            </div>
+
+            <ol class="qreasons" id="qreasons" aria-label="Quarantined records by SYS-77 reason"></ol>
+
+            <div class="qalert" id="qalert" data-state="unknown">
+              <span class="qalert__label">operator alert</span>
+              <span class="qalert__text" id="qalert-text">alert status unknown</span>
+              <span class="qalert__chans" id="qalert-chans"></span>
+            </div>
+          </div>
+
+          <div class="qledger">
+            <div class="qledger__head">
+              <span class="qledger__title">Run ledger</span>
+              <span class="qledger__count" id="qledger-count">—</span>
+            </div>
+            <div class="qledger__scroll">
+              <table class="qledger__table" id="qledger-table" hidden>
+                <thead>
+                  <tr>
+                    <th scope="col">Recorded (UTC)</th>
+                    <th scope="col">Run</th>
+                    <th scope="col" class="num">In</th>
+                    <th scope="col" class="num">Admitted</th>
+                    <th scope="col" class="num">Held</th>
+                    <th scope="col">Reasons</th>
+                    <th scope="col">Primary write</th>
+                    <th scope="col">Alert</th>
+                  </tr>
+                </thead>
+                <tbody id="qledger-rows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- UI-4 kill-switch control + status feedback (SyRS SYS-44a / SYS-44b;
            traces SRS-SAFE-001 + SRS-SAFE-002). The five AC legs — cancellation,
            liquidation submission, timeout, notification, disconnect — are
@@ -436,7 +515,7 @@
            and labelled UNKNOWN — a leg the dashboard cannot observe must never
            look resolved, because a false "IB DISCONNECTED" is a lie about
            whether a liquidation completed. -->
-      <section class="panel panel--wide panel--killswitch" data-panel="killswitch" style="--i:10">
+      <section class="panel panel--wide panel--killswitch" data-panel="killswitch" style="--i:11">
         <div class="panel__head">
           <h2 class="panel__title">Kill Switch — Liquidate Sequence</h2>
           <span class="panel__meta"><span class="tag tag--chan">SYS-44a</span><span class="panel__cadence">poll</span></span>
@@ -514,7 +593,7 @@
            every live fact is DEFERRED to its SRS-RESV producer and drawn
            HATCHED. A swap moves REAL money, so an unobservable fact must never
            look resolved, and with no promotion candidate the control is inert. -->
-      <section class="panel panel--wide panel--hotswap" data-panel="hotswap" style="--i:11">
+      <section class="panel panel--wide panel--hotswap" data-panel="hotswap" style="--i:12">
         <div class="panel__head">
           <h2 class="panel__title">Hot-Swap — Changeover Console</h2>
           <span class="panel__meta"><span class="tag tag--chan">SYS-49a</span><span class="panel__cadence">poll</span></span>
@@ -602,7 +681,7 @@
            none yet, so the pane says so rather than letting a short table read
            as a quiet system. An unreadable store renders as an explicit error
            row, never as zero records. -->
-      <section class="panel panel--wide panel--logs" data-panel="logs" style="--i:12">
+      <section class="panel panel--wide panel--logs" data-panel="logs" style="--i:13">
         <div class="panel__head">
           <h2 class="panel__title">Persistent Logs</h2>
           <span class="panel__meta"><span class="tag tag--chan">LOGS</span><span class="panel__cadence">poll</span></span>

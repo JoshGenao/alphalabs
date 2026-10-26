@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research", "alerts", "logs"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research", "alerts", "quarantine", "logs"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -3564,8 +3564,363 @@
     setTimeout(pollLogs, POLL_MS);
   }
 
+  // ----- SRS-DATA-013 data-quarantine gate (REST poll) -------------------- //
+  // GET /dashboard/api/quarantine: the newest ingestion runs from the durable
+  // quarantine store (counts + the six SYS-77 reasons) and each run's operator
+  // alert delivery. Two legs, read independently by the provider, so an alert
+  // store failure blanks only the alert column. Every degraded branch clears
+  // the counts: a stale "4 admitted / 6 held" must never outlive the read that
+  // produced it, and no branch but a READ store ever renders a number.
+  const QUARANTINE_ROUTE = "/dashboard/api/quarantine";
+  const QUARANTINE_STATES = ["not_configured", "unreadable", "no_runs", "clean", "quarantined", "run_unreadable", "in_progress"];
+  const RUN_STATES = ["clean", "quarantined", "run_unreadable", "in_progress", "no_runs"];
+  // SYS-77 rule letter + the operator's name for each reason, in the store's order.
+  const QUARANTINE_REASONS = [
+    ["RANGE_VIOLATION", "a", "Range violation"],
+    ["OHLC_OUT_OF_BAND", "b", "OHLC out of band"],
+    ["NEGATIVE_VOLUME", "c", "Negative volume"],
+    ["NULL_REQUIRED_FIELD", "d", "Missing required field"],
+    ["DUPLICATE_RECORD", "e", "Duplicate record"],
+    ["OPTION_FIELD_MISSING", "f", "Option field missing"],
+  ];
+  const ALERT_TEXT = {
+    ALERTED: ["ok", "operator alerted"],
+    ALERTED_PROVISIONAL: ["warn", "alerted provisionally — the run has not finished"],
+    DUE: ["bad", "NOT YET DELIVERED — the next notify pass sends it"],
+    IN_PROGRESS: ["dim", "waiting out the 5-minute grace — the ingest may still be running"],
+    AWAITING_OUTCOME: ["warn", "run unfinished, nothing quarantined yet — nothing to send"],
+    NOT_NEEDED: ["dim", "nothing to alert — no records quarantined"],
+    SETTLED_UNVERIFIABLE: ["warn", "settled earlier — the run is unreadable now, so what was sent cannot be confirmed"],
+  };
+  const ALERT_SHORT = {
+    ALERTED: "alerted", ALERTED_PROVISIONAL: "provisional", DUE: "not delivered",
+    IN_PROGRESS: "grace", AWAITING_OUTCOME: "awaiting", NOT_NEEDED: "not needed",
+    SETTLED_UNVERIFIABLE: "unverifiable",
+  };
+  const CHANNEL_TONE = { DELIVERED: "ok", QUEUED: "ok", FAILED: "bad", SUPPRESSED: "warn" };
+  const CHANNEL_HINT = {
+    DELIVERED: "accepted by the destination",
+    QUEUED: "handed to this system's mail relay — not yet confirmed by the provider",
+    FAILED: "the send failed",
+    SUPPRESSED: "deliberately not sent",
+  };
+
+  function setQuarantineDot(state, title) {
+    const dot = $("fresh-quarantine");
+    if (dot) { dot.dataset.state = state; dot.title = title; }
+  }
+
+  function initQuarantine() {
+    const list = $("qreasons");
+    if (!list) return;
+    for (const [code, rule, name] of QUARANTINE_REASONS) {
+      const li = el("li", "qreason");
+      li.dataset.reason = code;
+      li.dataset.state = "unknown";
+      const n = el("span", "qreason__n"); n.textContent = "—";
+      const label = el("span", "qreason__name"); label.textContent = name;
+      const meta = el("span", "qreason__code"); meta.textContent = code;
+      const badge = el("span", "qreason__rule"); badge.textContent = rule;
+      badge.title = "SYS-77 rule (" + rule + ")";
+      li.title = name + " — SYS-77 rule (" + rule + "), " + code;
+      li.append(n, label, meta, badge);
+      list.appendChild(li);
+    }
+  }
+
+  function isCount(v) { return Number.isInteger(v) && v >= 0; }
+
+  // A segment's share of the flow; an empty one is removed, border and all.
+  function setSegment(id, share) {
+    const seg = $(id);
+    if (!seg) return;
+    seg.style.flexGrow = String(share);
+    seg.hidden = !(share > 0);
+  }
+
+  function utcStamp(ms) {
+    if (!isCount(ms)) return "—";
+    return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  // One leg's UNKNOWN: every count back to "—", the flow hatched, no rows.
+  function clearQuarantineData() {
+    for (const id of ["qflow-in", "qflow-admitted-n", "qflow-held-n", "qflow-unstored-n"]) {
+      const n = $(id); if (n) n.textContent = "—";
+    }
+    for (const seg of ["qflow-admitted", "qflow-held", "qflow-unstored"]) setSegment(seg, 0);
+    const leg = $("qflow-unstored-leg"); if (leg) leg.hidden = true;
+    const flow = $("qflow"); if (flow) { flow.dataset.known = "false"; flow.setAttribute("aria-label", "Latest run: no data"); }
+    for (const li of document.querySelectorAll("#qreasons .qreason")) {
+      li.dataset.state = "unknown";
+      li.querySelector(".qreason__n").textContent = "—";
+    }
+    const rows = $("qledger-rows"); if (rows) rows.textContent = "";
+    const table = $("qledger-table"); if (table) table.hidden = true;
+    const count = $("qledger-count"); if (count) count.textContent = "—";
+    const stamp = $("qgate-stamp"); if (stamp) { stamp.textContent = "—"; stamp.title = ""; }
+    renderQuarantineAlert(null, "alert status unknown");
+  }
+
+  function setGate(state, kicker, title) {
+    const gate = $("qgate");
+    if (gate) gate.dataset.state = state;
+    const k = $("qgate-kicker"); if (k) k.textContent = kicker;
+    const t = $("qgate-title"); if (t) t.textContent = title;
+  }
+
+  function quarantineUnavailable(reason, dot) {
+    clearQuarantineData();
+    setGate("unreadable", "pane unavailable", "quarantine status unavailable: " + reason);
+    setQuarantineDot(dot || "stale", "quarantine endpoint failing");
+  }
+
+  function renderQuarantine(snap) {
+    if (!snap || typeof snap !== "object" || !QUARANTINE_STATES.includes(snap.state)) {
+      quarantineUnavailable("malformed payload");
+      return;
+    }
+    const state = snap.state;
+    if (!RUN_STATES.includes(state)) {
+      clearQuarantineData();
+      if (state === "not_configured") {
+        setGate("not_configured", "not configured", String(snap.error || "no quarantine store configured"));
+        setQuarantineDot("wait", "no quarantine store configured");
+      } else {
+        setGate("unreadable", "store unreadable", String(snap.error || "the quarantine store could not be read"));
+        setQuarantineDot("stale", "quarantine store unreadable");
+      }
+      return;
+    }
+    // A store was read. Anything short of a well-formed run list is drift.
+    const runs = snap.runs;
+    if (!Array.isArray(runs) || !isCount(snap.total_runs) || (state === "no_runs") !== (runs.length === 0)) {
+      quarantineUnavailable("malformed run list");
+      return;
+    }
+    renderQuarantineLedger(runs, snap);
+    if (state === "no_runs") {
+      clearQuarantineData();
+      setGate("no_runs", "no runs yet", "The quarantine store holds no ingestion runs yet");
+      const count = $("qledger-count"); if (count) count.textContent = "0 runs recorded";
+      setQuarantineDot("fresh", "quarantine store read");
+      return;
+    }
+    const newest = runs[0];
+    renderQuarantineHeadline(state, newest);
+    const alerts = snap.alerts && typeof snap.alerts === "object" ? snap.alerts : {};
+    if (newest.alert && typeof newest.alert === "object") {
+      renderQuarantineAlert(newest.alert, null);
+    } else {
+      renderQuarantineAlert(null, "alert status unknown — " + String(alerts.error || "not reported"));
+    }
+    setQuarantineDot("fresh", "quarantine store read");
+  }
+
+  function renderQuarantineHeadline(state, run) {
+    const stamp = $("qgate-stamp");
+    if (stamp) {
+      stamp.textContent = run.status === "readable" ? utcStamp(run.recorded_at_millis) + "Z" : "—";
+      stamp.title = "run " + String(run.run_id);
+    }
+    if (run.status !== "readable") {
+      clearFlowAndReasons();
+      setGate("run_unreadable", "latest run · unreadable",
+        "Run " + String(run.run_id) + " could not be read: " + String(run.error || "unknown error"));
+      return;
+    }
+    const held = run.quarantined_total;
+    const written = run.primary === "WRITTEN" ? run.written : 0;
+    const unstored = run.records_in - held - written;
+    const kicker = {
+      quarantined: "latest run · quarantined", clean: "latest run · clean", in_progress: "latest run · in progress",
+    }[state];
+    let title;
+    if (run.primary === "PENDING") {
+      title = held + " of " + run.records_in + " records held so far — the run has not finished, so the primary write is unknown";
+    } else if (held > 0) {
+      title = held + " of " + run.records_in + " records held at the gate · " +
+        (run.primary === "WRITTEN" ? written + " admitted to the SSD primary" : "primary write " + run.primary + ", nothing stored");
+    } else {
+      title = run.primary === "WRITTEN"
+        ? "All " + run.records_in + " records passed validation · " + written + " admitted"
+        : "Nothing quarantined, but the primary write was " + run.primary + " — nothing stored";
+    }
+    setGate(state, kicker, title);
+
+    const flow = $("qflow");
+    if (flow) {
+      flow.dataset.known = "true";
+      flow.dataset.primary = run.primary;
+      flow.setAttribute("aria-label", "Latest run: " + run.records_in + " records in, " + written +
+        " admitted, " + held + " held" + (unstored > 0 ? ", " + unstored + " not stored" : ""));
+    }
+    $("qflow-in").textContent = String(run.records_in);
+    $("qflow-admitted-n").textContent = String(written);
+    $("qflow-held-n").textContent = String(held);
+    $("qflow-held-n").parentElement.dataset.zero = String(held === 0);
+    setSegment("qflow-admitted", written);
+    setSegment("qflow-held", held);
+    setSegment("qflow-unstored", Math.max(0, unstored));
+    const leg = $("qflow-unstored-leg");
+    if (leg) leg.hidden = unstored <= 0;
+    $("qflow-unstored-n").textContent = String(Math.max(0, unstored));
+    $("qflow-unstored-cap").textContent = run.primary === "PENDING" ? "outcome unknown" : "not stored";
+
+    for (const li of document.querySelectorAll("#qreasons .qreason")) {
+      const n = run.counts ? run.counts[li.dataset.reason] : undefined;
+      const known = isCount(n);
+      li.dataset.state = !known ? "unknown" : n > 0 ? "hit" : "zero";
+      li.querySelector(".qreason__n").textContent = known ? String(n) : "—";
+    }
+  }
+
+  function clearFlowAndReasons() {
+    for (const id of ["qflow-in", "qflow-admitted-n", "qflow-held-n"]) { const n = $(id); if (n) n.textContent = "—"; }
+    for (const seg of ["qflow-admitted", "qflow-held", "qflow-unstored"]) setSegment(seg, 0);
+    const leg = $("qflow-unstored-leg"); if (leg) leg.hidden = true;
+    const flow = $("qflow"); if (flow) { flow.dataset.known = "false"; flow.setAttribute("aria-label", "Latest run: unreadable"); }
+    for (const li of document.querySelectorAll("#qreasons .qreason")) {
+      li.dataset.state = "unknown";
+      li.querySelector(".qreason__n").textContent = "—";
+    }
+  }
+
+  function channelChip(name, outcome) {
+    const chip = el("span", "qchan");
+    const known = typeof outcome === "string" && CHANNEL_TONE[outcome];
+    chip.dataset.tone = known ? CHANNEL_TONE[outcome] : "unknown";
+    chip.textContent = name + " · " + (known ? outcome : "—");
+    chip.title = known ? name + ": " + CHANNEL_HINT[outcome] : name + ": not recorded on the stored alert";
+    return chip;
+  }
+
+  function renderQuarantineAlert(alert, unknownText) {
+    const box = $("qalert");
+    const text = $("qalert-text");
+    const chans = $("qalert-chans");
+    if (!box || !text || !chans) return;
+    chans.textContent = "";
+    const entry = alert && ALERT_TEXT[alert.state];
+    if (!entry) {
+      box.dataset.state = "unknown";
+      text.textContent = unknownText || "alert status unknown";
+      return;
+    }
+    box.dataset.state = entry[0];
+    text.textContent = entry[1];
+    const channels = alert.channels && typeof alert.channels === "object" ? alert.channels : null;
+    if (isCount(alert.attempt_at_millis) && channels) {
+      chans.append(channelChip("EMAIL", channels.EMAIL), channelChip("PUSH", channels.PUSH));
+      const at = el("span", "qalert__at");
+      at.textContent = "sent " + utcStamp(alert.attempt_at_millis) + "Z";
+      chans.appendChild(at);
+    }
+  }
+
+  function renderQuarantineLedger(runs, snap) {
+    const body = $("qledger-rows");
+    const table = $("qledger-table");
+    const count = $("qledger-count");
+    if (!body || !table) return;
+    body.textContent = "";
+    for (const run of runs) body.appendChild(quarantineRow(run));
+    table.hidden = runs.length === 0;
+    if (count) {
+      count.textContent = snap.truncated
+        ? "newest " + runs.length + " of " + snap.total_runs + " runs"
+        : runs.length + " run" + (runs.length === 1 ? "" : "s") + " recorded";
+    }
+  }
+
+  function runIdCell(runId) {
+    // Leading zeros dimmed, so the significant digits read first; the full id
+    // stays in the text (copyable) and the title.
+    const td = el("td", "qrun");
+    td.title = runId;
+    for (const part of runId.split("-")) {
+      if (td.childNodes.length) td.appendChild(document.createTextNode("-"));
+      const m = /^(0*)(\d+)$/.exec(part);
+      if (m) {
+        const z = el("span", "qrun__zeros"); z.textContent = m[1];
+        td.append(z, document.createTextNode(m[2]));
+      } else {
+        td.appendChild(document.createTextNode(part));
+      }
+    }
+    return td;
+  }
+
+  function quarantineRow(run) {
+    const tr = el("tr");
+    const readable = run.status === "readable";
+    tr.dataset.status = readable ? (run.quarantined_total > 0 ? "held" : "clean") : "unreadable";
+    const when = el("td", "qtime"); when.textContent = readable ? utcStamp(run.recorded_at_millis) : "—";
+    tr.append(when, runIdCell(String(run.run_id)));
+    if (!readable) {
+      const err = el("td", "qerr");
+      err.colSpan = 5;
+      err.textContent = "unreadable — " + String(run.error || "unknown error");
+      tr.appendChild(err);
+    } else {
+      const written = run.primary === "WRITTEN" ? run.written : null;
+      for (const [v, cls] of [[run.records_in, "num"], [written, "num"], [run.quarantined_total, "num qheld"]]) {
+        const td = el("td", cls);
+        td.textContent = v === null ? "—" : String(v);
+        tr.appendChild(td);
+      }
+      const reasons = el("td");
+      const strip = el("span", "qstrip");
+      for (const [code, rule, name] of QUARANTINE_REASONS) {
+        const n = run.counts ? run.counts[code] : undefined;
+        const cell = el("span", "qstrip__cell");
+        cell.dataset.state = !isCount(n) ? "unknown" : n > 0 ? "hit" : "zero";
+        cell.textContent = rule;
+        cell.title = name + ": " + (isCount(n) ? n : "unknown");
+        strip.appendChild(cell);
+      }
+      reasons.appendChild(strip);
+      const primary = el("td");
+      const chip = el("span", "qprimary");
+      chip.dataset.primary = String(run.primary);
+      chip.textContent = run.primary === "PENDING" ? "PENDING · unknown" : String(run.primary);
+      primary.appendChild(chip);
+      tr.append(reasons, primary);
+    }
+    const alertTd = el("td");
+    const achip = el("span", "qalertchip");
+    const state = run.alert && ALERT_SHORT[run.alert.state] ? run.alert.state : null;
+    achip.dataset.tone = state ? ALERT_TEXT[state][0] : "unknown";
+    achip.textContent = state ? ALERT_SHORT[state] : "unknown";
+    achip.title = state ? ALERT_TEXT[state][1] : "alert status unknown";
+    alertTd.appendChild(achip);
+    tr.appendChild(alertTd);
+    return tr;
+  }
+
+  async function pollQuarantine() {
+    try {
+      // Bounded: a stalled endpoint aborts to the unavailable branch within
+      // one poll rather than leaving the previous counts on screen.
+      const res = await fetch(QUARANTINE_ROUTE, { cache: "no-store", signal: AbortSignal.timeout(POLL_MS) });
+      if (res.ok) {
+        renderQuarantine(await res.json());
+      } else if (res.status === 404) {
+        clearQuarantineData();
+        setGate("not_configured", "not mounted", "quarantine pane not mounted — SRS-DATA-013 provider not composed on this runtime");
+        setQuarantineDot("wait", "quarantine route not mounted");
+      } else {
+        quarantineUnavailable("HTTP " + res.status);
+      }
+    } catch (_e) {
+      quarantineUnavailable("endpoint unreachable");
+    }
+    setTimeout(pollQuarantine, POLL_MS);
+  }
+
   // ----- boot ------------------------------------------------------------ //
   buildAll();
+  initQuarantine();
   initLogs();
   initBacktest();
   initReservoir();
@@ -3582,6 +3937,7 @@
   pollResearch();
   pollNavigation();
   pollAlerts();
+  pollQuarantine();
   pollKillSwitch();
   pollHotSwap();
   pollLogs();

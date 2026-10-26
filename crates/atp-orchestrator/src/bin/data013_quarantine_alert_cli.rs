@@ -16,37 +16,55 @@
 //! proves ntfy accepted the publish — the same limits as `notif001_operator_alert_cli`, whose help
 //! documents the transport environment this binary shares.
 //!
+//! `status` is the read-only twin the dashboard's quarantine pane reads: each of the newest runs'
+//! alert state, decided by the same rule and the same settlement markers a `notify` pass uses, with
+//! the per-channel outcome of the stored alert. It needs no transport configuration and sends
+//! nothing.
+//!
 //! ## Exit codes
 //!
-//! `0` when every due run was dispatched with both channels out (delivered, or queued at our
-//! relay) and stored — including the case where nothing was due. `1` when any due run failed to
-//! get out or to be stored. `2` for a bad invocation, an unusable transport configuration, or a
-//! store that cannot be read.
+//! `notify`: `0` when every due run was dispatched with both channels out (delivered, or queued at
+//! our relay) and stored — including the case where nothing was due. `1` when any due run failed
+//! to get out or to be stored. `status`: `0` when the status was read. Both: `2` for a bad
+//! invocation, an unusable transport configuration, or a store that cannot be read.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use atp_data::MAX_RUNS_READ;
 use atp_notification::{DeliveryOutcome, NotificationChannel, NotificationEvent, OperatorNotifier};
 use atp_orchestrator::operator_channels::{build_channels, reject_placeholder_secrets};
-use atp_orchestrator::quarantine_notification::{notify_quarantined_runs, RunAlert};
+use atp_orchestrator::quarantine_notification::{alert_status, notify_quarantined_runs, RunAlert};
+
+/// How many of the newest runs `status` reports when `--limit` is not given (the same default as
+/// `data013_ingestion_validation_cli summary`, so the pane's two legs cover the same runs).
+const DEFAULT_STATUS_LIMIT: usize = 20;
 
 const USAGE: &str = "\
 data013_quarantine_alert_cli — SRS-DATA-013 operator alert for quarantined records
 
 USAGE:
     data013_quarantine_alert_cli notify --ssd <dir> --store <dir>
+    data013_quarantine_alert_cli status --ssd <dir> --store <dir> [--limit <n>]
+
+COMMANDS:
+    notify   alert the operator to every due quarantine run, and settle finished runs
+    status   read-only: the alert state of the newest runs; sends and settles nothing
 
 OPTIONS:
     --ssd <dir>      the SSD primary directory; its quarantine store is <dir>/quarantine (required)
     --store <dir>    existing directory of the durable notification store (required)
+    --limit <n>      status only: how many of the newest runs, 1 to 200 (default 20)
 
 ENVIRONMENT:
-    The email + push transports, exactly as for notif001_operator_alert_cli (see its --help).
+    notify: the email + push transports, exactly as for notif001_operator_alert_cli (see its
+    --help). status reads no environment.
 
 EXIT CODES:
-    0  every due run got out on both channels and was stored (or nothing was due)
-    1  a due run's alert did not get out or was not stored, or a settlement
+    0  notify: every due run got out on both channels and was stored (or nothing
+       was due); status: the status was read
+    1  notify: a due run's alert did not get out or was not stored, or a settlement
        marker could not be written or is not valid
     2  bad invocation / unusable configuration / unreadable store
 ";
@@ -62,62 +80,141 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Notify,
+    Status,
+}
+
+#[derive(Debug)]
 struct Options {
+    command: Command,
     ssd: PathBuf,
     store: PathBuf,
+    /// `status` only; `notify` refuses `--limit`.
+    limit: usize,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (command, rest) = args
         .split_first()
         .ok_or_else(|| format!("missing command\n\n{USAGE}"))?;
-    if command != "notify" {
-        return Err(format!("unknown command '{command}'\n\n{USAGE}"));
-    }
-    let (mut ssd, mut store) = (None, None);
+    let command = match command.as_str() {
+        "notify" => Command::Notify,
+        "status" => Command::Status,
+        other => return Err(format!("unknown command '{other}'\n\n{USAGE}")),
+    };
+    let (mut ssd, mut store, mut limit) = (None, None, None);
     let mut iter = rest.iter();
     while let Some(flag) = iter.next() {
-        let slot = match flag.as_str() {
-            "--ssd" => &mut ssd,
-            "--store" => &mut store,
-            other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
+        let slot = match (flag.as_str(), command) {
+            ("--ssd", _) => &mut ssd,
+            ("--store", _) => &mut store,
+            ("--limit", Command::Status) => &mut limit,
+            (other, _) => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
         };
         let value = iter
             .next()
             .filter(|value| !value.starts_with("--"))
             .ok_or_else(|| format!("{flag} expects a value"))?;
-        *slot = Some(PathBuf::from(value));
+        // A repeated flag is refused, not last-wins: the operator could not tell which one
+        // took effect.
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("{flag} is given more than once"));
+        }
     }
-    let ssd = ssd.ok_or("--ssd <dir> is required")?;
-    let store = store.ok_or("--store <dir> is required")?;
+    let ssd = PathBuf::from(ssd.ok_or("--ssd <dir> is required")?);
+    let store = PathBuf::from(store.ok_or("--store <dir> is required")?);
     if !store.is_dir() {
         return Err(format!(
             "notification store directory {} does not exist",
             store.display()
         ));
     }
-    Ok(Options { ssd, store })
+    let limit = match limit {
+        None => DEFAULT_STATUS_LIMIT,
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(limit) if (1..=MAX_RUNS_READ).contains(&limit) => limit,
+            _ => {
+                return Err(format!(
+                    "--limit expects an integer from 1 to {MAX_RUNS_READ}, got '{raw}'"
+                ))
+            }
+        },
+    };
+    Ok(Options {
+        command,
+        ssd,
+        store,
+        limit,
+    })
+}
+
+fn now_millis() -> Result<u64, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "the system clock is before the epoch".to_string())?
+        .as_millis() as u64)
 }
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let options = parse(args)?;
+    match options.command {
+        Command::Notify => notify(&options),
+        Command::Status => status(&options),
+    }
+}
+
+/// Read-only: print each of the newest runs' alert state. Needs no transport configuration and
+/// sends nothing.
+fn status(options: &Options) -> Result<ExitCode, String> {
+    let report = alert_status(&options.ssd, &options.store, now_millis()?, options.limit)
+        .map_err(|err| err.to_string())?;
+    println!("notification_store:{}", options.store.display());
+    println!("total_runs:{}", report.total_runs);
+    println!("returned:{}", report.runs.len());
+    println!("invalid_markers:{}", report.invalid_markers.len());
+    for (i, marker) in report.invalid_markers.iter().enumerate() {
+        println!("invalid_marker_{i}:{marker}");
+    }
+    for (i, run) in report.runs.iter().enumerate() {
+        println!("run_{i}_id:{}", run.run_id);
+        println!("run_{i}_alert:{}", run.state.as_str());
+        println!("run_{i}_settled:{}", run.settled);
+        match &run.attempt {
+            None => println!("run_{i}_attempt:none"),
+            Some(event) => {
+                println!("run_{i}_attempt:stored");
+                println!(
+                    "run_{i}_attempt_at_millis:{}",
+                    event.dispatch_began_at_millis()
+                );
+                for delivery in event.deliveries() {
+                    println!(
+                        "run_{i}_channel_{}:{}",
+                        delivery.channel().as_str(),
+                        delivery.outcome().as_str()
+                    );
+                }
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn notify(options: &Options) -> Result<ExitCode, String> {
     reject_placeholder_secrets(&|key: &str| std::env::var(key).ok())?;
     let channels = build_channels().map_err(|err| {
         format!(
             "transport configuration is unusable: {err}. See notif001_operator_alert_cli --help."
         )
     })?;
-    let now_millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "the system clock is before the epoch".to_string())?
-        .as_millis() as u64;
-
     let report = notify_quarantined_runs(
         &options.ssd,
         &options.store,
         &OperatorNotifier::new(),
         &channels,
-        now_millis,
+        now_millis()?,
     )
     .map_err(|err| err.to_string())?;
 
@@ -223,6 +320,51 @@ mod tests {
     #[test]
     fn a_flag_cannot_consume_the_next_flag_as_its_value() {
         assert!(parse(&args(&["notify", "--ssd", "--store", "/tmp"])).is_err());
+    }
+
+    #[test]
+    fn a_repeated_flag_is_refused_rather_than_last_wins() {
+        let tmp = std::env::temp_dir();
+        let tmp = tmp.to_str().unwrap();
+        for command in ["notify", "status"] {
+            let err = parse(&args(&[
+                command, "--ssd", "/a", "--ssd", "/b", "--store", tmp,
+            ]))
+            .err()
+            .unwrap();
+            assert!(err.contains("more than once"), "{command}: {err}");
+        }
+    }
+
+    #[test]
+    fn status_takes_a_bounded_limit_and_notify_takes_none() {
+        let tmp = std::env::temp_dir();
+        let tmp = tmp.to_str().unwrap();
+        let options = parse(&args(&["status", "--ssd", "/a", "--store", tmp])).unwrap();
+        assert_eq!(
+            (options.command, options.limit),
+            (Command::Status, DEFAULT_STATUS_LIMIT)
+        );
+        let options = parse(&args(&[
+            "status", "--ssd", "/a", "--store", tmp, "--limit", "200",
+        ]))
+        .unwrap();
+        assert_eq!(options.limit, 200);
+        for bad in ["0", "201", "-1", "ten", ""] {
+            assert!(
+                parse(&args(&[
+                    "status", "--ssd", "/a", "--store", tmp, "--limit", bad
+                ]))
+                .is_err(),
+                "--limit {bad:?} was accepted"
+            );
+        }
+        let err = parse(&args(&[
+            "notify", "--ssd", "/a", "--store", tmp, "--limit", "5",
+        ]))
+        .err()
+        .unwrap();
+        assert!(err.contains("unknown flag '--limit'"), "{err}");
     }
 
     #[test]

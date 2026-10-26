@@ -1475,3 +1475,245 @@ body {
 @media (max-width: 860px) {
   .logs__split { grid-template-columns: 1fr; }
 }
+
+/* ======================================================================
+   SRS-DATA-013 — Data Quarantine gate (SyRS SYS-77)
+   The newest ingestion run drawn as a GATE: records in, split into those
+   admitted to the SSD primary, those HELD in quarantine (hazard-striped),
+   and those not stored. Six reason tiles carry the "nature" half of SYS-77.
+   The tone is set once, on .qgate[data-state], and everything inherits it.
+   UNKNOWN wears the 45° --deferred hatch and never a number: a "0" here
+   only ever means a store was read and the run held nothing.
+   ====================================================================== */
+.qgate {
+  --q-tone: var(--deferred);
+  display: flex; flex-direction: column; gap: 18px;
+  padding: 18px 20px 16px;
+  border: 1px solid color-mix(in srgb, var(--q-tone) 28%, var(--line));
+  border-radius: var(--radius-sm);
+  background:
+    radial-gradient(520px 160px at 0% 0%, color-mix(in srgb, var(--q-tone) 12%, transparent), transparent 70%),
+    var(--panel-2);
+  transition: border-color 260ms var(--ease);
+}
+.qgate[data-state="quarantined"] { --q-tone: var(--bad); }
+.qgate[data-state="clean"] { --q-tone: var(--ok); }
+.qgate[data-state="in_progress"] { --q-tone: var(--cyan); }
+.qgate[data-state="run_unreadable"] { --q-tone: var(--warn); }
+.qgate[data-state="unreadable"] { --q-tone: var(--bad); }
+
+.qgate__head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; }
+.qgate__glyph {
+  width: 46px; height: 46px; display: grid; place-items: center; border-radius: 12px;
+  color: var(--q-tone);
+  border: 1px solid color-mix(in srgb, var(--q-tone) 45%, transparent);
+  background: color-mix(in srgb, var(--q-tone) 9%, transparent);
+  box-shadow: 0 0 22px -8px var(--q-tone);
+}
+.qgate[data-state="not_configured"] .qgate__glyph,
+.qgate[data-state="no_runs"] .qgate__glyph,
+.qgate[data-state="loading"] .qgate__glyph { border-style: dashed; box-shadow: none; }
+/* The portcullis bars drop only when something is actually held. */
+.qgate__bars { opacity: 0.25; transition: opacity 260ms var(--ease); }
+.qgate[data-state="quarantined"] .qgate__bars { opacity: 1; }
+.qgate__headline { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.qgate__kicker {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--q-tone);
+}
+.qgate__title { font-size: 16px; font-weight: 600; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
+.qgate[data-state="unreadable"] .qgate__title { color: var(--bad); font-family: var(--mono); font-size: 12.5px; font-weight: 500; }
+.qgate__stamp {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* --- the flow: records in -> admitted | held | not stored --------------- */
+.qflow {
+  display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr);
+  grid-template-rows: auto auto; column-gap: 22px; row-gap: 10px; align-items: center;
+}
+.qflow__in { grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 2px; }
+.qflow__in .qflow__num { font-size: 40px; font-weight: 300; color: var(--ink); line-height: 1; }
+.qflow__num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.qflow__cap {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.qflow__track {
+  display: flex; gap: 3px; height: 22px; padding: 3px; border-radius: 8px;
+  border: 1px solid var(--line-strong); background: var(--panel);
+}
+.qflow[data-known="false"] .qflow__track {
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 22%, transparent) 0 3px, transparent 3px 6px);
+  border-style: dashed;
+}
+.qflow__seg {
+  flex: 0 1 0; min-width: 0; border-radius: 5px;
+  transition: flex-grow 520ms var(--ease);
+}
+/* An empty segment takes no room at all — not even its border. */
+.qflow__seg[hidden], .qflow__leg[hidden] { display: none; }
+.qflow__seg--admitted {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ok) 85%, white 15%), var(--ok));
+  box-shadow: 0 0 14px -4px var(--ok);
+}
+.qflow__seg--held {
+  background:
+    repeating-linear-gradient(135deg, color-mix(in srgb, black 28%, transparent) 0 6px, transparent 6px 12px),
+    var(--bad);
+  box-shadow: 0 0 16px -3px var(--bad);
+  animation: q-hazard-crawl 1.4s linear infinite;
+}
+.qflow__seg--unstored {
+  background: repeating-linear-gradient(45deg, var(--deferred) 0 2px, transparent 2px 5px);
+  border: 1px solid color-mix(in srgb, var(--deferred) 60%, transparent);
+}
+.qflow[data-primary="PENDING"] .qflow__seg--unstored {
+  background: repeating-linear-gradient(45deg, var(--cyan) 0 2px, transparent 2px 5px);
+  border-color: color-mix(in srgb, var(--cyan) 60%, transparent);
+}
+@keyframes q-hazard-crawl { to { background-position: 34px 0, 0 0; } }
+.qflow__out { display: flex; flex-wrap: wrap; gap: 8px 26px; }
+.qflow__leg { display: inline-flex; align-items: baseline; gap: 8px; }
+.qflow__leg .qflow__num { font-size: 22px; font-weight: 600; }
+.qflow__leg--admitted .qflow__num { color: var(--ok); }
+.qflow__leg--held .qflow__num { color: var(--bad); }
+.qflow__leg--held[data-zero="true"] .qflow__num { color: var(--ink-faint); }
+.qflow__leg--unstored .qflow__num { color: var(--ink-dim); }
+.qflow[data-known="false"] .qflow__leg .qflow__num { color: var(--ink-faint); }
+
+/* --- the six SYS-77 reasons ------------------------------------------- */
+.qreasons {
+  list-style: none; display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.qreason {
+  position: relative; display: flex; flex-direction: column; gap: 3px;
+  padding: 12px 14px 11px; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--panel);
+  transition: border-color 260ms var(--ease), background-color 260ms var(--ease);
+}
+.qreason__n {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 28px; font-weight: 600; line-height: 1.05; color: var(--ink-faint);
+}
+.qreason__name { font-size: 12.5px; color: var(--ink-dim); }
+.qreason__code {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The SYS-77 rule letter, as a corner badge. */
+.qreason__rule {
+  position: absolute; top: 10px; right: 10px;
+  width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase;
+  color: var(--ink-faint); border: 1px solid var(--line-strong);
+}
+.qreason[data-state="hit"] .qreason__rule {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+}
+.qreason[data-state="hit"] {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bad) 11%, transparent), transparent 75%), var(--panel);
+}
+.qreason[data-state="hit"]::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--bad);
+  box-shadow: 0 0 12px var(--bad);
+}
+.qreason[data-state="hit"] .qreason__n { color: var(--bad); }
+.qreason[data-state="hit"] .qreason__name { color: var(--ink); }
+.qreason[data-state="unknown"] {
+  border-style: dashed;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 14%, transparent) 0 3px, transparent 3px 6px);
+}
+
+/* --- operator alert strip --------------------------------------------- */
+.qalert {
+  --qa-tone: var(--deferred);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding-top: 14px; border-top: 1px dashed var(--line-strong);
+}
+.qalert[data-state="ok"] { --qa-tone: var(--ok); }
+.qalert[data-state="warn"] { --qa-tone: var(--warn); }
+.qalert[data-state="bad"] { --qa-tone: var(--bad); }
+.qalert[data-state="dim"] { --qa-tone: var(--ink-faint); }
+.qalert__label {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.qalert__text { font-size: 12.5px; color: var(--qa-tone); flex: 1 1 260px; min-width: 0; }
+.qalert[data-state="bad"] .qalert__text { font-weight: 600; }
+.qalert[data-state="unknown"] .qalert__text { color: var(--ink-dim); font-style: italic; }
+.qalert__chans { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.qalert__at { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.qchan, .qalertchip, .qprimary {
+  --c: var(--ink-faint);
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c) 38%, transparent);
+}
+.qchan[data-tone="ok"], .qalertchip[data-tone="ok"], .qprimary[data-primary="WRITTEN"] { --c: var(--ok); }
+.qchan[data-tone="warn"], .qalertchip[data-tone="warn"], .qprimary[data-primary="REFUSED"] { --c: var(--warn); }
+.qchan[data-tone="bad"], .qalertchip[data-tone="bad"], .qprimary[data-primary="FAILED"] { --c: var(--bad); }
+.qalertchip[data-tone="dim"] { --c: var(--ink-faint); }
+.qprimary[data-primary="PENDING"] { --c: var(--cyan); border-style: dashed; }
+.qchan[data-tone="unknown"], .qalertchip[data-tone="unknown"] {
+  border-style: dashed;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 18%, transparent) 0 2px, transparent 2px 4px);
+}
+
+/* --- run ledger ---------------------------------------------------------- */
+.qledger { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.qledger__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.qledger__title {
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-dim);
+}
+.qledger__count { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.qledger__scroll { overflow-x: auto; }
+.qledger__table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.qledger__table th {
+  text-align: left; padding: 6px 14px 6px 0; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim);
+  border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+}
+.qledger__table td {
+  padding: 8px 14px 8px 0; border-bottom: 1px solid var(--line); vertical-align: middle;
+  font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-dim); white-space: nowrap;
+}
+.qledger__table .num { text-align: right; }
+.qledger__table tbody tr { transition: background-color 160ms var(--ease); }
+.qledger__table tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.qledger__table tr[data-status="held"] td:first-child { box-shadow: inset 2px 0 0 var(--bad); padding-left: 10px; }
+.qledger__table tr[data-status="unreadable"] td:first-child { box-shadow: inset 2px 0 0 var(--warn); padding-left: 10px; }
+.qledger__table td:first-child { padding-left: 10px; }
+.qledger__table th:first-child { padding-left: 10px; }
+.qledger__table tr[data-status="held"] .qheld { color: var(--bad); font-weight: 600; }
+.qrun { color: var(--ink); font-size: 11.5px; }
+.qrun__zeros { opacity: 0.32; }
+.qerr { color: var(--warn); white-space: normal; }
+.qstrip { display: inline-flex; gap: 3px; }
+.qstrip__cell {
+  width: 17px; height: 17px; display: grid; place-items: center; border-radius: 4px;
+  font-size: 9px; font-weight: 600; text-transform: uppercase;
+  color: var(--ink-faint); border: 1px solid var(--line-strong);
+}
+.qstrip__cell[data-state="hit"] { color: #fff; background: var(--bad); border-color: var(--bad); }
+.qstrip__cell[data-state="unknown"] {
+  border-style: dashed;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 22%, transparent) 0 2px, transparent 2px 4px);
+}
+
+@media (max-width: 720px) {
+  .qgate__head { grid-template-columns: auto minmax(0, 1fr); }
+  .qgate__stamp { grid-column: 1 / -1; }
+  .qflow { grid-template-columns: 1fr; }
+  .qflow__in { grid-row: auto; flex-direction: row; align-items: baseline; gap: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qflow__seg--held { animation: none; }
+  .qflow__seg, .qreason, .qgate__bars { transition: none; }
+}

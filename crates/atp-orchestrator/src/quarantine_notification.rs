@@ -284,10 +284,7 @@ pub fn decide(run: &RunRead, alerted: &BTreeSet<String>, now_millis: u64) -> Due
             }
         }
         RunRead::Unreadable { run_id, error } => {
-            let summary = format!(
-                "{RUN_SUMMARY_PREFIX}{run_id}: UNREADABLE ({error}) — the count and nature of its \
-                 quarantined records cannot be reported; inspect the quarantine store"
-            );
+            let summary = describe_unreadable(run_id, error);
             if alerted.contains(&summary) {
                 return Due::Wait { in_progress: false };
             }
@@ -322,6 +319,15 @@ pub fn describe(run: &QuarantineRun) -> String {
         run.quarantined_total(),
         run.records_in,
         reasons.join(", "),
+    )
+}
+
+/// The operator-facing summary of a run that cannot be read. Like [`describe`], a pure function of
+/// what was observed, so it identifies the state it describes.
+pub fn describe_unreadable(run_id: &str, error: &impl std::fmt::Display) -> String {
+    format!(
+        "{RUN_SUMMARY_PREFIX}{run_id}: UNREADABLE ({error}) — the count and nature of its \
+         quarantined records cannot be reported; inspect the quarantine store"
     )
 }
 
@@ -360,6 +366,166 @@ fn reached_out(outcome: DeliveryOutcome) -> bool {
 /// The recording instant a run id carries in its leading 20 digits.
 fn recorded_at_from_run_id(run_id: &str) -> Option<u64> {
     parse_run_id(run_id)?.split('-').next()?.parse().ok()
+}
+
+// --------------------------------------------------------------------------- //
+// Alert status (read-only)
+// --------------------------------------------------------------------------- //
+
+/// Where one run stands with its operator alert, as the next [`notify_quarantined_runs`] pass
+/// would see it. Read without sending or settling anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertState {
+    /// Final, and it quarantined nothing: there is nothing to tell the operator.
+    NotNeeded,
+    /// Final, and its final state reached the operator on at least one channel.
+    Alerted,
+    /// Not final (`PENDING` past the grace period, or unreadable), and its CURRENT state reached
+    /// the operator. It is re-examined, and alerted again if it changes, until it finishes.
+    AlertedProvisional,
+    /// `PENDING` within the grace period: possibly an ingest still in progress.
+    InProgress,
+    /// `PENDING` past the grace period with nothing quarantined yet: nothing to send, not settled.
+    AwaitingOutcome,
+    /// Its current state has NOT reached the operator on any channel: the next pass sends it.
+    Due,
+    /// Settled by an earlier pass, but the run can no longer be read, so what it quarantined and
+    /// what was sent for it cannot be confirmed. A settled run is never re-examined.
+    SettledUnverifiable,
+}
+
+impl AlertState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotNeeded => "NOT_NEEDED",
+            Self::Alerted => "ALERTED",
+            Self::AlertedProvisional => "ALERTED_PROVISIONAL",
+            Self::InProgress => "IN_PROGRESS",
+            Self::AwaitingOutcome => "AWAITING_OUTCOME",
+            Self::Due => "DUE",
+            Self::SettledUnverifiable => "SETTLED_UNVERIFIABLE",
+        }
+    }
+}
+
+/// One run's alert status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunAlertStatus {
+    pub run_id: String,
+    pub state: AlertState,
+    /// A valid settlement marker exists for the run.
+    pub settled: bool,
+    /// The stored alert for the run's current state: for an alerted state, the newest one that
+    /// got out; otherwise the newest attempt (a `Due` run whose every channel failed has one).
+    /// `None` when nothing for this state is stored.
+    pub attempt: Option<NotificationEvent>,
+}
+
+/// The alert status of the newest runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertStatusReport {
+    /// Newest first, as [`QuarantineStore::read_latest`] orders them.
+    pub runs: Vec<RunAlertStatus>,
+    /// Every published run, including those beyond the limit.
+    pub total_runs: usize,
+    /// Markers that are not valid; their runs are treated as unsettled, as a pass treats them.
+    pub invalid_markers: Vec<String>,
+}
+
+/// The alert status of the newest `limit` runs beside `ssd_dir`, against the notification store
+/// at `store_dir`, at `now_millis`. Uses the same [`decide`] rule and the same settlement markers
+/// as [`notify_quarantined_runs`], so it reports what a pass would do, and it sends nothing.
+pub fn alert_status(
+    ssd_dir: &Path,
+    store_dir: &Path,
+    now_millis: u64,
+    limit: usize,
+) -> Result<AlertStatusReport, NotifyError> {
+    let latest = QuarantineStore::beside(ssd_dir)
+        .read_latest(limit)
+        .map_err(NotifyError::Quarantine)?;
+    let audit = NotificationEventStore::load_from_path(store_dir)
+        .map_err(NotifyError::NotificationStore)?;
+    let alerted = alerted_states(audit.events());
+    let settlement = read_settlement(store_dir)?;
+
+    let runs = latest
+        .runs
+        .iter()
+        .map(|run| {
+            let (run_id, summary) = match run {
+                RunRead::Readable(run) => (run.run_id.clone(), describe(run)),
+                RunRead::Unreadable { run_id, error } => {
+                    (run_id.clone(), describe_unreadable(run_id, error))
+                }
+            };
+            let settled = settlement.settled.contains(&run_id);
+            let state = classify(run, &summary, settled, &alerted, now_millis);
+            let reached = matches!(state, AlertState::Alerted | AlertState::AlertedProvisional);
+            let attempt = newest_attempt(audit.events(), &summary, reached).cloned();
+            RunAlertStatus {
+                run_id,
+                state,
+                settled,
+                attempt,
+            }
+        })
+        .collect();
+    Ok(AlertStatusReport {
+        runs,
+        total_runs: latest.total_runs,
+        invalid_markers: settlement.invalid,
+    })
+}
+
+/// One run's [`AlertState`]. `summary` is the run's current-state summary ([`describe`] or
+/// [`describe_unreadable`]); `settled` is whether it has a valid marker.
+fn classify(
+    run: &RunRead,
+    summary: &str,
+    settled: bool,
+    alerted: &BTreeSet<String>,
+    now_millis: u64,
+) -> AlertState {
+    if settled {
+        // A pass never re-examines a settled run, so neither does this.
+        return match run {
+            RunRead::Readable(run) if run.quarantined_total() == 0 => AlertState::NotNeeded,
+            RunRead::Readable(_) => AlertState::Alerted,
+            RunRead::Unreadable { .. } => AlertState::SettledUnverifiable,
+        };
+    }
+    match decide(run, alerted, now_millis) {
+        Due::Settle { clean: true } => AlertState::NotNeeded,
+        Due::Settle { clean: false } => AlertState::Alerted,
+        Due::Wait { in_progress: true } => AlertState::InProgress,
+        Due::Wait { in_progress: false } if alerted.contains(summary) => {
+            AlertState::AlertedProvisional
+        }
+        Due::Wait { in_progress: false } => AlertState::AwaitingOutcome,
+        Due::Alert { .. } => AlertState::Due,
+    }
+}
+
+/// The newest stored `DATA_QUARANTINE` event with exactly this summary; when `reached`, only one
+/// with at least one channel that got out.
+fn newest_attempt<'a>(
+    events: &'a [NotificationEvent],
+    summary: &str,
+    reached: bool,
+) -> Option<&'a NotificationEvent> {
+    events
+        .iter()
+        .filter(|event| event.trigger_kind() == TriggerKind::DataQuarantine)
+        .filter(|event| event.summary() == summary)
+        .filter(|event| {
+            !reached
+                || event
+                    .deliveries()
+                    .iter()
+                    .any(|delivery| reached_out(delivery.outcome()))
+        })
+        .max_by_key(|event| event.dispatch_began_at_millis())
 }
 
 // --------------------------------------------------------------------------- //
@@ -565,6 +731,81 @@ mod tests {
         assert!(
             summary.contains("WRITTEN (7 valid records stored)"),
             "{summary}"
+        );
+    }
+
+    /// `classify` over a readable run, with its own current summary.
+    fn state_of(
+        run: &QuarantineRun,
+        settled: bool,
+        alerted: &BTreeSet<String>,
+        now: u64,
+    ) -> AlertState {
+        classify(
+            &RunRead::Readable(run.clone()),
+            &describe(run),
+            settled,
+            alerted,
+            now,
+        )
+    }
+
+    #[test]
+    fn every_alert_state_is_reached_and_matches_what_a_pass_would_do() {
+        let none = BTreeSet::new();
+        let pending = run(PrimaryWrite::Pending, T, 2);
+        assert_eq!(
+            state_of(&pending, false, &none, LATE - 1),
+            AlertState::InProgress
+        );
+        assert_eq!(state_of(&pending, false, &none, LATE), AlertState::Due);
+        let provisional: BTreeSet<String> = [describe(&pending)].into();
+        assert_eq!(
+            state_of(&pending, false, &provisional, LATE),
+            AlertState::AlertedProvisional
+        );
+        let empty_pending = run(PrimaryWrite::Pending, T, 0);
+        assert_eq!(
+            state_of(&empty_pending, false, &none, LATE),
+            AlertState::AwaitingOutcome
+        );
+
+        let finished = run(PrimaryWrite::Written { records: 8 }, T, 2);
+        assert_eq!(state_of(&finished, false, &none, T), AlertState::Due);
+        let alerted: BTreeSet<String> = [describe(&finished)].into();
+        assert_eq!(state_of(&finished, false, &alerted, T), AlertState::Alerted);
+        assert_eq!(state_of(&finished, true, &none, T), AlertState::Alerted);
+        // A provisional alert is NOT the final state's alert: the final state is due.
+        assert_eq!(state_of(&finished, false, &provisional, T), AlertState::Due);
+
+        let clean = run(PrimaryWrite::Refused, T, 0);
+        assert_eq!(state_of(&clean, false, &none, T), AlertState::NotNeeded);
+        assert_eq!(state_of(&clean, true, &none, T), AlertState::NotNeeded);
+    }
+
+    #[test]
+    fn an_unreadable_run_is_due_then_provisional_and_never_clean() {
+        let run_id = "00000000000001000000-0000000001-000000";
+        let error = QuarantineStoreError::PrimaryDirectoryMissing;
+        let summary = describe_unreadable(run_id, &error);
+        let unreadable = RunRead::Unreadable {
+            run_id: run_id.to_string(),
+            error,
+        };
+        let none = BTreeSet::new();
+        assert_eq!(
+            classify(&unreadable, &summary, false, &none, T),
+            AlertState::Due
+        );
+        let alerted: BTreeSet<String> = [summary.clone()].into();
+        assert_eq!(
+            classify(&unreadable, &summary, false, &alerted, T),
+            AlertState::AlertedProvisional
+        );
+        // Settled earlier and unreadable now: what it held cannot be confirmed.
+        assert_eq!(
+            classify(&unreadable, &summary, true, &none, T),
+            AlertState::SettledUnverifiable
         );
     }
 

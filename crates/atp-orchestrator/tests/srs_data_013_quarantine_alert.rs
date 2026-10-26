@@ -20,7 +20,9 @@ use atp_notification::{
     NotificationChannelClient, NotificationEventStore, NotificationMessage, NotificationSeverity,
     OperatorNotifier, SharedChannelClient, TriggerKind,
 };
-use atp_orchestrator::quarantine_notification::{notify_quarantined_runs, NotifyError, RunAlert};
+use atp_orchestrator::quarantine_notification::{
+    alert_status, notify_quarantined_runs, AlertState, NotifyError, RunAlert,
+};
 
 const TS: i64 = 1_700_000_000;
 const OBSERVED_AT: u64 = 1_715_000_000;
@@ -389,4 +391,183 @@ fn a_damaged_marker_cannot_hide_a_run() {
         "its delivered state is recognised"
     );
     assert_eq!(sends.load(Ordering::SeqCst), 2, "and not sent again");
+}
+
+// --------------------------------------------------------------------------- //
+// The read-only status the dashboard pane reads
+// --------------------------------------------------------------------------- //
+
+/// The one `.qrun` file in the store (the tests that use this ingest exactly one run first).
+fn only_run_file(ssd: &Path) -> PathBuf {
+    fs::read_dir(ssd.join(QUARANTINE_DIRNAME))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "qrun"))
+        .unwrap()
+}
+
+#[test]
+fn status_reports_a_run_due_then_alerted_with_each_channel_outcome() {
+    let (ssd, nas, store) = dirs("status_alerted");
+    ingest_mixed(&ssd, &nas);
+
+    let before = alert_status(&ssd, &store, now(), 20).unwrap();
+    assert_eq!((before.total_runs, before.runs.len()), (1, 1));
+    let run = &before.runs[0];
+    assert_eq!(run.state, AlertState::Due, "not yet sent");
+    assert!(!run.settled);
+    assert!(run.attempt.is_none());
+    // Reading the status sent and stored nothing.
+    assert!(NotificationEventStore::load_from_path(&store)
+        .unwrap()
+        .events()
+        .is_empty());
+
+    let (channels, _) = channels(false);
+    notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
+
+    let after = alert_status(&ssd, &store, now(), 20).unwrap();
+    let run = &after.runs[0];
+    assert_eq!(run.state, AlertState::Alerted);
+    assert!(run.settled);
+    let attempt = run.attempt.as_ref().expect("the stored alert is reported");
+    let outcomes: Vec<(NotificationChannel, DeliveryOutcome)> = attempt
+        .deliveries()
+        .iter()
+        .map(|d| (d.channel(), d.outcome()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (NotificationChannel::Email, DeliveryOutcome::Queued),
+            (NotificationChannel::Push, DeliveryOutcome::Delivered),
+        ]
+    );
+}
+
+#[test]
+fn status_shows_a_failed_attempt_as_due_with_its_failures() {
+    let (ssd, nas, store) = dirs("status_failed");
+    ingest_mixed(&ssd, &nas);
+    let (failing, _) = channels(true);
+    notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &failing, now()).unwrap();
+
+    let status = alert_status(&ssd, &store, now(), 20).unwrap();
+    let run = &status.runs[0];
+    assert_eq!(
+        run.state,
+        AlertState::Due,
+        "no channel carried it, so it is still due"
+    );
+    assert!(!run.settled);
+    let attempt = run
+        .attempt
+        .as_ref()
+        .expect("the failed attempt is shown, not hidden");
+    assert!(attempt
+        .deliveries()
+        .iter()
+        .all(|d| d.outcome() == DeliveryOutcome::Failed));
+}
+
+#[test]
+fn status_names_exactly_the_runs_the_next_pass_sends() {
+    // The pane must not say "alerted" about a run the next pass would send, nor "due" about one
+    // it would leave alone: both read the same rule and the same markers.
+    let (ssd, nas, store) = dirs("status_agrees");
+    clean_runs(&ssd, &nas, 2);
+    ingest_mixed(&ssd, &nas);
+    clean_runs(&ssd, &nas, 1);
+    ingest_mixed(&ssd, &nas);
+
+    let status = alert_status(&ssd, &store, now(), 20).unwrap();
+    let due: Vec<String> = status
+        .runs
+        .iter()
+        .filter(|r| r.state == AlertState::Due)
+        .map(|r| r.run_id.clone())
+        .collect();
+    assert_eq!(due.len(), 2, "{status:?}");
+    assert_eq!(
+        status
+            .runs
+            .iter()
+            .filter(|r| r.state == AlertState::NotNeeded)
+            .count(),
+        3
+    );
+
+    let (channels, _) = channels(false);
+    let report =
+        notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
+    let mut sent: Vec<String> = report
+        .alerts
+        .iter()
+        .map(|a| match a {
+            RunAlert::Stored { run_id, .. } => run_id.clone(),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    sent.reverse(); // the pass goes oldest first; the status newest first
+    assert_eq!(sent, due);
+    let after = alert_status(&ssd, &store, now(), 20).unwrap();
+    assert!(
+        after.runs.iter().all(|r| r.state != AlertState::Due),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn status_on_a_settled_run_that_became_unreadable_does_not_claim_what_it_held() {
+    let (ssd, nas, store) = dirs("status_unverifiable");
+    ingest_mixed(&ssd, &nas);
+    let (channels, _) = channels(false);
+    notify_quarantined_runs(&ssd, &store, &OperatorNotifier::new(), &channels, now()).unwrap();
+    let file = only_run_file(&ssd);
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replacen("NEGATIVE_VOLUME", "NEGATIVE_VOLUMF", 1),
+    )
+    .unwrap();
+
+    let status = alert_status(&ssd, &store, now(), 20).unwrap();
+    assert_eq!(status.runs[0].state, AlertState::SettledUnverifiable);
+    assert!(status.runs[0].settled);
+}
+
+#[test]
+fn status_on_an_unreadable_store_is_an_error_not_nothing_to_report() {
+    let (ssd, nas, store) = dirs("status_errors");
+    ingest_mixed(&ssd, &nas);
+    assert!(matches!(
+        alert_status(&ssd, &store.join("not-there"), now(), 20),
+        Err(NotifyError::NotificationStore(_))
+    ));
+    assert!(matches!(
+        alert_status(&ssd.join("not-mounted"), &store, now(), 20),
+        Err(NotifyError::Quarantine(_))
+    ));
+}
+
+#[test]
+fn status_reports_the_same_newest_runs_as_the_summary_and_counts_them_all() {
+    let (ssd, nas, store) = dirs("status_limit");
+    ingest_mixed(&ssd, &nas);
+    clean_runs(&ssd, &nas, 4);
+    let status = alert_status(&ssd, &store, now(), 3).unwrap();
+    assert_eq!((status.total_runs, status.runs.len()), (5, 3));
+    let newest = atp_data::QuarantineStore::beside(&ssd)
+        .read_latest(3)
+        .unwrap();
+    let ids: Vec<String> = newest
+        .runs
+        .iter()
+        .map(|r| match r {
+            atp_data::RunRead::Readable(run) => run.run_id.clone(),
+            atp_data::RunRead::Unreadable { run_id, .. } => run_id.clone(),
+        })
+        .collect();
+    let status_ids: Vec<String> = status.runs.iter().map(|r| r.run_id.clone()).collect();
+    assert_eq!(status_ids, ids);
 }
