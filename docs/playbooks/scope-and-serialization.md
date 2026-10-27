@@ -196,6 +196,16 @@ WHERE the findings land, not how many there are. `(SRS-MD-005 r12)`
     tests. After the close it named a DONE feature as the thing being awaited, visible to
     the operator on the dashboard itself. Find the feature that genuinely owes the surface
     (here UI-1, whose own pane it is) and move the value there. `(NOTIF-001)`
+25b. **An attested close turns `main` red if any test pins the feature `passes:false`,
+    and no pre-close run can see it.** Scope-honesty pins (`assert entry["passes"] is
+    False`) are written while a feature is honestly incomplete, and they pass on every
+    branch run, every CI mirror and every review, because the flip has not happened yet.
+    SRS-DATA-013's close went red on exactly one: a pin from landing 1. Before committing a
+    close, run `close_feature.py ... --dry-run`, then grep for the pins and stale claims
+    (`git grep -n '"passes"\] is False'` and rule 18's list), add the id to
+    `SWEPT_FEATURES` in `tests/unit/test_closed_feature_references.py` and fix what it
+    flags, and only then flip. The ratchet will also flag its own new docstring if it names
+    the id beside "deferred". `(SRS-DATA-013 close, red main 9956873)`
 26. **Defer scope with a release tag, never by deleting or parking.** When the board
     deadlocks on work nobody needs yet, tag it `R2` in `docs/SRS.md` §3.1 and in the
     feature's `"release"` in `feature_list.json`. The scheduler skips R2 features AND

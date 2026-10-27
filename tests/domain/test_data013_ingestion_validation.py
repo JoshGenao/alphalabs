@@ -20,16 +20,15 @@ operator is told how many were rejected and why. This test proves the invariant 
      ``inspect`` confirms the persisted primary store holds only the valid records — the quarantined
      symbols/contract are absent.
 
-  3. Scope honesty — it pins that ``feature_list.json`` keeps SRS-DATA-013 ``passes:false``: the
-     data-layer validation core is verified here, but the AC's "dashboard and notification alerts"
-     display is deferred to the unbuilt SRS-UI-001 pane (SRS-NOTIF-001's notifier
-     landed; per the contract's ``deferred``),
-     so this slice cannot silently over-claim the requirement end to end.
+A third part, a scope-honesty pin that kept SRS-DATA-013 ``passes:false`` while the AC's
+"dashboard and notification alerts" were unbuilt, was retired when the feature closed on
+2026-10-27 (landing 3 built the dashboard pane; landing 2 the notification). The
+reference ratchet in ``tests/unit/test_closed_feature_references.py`` now lists this
+feature, so a stale reference to it fails there instead.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import tempfile
@@ -256,17 +255,3 @@ def test_operator_ingest_clis_use_the_real_validator_not_accept_all() -> None:
         assert "AcceptAllValidator" not in src, (
             f"{cli} must not accept every record via an accept-all validator stub"
         )
-
-
-# --------------------------------------------------------------------------- #
-# Scope honesty: SRS-DATA-013 stays passes:false (dashboard/notification display deferred).
-# --------------------------------------------------------------------------- #
-
-
-def test_feature_stays_passes_false_pending_dashboard_notification_e2e() -> None:
-    features = json.loads((REPO_ROOT / "feature_list.json").read_text(encoding="utf-8"))
-    entry = next(f for f in features if f["id"] == "SRS-DATA-013")
-    assert entry["passes"] is False, (
-        "SRS-DATA-013 must stay passes:false until the dashboard + notification alert display "
-        "(SRS-UI-001 / SRS-NOTIF-001) is verified end to end"
-    )

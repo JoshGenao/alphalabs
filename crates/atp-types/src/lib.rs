@@ -1296,8 +1296,9 @@ impl FundamentalStatements {
             return Err(FundamentalStatementsError::NonPositiveMarketValue { market_value_minor });
         }
         // Fields whose domain cannot be negative for a real statement fail closed so a corrupt
-        // bundle is never cataloged (the deferred SYS-77 validator, SRS-DATA-013, will add the full
-        // range rules; this is the point-of-use floor). Genuinely signed fields (net_income_minor,
+        // bundle is never cataloged. This point-of-use floor is the ONLY range check a statement
+        // gets: SRS-DATA-013's SYS-77 validator applies its range rules to OHLCV and option
+        // records, and to a fundamental record only the duplicate check. Genuinely signed fields (net_income_minor,
         // book_equity_minor, the cash flows) are intentionally NOT checked — a loss, negative book
         // value, or net cash outflow is legitimate.
         for (field, value_minor) in [

@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 #: Feature ids whose references have been audited. Add an id here as part of
 #: closing it — that is the point at which the sweep is cheap and the reasoning
 #: is fresh.
-SWEPT_FEATURES = frozenset({"SRS-NOTIF-001"})
+SWEPT_FEATURES = frozenset({"SRS-NOTIF-001", "SRS-DATA-013"})
 
 #: Paths that legitimately record history, where a past "deferred" statement is
 #: a true account of what was believed at the time.

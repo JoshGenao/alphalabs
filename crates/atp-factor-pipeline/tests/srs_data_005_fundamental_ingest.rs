@@ -35,7 +35,8 @@ use atp_types::{
     SecurityKey,
 };
 
-// ---- ingestion stubs (the concrete SYS-77 validator + alert sink are deferred SRS-DATA-013) -------
+// ---- ingestion stubs: this file tests SRS-DATA-005's own path, so it validates nothing and ------
+// ---- records nothing (SRS-DATA-013's SYS-77 validator and quarantine alerting have their own tests)
 
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
