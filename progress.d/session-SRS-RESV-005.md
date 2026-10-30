@@ -247,3 +247,49 @@ after RESV-002), then close with `--attested-by`. The gate, its ordering and all
 clauses are already proven offline and at the CLI.
 
 Blocked-on recorded via `agent_pool.py block SRS-RESV-005 --on SRS-RESV-002 SRS-RESV-006 SRS-EXE-006`.
+
+## Scope check, 2026-10-29 (operator: "Stop, fix the record")
+
+An operator session claimed this feature to close it, and stopped before writing code. The
+`Resume / next` block above named two blockers. One is gone and the other was understated.
+
+* **SRS-RESV-002 is not a blocker.** It moved to R2 on 2026-10-08, and `docs/SRS.md` 3.1
+  forbids an MVP feature waiting on R2: the MVP Hot-Swap is a MANUAL trigger. The UI-5
+  control needs an operator-chosen candidate, not a ranking. That selector is this
+  feature's own work. The edge is retracted (`agent_pool.py unblock --off SRS-RESV-002`).
+* **SRS-EXE-006 and SRS-ORCH-004 passing did not supply the safety inputs.**
+  `IbSession::positions` counts rows only (`DataBatch { records }`), with no symbols or
+  quantities, and no CLI or Python wrapper calls it. The deployed-version registry's only
+  non-test implementation is in-memory (`RetainingVersionRegistry`); the one durable copy
+  is `orch005_rollback_cli`'s state file behind a private loader. Both readers are this
+  feature's to build.
+* **The real blockers are other features' code.** "Starts live" goes through the live
+  execution host, which refuses `--transport ib` until SRS-EXE-001 landing 2 (recorded:
+  `block --on SRS-EXE-001`). The demotion that must precede promotion has no real side
+  effects: `SignalHalt`, `DemotionBrokerageControl`, `PaperTransition` and
+  `LivePositionSource` are `Fixture*` ports, and the promote CLI's `--liquidation` hard-codes
+  the wait-for-flat result. That is SRS-RESV-004's runtime.
+* **The RESV-004 edge is a cycle and was NOT recorded.** `block --on SRS-RESV-004` refused
+  it: SRS-RESV-004 already lists SRS-RESV-005, because `POST /api/v1/hot-swap` is this
+  feature's route. That reverse edge looks like a code edge (the route is on main), but
+  which direction is real is the operator's call. It is listed in
+  `docs/verification-queue.md` class D.
+
+The step 2 browser evidence stands as evidence of the WIRING: it ran on a stand-in
+candidate and `fixture_safety_inputs`. `scope-and-serialization.md` rule 17 is exactly this
+case, so it does not support an attested close.
+
+## Resume / next (supersedes the block above)
+
+`passes` stays **false**. In order:
+
+1. The operator settles the RESV-004 / RESV-005 cycle (`docs/verification-queue.md` class D).
+2. SRS-EXE-001 landing 2 lets the live host take real IB; SRS-RESV-004's demotion ports get
+   real runtimes.
+3. Then this feature's own work: a manual candidate selector in UI-5 (read the paper
+   strategies from the SIM-004 snapshot the promote CLI already loads), a positions reader
+   that returns symbols and quantities and keeps unreadable apart from flat, and a durable
+   deployed-version lookup. Replace `fixture_safety_inputs` with real sources at
+   `mount_hot_swap_execution`, and retire the `_RankingStandIn` in the browser test.
+4. The judgment critic stands at `block` with the round budget spent (16 rounds, 0 grants):
+   the next review round needs the operator's `--authorize-continue`.
