@@ -276,7 +276,12 @@ one `main`. Most of this playbook is about that sharing.
     'numpy'" as a broken contract; a CVE whose fix was excluded by the pin's own
     ceiling; and a Compose project name built from `tempfile.mkdtemp`, invalid only
     when the random suffix ended in `_`. When CI is red and local is green, ask what
-    the runner does NOT have rather than re-running. `(2026-08-14)`
+    the runner does NOT have rather than re-running. `(2026-08-14)` The mirror case: the
+    Python job builds cargo CLIs at test import but had no Rust setup step, so it leaned
+    on `rust-toolchain.toml` making rustup install 1.95.0 on demand. A runner image bump
+    (20261012 to 20261025) broke that install ("detected conflict: 'bin/cargo-clippy'")
+    and a docs-only commit went red. Every job that runs a tool installs that tool
+    explicitly, pinned, the same way the job that owns it does. `(2026-10-29, 89d97a6)`
 41. **A structural reviewer refusal reviews NONE of your diff — budget it as the whole
     review, not one finding.** `meta:critic-self-modification` (rule 13) does not sit
     alongside code findings; Codex returns that ONE finding and says nothing about anything
