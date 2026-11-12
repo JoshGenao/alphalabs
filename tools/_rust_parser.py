@@ -43,62 +43,20 @@ def _fn_block(source: str, fn_name: str) -> str:
     return source[start : index - 1]
 
 
-def _match_arm(body: str, pattern: str) -> str:
-    """Return the body of the match arm whose pattern matches ``pattern``.
+def _arm_end(body: str, start: int) -> int:
+    """Index one past the end of the match-arm expression starting at ``start``.
 
-    Looks for ``<pattern> =>`` and returns the expression up to the next
-    top-level ``,`` (skipping nested braces, parens, and string literals).
+    A BLOCK-bodied arm (``Pattern => { ... }``) ends at its closing brace:
+    Rust needs no comma after a block arm and rustfmt never writes one, so
+    scanning on to the next top-level ``,`` would swallow every arm after it.
+    Any other arm ends at the next top-level ``,`` or at the ``}`` that closes
+    the match. Braces, parens and string literals nest.
     """
-    arm_match = re.search(rf"{re.escape(pattern)}\s*=>\s*", body)
-    if not arm_match:
-        _fail(f"match body is missing arm for `{pattern}`")
-    start = arm_match.end()
     depth = 0
     index = start
     in_string = False
     string_char = ""
-    while index < len(body):
-        char = body[index]
-        if in_string:
-            if char == "\\" and index + 1 < len(body):
-                index += 2
-                continue
-            if char == string_char:
-                in_string = False
-        elif char in ('"', "'"):
-            in_string = True
-            string_char = char
-        elif char == "{" or char == "(":
-            depth += 1
-        elif char == "}" or char == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        elif char == "," and depth == 0:
-            break
-        index += 1
-    return body[start:index]
-
-
-def _variant_arm(body: str, variant_token: str) -> str:
-    """Return the body of the match arm whose pattern starts with
-    ``variant_token`` (e.g. ``LaunchReadiness::ReadyWithinDeadline``).
-    Handles both unit variants (``Variant =>``) and struct variants
-    (``Variant { field, .. } =>``). The arm body is everything up to
-    the next top-level ``,`` or the closing ``}`` of the match.
-    """
-    pattern = re.compile(
-        rf"{re.escape(variant_token)}\s*(?:\{{[^}}]*\}})?\s*=>\s*",
-        re.DOTALL,
-    )
-    arm_match = pattern.search(body)
-    if arm_match is None:
-        _fail(f"match body is missing arm for `{variant_token}`")
-    start = arm_match.end()
-    depth = 0
-    index = start
-    in_string = False
-    string_char = ""
+    block_arm = start < len(body) and body[start] == "{"
     while index < len(body):
         char = body[index]
         if in_string:
@@ -116,10 +74,41 @@ def _variant_arm(body: str, variant_token: str) -> str:
             if depth == 0:
                 break
             depth -= 1
+            if block_arm and depth == 0:
+                return index + 1
         elif char == "," and depth == 0:
             break
         index += 1
-    return body[start:index]
+    return index
+
+
+def _match_arm(body: str, pattern: str) -> str:
+    """Return the body of the match arm whose pattern matches ``pattern``.
+
+    Looks for ``<pattern> =>`` and returns the expression up to the next
+    top-level ``,`` (skipping nested braces, parens, and string literals).
+    """
+    arm_match = re.search(rf"{re.escape(pattern)}\s*=>\s*", body)
+    if not arm_match:
+        _fail(f"match body is missing arm for `{pattern}`")
+    return body[arm_match.end() : _arm_end(body, arm_match.end())]
+
+
+def _variant_arm(body: str, variant_token: str) -> str:
+    """Return the body of the match arm whose pattern starts with
+    ``variant_token`` (e.g. ``LaunchReadiness::ReadyWithinDeadline``).
+    Handles both unit variants (``Variant =>``) and struct variants
+    (``Variant { field, .. } =>``). The arm body is everything up to
+    the next top-level ``,`` or the closing ``}`` of the match.
+    """
+    pattern = re.compile(
+        rf"{re.escape(variant_token)}\s*(?:\{{[^}}]*\}})?\s*=>\s*",
+        re.DOTALL,
+    )
+    arm_match = pattern.search(body)
+    if arm_match is None:
+        _fail(f"match body is missing arm for `{variant_token}`")
+    return body[arm_match.end() : _arm_end(body, arm_match.end())]
 
 
 def _trait_body(source: str, name: str) -> str:

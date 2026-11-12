@@ -111,14 +111,14 @@ impl FreshnessSpy {
 }
 
 impl MarketDataFreshnessProbe for FreshnessSpy {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         self.freshness_calls.set(self.freshness_calls.get() + 1);
         self.state.get()
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
         self.staleness_calls.set(self.staleness_calls.get() + 1);
-        self.staleness_seconds.get()
+        Some(self.staleness_seconds.get())
     }
 }
 
@@ -128,11 +128,11 @@ impl MarketDataFreshnessProbe for FreshnessSpy {
 struct ForbiddenFreshness;
 
 impl MarketDataFreshnessProbe for ForbiddenFreshness {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         panic!("ERR-3: blocked-connectivity branch must not consult the freshness port");
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
         panic!("ERR-3: blocked-connectivity branch must not consult staleness_seconds");
     }
 }
@@ -247,7 +247,8 @@ fn err_3_stale_state_blocks_live_submission_with_no_broker_call() {
     assert_eq!(recorded[0].strategy_id.as_str(), "live-alpha-1");
     assert_eq!(recorded[0].symbol, "AAPL");
     assert_eq!(
-        recorded[0].staleness_seconds, 22,
+        recorded[0].staleness_seconds,
+        Some(22),
         "the event must carry the staleness reported by the freshness probe"
     );
     assert_eq!(
@@ -410,7 +411,198 @@ fn err_3_stale_state_holds_across_many_live_submissions() {
     );
     for (i, (_, symbol, _, staleness)) in cases.iter().enumerate() {
         assert_eq!(recorded[i].symbol, *symbol);
-        assert_eq!(recorded[i].staleness_seconds, *staleness);
+        assert_eq!(recorded[i].staleness_seconds, Some(*staleness));
         assert_eq!(recorded[i].state, MarketDataFreshness::Stale);
     }
+}
+
+// --------------------------------------------------------------------------- //
+// SRS-MD-004 contract obligation C2 — the PRODUCTION live entry points.
+//
+// `submit_live_order` is the inner gate; production reaches the broker through
+// `route_order` (the authority gate) and the live host through
+// `route_order_durably`. Each must block a stale line with MARKET_DATA_STALE and
+// zero broker calls, and resume once the line is fresh again.
+// --------------------------------------------------------------------------- //
+
+fn designated_engine(strategy: &str) -> ExecutionEngine {
+    let mut engine = ExecutionEngine::default();
+    let confirmation = atp_execution::LiveDesignationConfirmation::from_operator(
+        StrategyId::new(strategy),
+        "operator confirmed live designation",
+    )
+    .expect("non-empty acknowledgement yields a confirmation token");
+    engine
+        .designate(StrategyId::new(strategy), confirmation)
+        .expect("designation succeeds");
+    engine
+}
+
+#[test]
+fn srs_md_004_route_order_blocks_while_stale_and_resumes_when_fresh() {
+    let engine = designated_engine("live-alpha");
+    let broker = BrokerageSpy::default();
+    let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
+    let events = EventSinkSpy::default();
+    let freshness = FreshnessSpy::stale(21);
+    let stale_events = StaleEventSinkSpy::default();
+
+    let err = engine
+        .route_order(
+            submission("live-alpha", "AAPL", 10),
+            &broker,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
+        .expect_err("a stale line must block the designated live strategy");
+    assert_eq!(err.category, OrderErrorCategory::MarketDataStale);
+    assert_eq!(err.category.as_str(), "MARKET_DATA_STALE");
+    assert_eq!(err.error_type, "MarketDataStale");
+    assert_eq!(broker.calls.get(), 0, "no order may reach IB while stale");
+    assert_eq!(connectivity.reconnect_calls.get(), 0);
+    assert_eq!(stale_events.events.borrow().len(), 1);
+    assert_eq!(stale_events.events.borrow()[0].staleness_seconds, Some(21));
+
+    // Fresh data arrives: the very next submission reaches the broker once.
+    freshness.state.set(MarketDataFreshness::Fresh);
+    let receipt = engine
+        .route_order(
+            submission("live-alpha", "AAPL", 10),
+            &broker,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
+        .expect("submissions resume when fresh data is received");
+    assert_eq!(receipt.broker_order_id, "ib-AAPL");
+    assert_eq!(
+        broker.calls.get(),
+        1,
+        "exactly one broker call after recovery"
+    );
+    assert_eq!(
+        stale_events.events.borrow().len(),
+        1,
+        "a fresh submission publishes no stale event"
+    );
+}
+
+#[test]
+fn srs_md_004_unknown_staleness_age_is_reported_as_unknown_not_zero() {
+    struct NeverObserved;
+    impl MarketDataFreshnessProbe for NeverObserved {
+        fn freshness(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
+            MarketDataFreshness::Stale
+        }
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
+            None
+        }
+    }
+    let engine = designated_engine("live-alpha");
+    let broker = BrokerageSpy::default();
+    let stale_events = StaleEventSinkSpy::default();
+    let err = engine
+        .route_order(
+            submission("live-alpha", "AAPL", 10),
+            &broker,
+            &ConnectivitySpy::in_state(ConnectivityState::Connected),
+            &EventSinkSpy::default(),
+            &NeverObserved,
+            &stale_events,
+        )
+        .expect_err("a never-observed line is stale");
+    assert_eq!(err.category, OrderErrorCategory::MarketDataStale);
+    assert!(
+        err.message.contains("age unknown") && !err.message.contains("(0s"),
+        "an unknown age must not be printed as 0s: {}",
+        err.message
+    );
+    assert_eq!(stale_events.events.borrow()[0].staleness_seconds, None);
+    assert_eq!(broker.calls.get(), 0);
+}
+
+#[test]
+fn srs_md_004_durable_live_path_blocks_while_stale_and_marks_the_intent_terminal() {
+    use atp_execution::{DurableSubmitError, OrderOutbox, OutboxSnapshot};
+    use atp_types::{ClientCorrelationId, OrderKey, OrderState};
+
+    let dir = std::env::temp_dir().join(format!(
+        "atp-srs-md-004-durable-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let engine = designated_engine("live-alpha");
+    let broker = BrokerageSpy::default();
+    let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
+    let events = EventSinkSpy::default();
+    let freshness = FreshnessSpy::stale(30);
+    let stale_events = StaleEventSinkSpy::default();
+    let mut outbox = OrderOutbox::new();
+    let corr = |id: &str| ClientCorrelationId::new(id).expect("non-empty id");
+
+    let err = engine
+        .route_order_durably(
+            &mut outbox,
+            &dir,
+            corr("md004-1"),
+            submission("live-alpha", "AAPL", 10),
+            &broker,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
+        .expect_err("the live host's durable path must block a stale line");
+    match err {
+        DurableSubmitError::Rejected(rejection) => {
+            assert_eq!(rejection.category, OrderErrorCategory::MarketDataStale);
+        }
+        other => panic!("expected a MARKET_DATA_STALE rejection, got {other:?}"),
+    }
+    assert_eq!(broker.calls.get(), 0, "no order may reach IB while stale");
+    let reloaded = OutboxSnapshot::load_from_path(&dir)
+        .expect("the write-ahead record exists")
+        .into_outbox();
+    assert_eq!(
+        reloaded
+            .entry(&OrderKey::new(
+                StrategyId::new("live-alpha"),
+                corr("md004-1")
+            ))
+            .map(|entry| entry.state()),
+        Some(OrderState::Rejected),
+        "a stale-blocked intent is terminal, never resubmittable on restart"
+    );
+
+    freshness.state.set(MarketDataFreshness::Fresh);
+    engine
+        .route_order_durably(
+            &mut outbox,
+            &dir,
+            corr("md004-2"),
+            submission("live-alpha", "AAPL", 10),
+            &broker,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
+        .expect("the durable path resumes when fresh data is received");
+    assert_eq!(broker.calls.get(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

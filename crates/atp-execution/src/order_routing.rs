@@ -71,19 +71,22 @@
 //! with named owners (`architecture/runtime_services.json`
 //! `order_routing_contract.deferred[]`): the Python strategy host (SRS-SDK);
 //! live multi-leg composites (SRS-EXE-004); the simulated fill loop behind the
-//! port (SRS-SIM-002/003/004); the correlation-id idempotency key
-//! (SRS-EXE-008); and the simulated-order stale-data gate (SRS-MD-004).
+//! port (SRS-SIM-002/003/004); and the correlation-id idempotency key
+//! (SRS-EXE-008). The simulated-order stale-data gate (SRS-MD-004 / SYS-87)
+//! is built: [`dispatch_order`] consults the freshness port on the
+//! simulation arm before the simulation port sees the order.
 //!
 //! [`LiveBrokerageSubmit`]: crate::LiveBrokerageSubmit
 
 use atp_types::{
-    OrderErrorCategory, OrderReceipt, OrderSubmission, StrategyId, StructuredOrderError,
+    MarketDataFreshness, OrderErrorCategory, OrderReceipt, OrderSubmission, StaleDataEvent,
+    StrategyId, StructuredOrderError,
 };
 
 use crate::designation::LiveRoutingDecision;
 use crate::{
-    BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine, LiveBrokerageSubmit,
-    MarketDataFreshnessProbe, StaleDataEventSink,
+    describe_staleness, BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine,
+    LiveBrokerageSubmit, MarketDataFreshnessProbe, StaleDataEventSink,
 };
 
 /// The source-neutral routing destination for an order (SRS-EXE-002, SyRS
@@ -190,16 +193,20 @@ impl ExecutionEngine {
     ///     order (AC-10).
     ///
     /// AC-10 is about **not creating an IB order**; the simulation arm is free
-    /// to consult read-only gates. In particular the SRS-MD-004 / SYS-87
-    /// simulated-order stale-data gate (block a *simulated* submission when
-    /// market data is stale, returning `MARKET_DATA_STALE`) is a shared safety
-    /// gate this slice deliberately does **not** forbid on the paper path — but
-    /// it also does not yet implement it; that is SRS-MD-004's deliverable
-    /// (deferred; `dispatch_order` already receives the `freshness` port for
-    /// when MD-004 adds the check). `dispatch_order`'s only caller today is
-    /// the operator fixture-verification CLI (`exe002_order_routing_cli`)
-    /// over always-fresh fixture probes — the deployed strategy-runtime order
-    /// path is still unwired — so there is no live stale-data bypass today.
+    /// to consult read-only gates, and it consults one: the SRS-MD-004 /
+    /// SYS-87 simulated-order stale-data gate. A paper submission whose
+    /// subscribed market data is stale is rejected with `MARKET_DATA_STALE`
+    /// (the same category and `error_type` the live gate returns, so the
+    /// error contract is identical for live and paper per SYS-64), a
+    /// [`StaleDataEvent`](atp_types::StaleDataEvent) is published, and the
+    /// simulation port is never called. Paper does NOT check brokerage
+    /// connectivity: it never reaches IB, so an IB outage is not a reason to
+    /// refuse a simulated order.
+    ///
+    /// The gate sits on the simulation ARM, not before the route match: the
+    /// live arm already applies the same freshness gate inside
+    /// [`route_order`](Self::route_order), and checking twice would publish
+    /// two events for one rejection.
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch_order<B, C, E, F, S, P>(
         &self,
@@ -247,9 +254,36 @@ impl ExecutionEngine {
                     stale_events,
                 )
                 .map(OrderRoutingReceipt::Live),
-            OrderRoute::InternalSimulation => simulation
-                .submit_simulated(submission)
-                .map(OrderRoutingReceipt::Simulated),
+            OrderRoute::InternalSimulation => {
+                match freshness.freshness(&submission.symbol, submission.asset_class) {
+                    MarketDataFreshness::Fresh => simulation
+                        .submit_simulated(submission)
+                        .map(OrderRoutingReceipt::Simulated),
+                    MarketDataFreshness::Stale => {
+                        let staleness_seconds =
+                            freshness.staleness_seconds(&submission.symbol, submission.asset_class);
+                        stale_events.record(StaleDataEvent {
+                            state: MarketDataFreshness::Stale,
+                            strategy_id: submission.strategy_id.clone(),
+                            symbol: submission.symbol.clone(),
+                            staleness_seconds,
+                        });
+                        Err(StructuredOrderError {
+                            category: OrderErrorCategory::MarketDataStale,
+                            error_type: "MarketDataStale".to_string(),
+                            message: format!(
+                                "paper order submission for strategy `{}` blocked: \
+                                 subscribed market data for `{}` is stale ({}; \
+                                 threshold 15s per NFR-P5; SRS-MD-004)",
+                                submission.strategy_id.as_str(),
+                                submission.symbol,
+                                describe_staleness(staleness_seconds),
+                            ),
+                            original_order: submission,
+                        })
+                    }
+                }
+            }
         }
     }
 }
@@ -319,8 +353,8 @@ mod tests {
     // the InternalSimulation arm never reaches the IB-order-creating port, the
     // AC-10 invariant ("paper orders never create IB orders"). The read-only
     // connectivity/freshness gates are NOT panic-on-touch: the SRS-MD-004
-    // simulated-order stale-data gate (deferred) will legitimately consult
-    // freshness on the paper path.
+    // simulated-order stale-data gate legitimately consults freshness on the
+    // paper path.
     struct ForbiddenBroker;
 
     impl LiveBrokerageSubmit for ForbiddenBroker {
@@ -345,12 +379,20 @@ mod tests {
     struct AlwaysFresh;
 
     impl MarketDataFreshnessProbe for AlwaysFresh {
-        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        fn freshness(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
             MarketDataFreshness::Fresh
         }
 
-        fn staleness_seconds(&self, _symbol: &str) -> u64 {
-            0
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
+            None
         }
     }
 
@@ -434,7 +476,7 @@ mod tests {
         // never reach the IB-order-creating broker port (panic-on-touch
         // `ForbiddenBroker` — the AC-10 invariant). Read-only connectivity/
         // freshness gates are benign (SRS-MD-004's simulated-order stale gate
-        // will legitimately consult freshness on the paper path).
+        // legitimately consults freshness on the paper path).
         let engine = ExecutionEngine::default();
         let sim = SimulationSpy::default();
         let events = EventSinkSpy::default();

@@ -6,6 +6,11 @@ use std::fmt;
 /// to receive).
 pub mod live_feed;
 
+/// SRS-MD-004 - the thread-safe line-freshness store the order path reads,
+/// built over [`HeartbeatFreshnessMonitor`] and [`SequenceGapDetector`].
+pub mod freshness_board;
+pub use freshness_board::{FreshnessClock, GapTracking, LineFreshnessBoard, LineVerdict};
+
 /// SRS-MD-001 — the consolidated subscription registry.
 ///
 /// A separate module because its `subscribers` field must be invisible to this
@@ -275,20 +280,15 @@ pub const _SUBSCRIPTION_LIMIT_CATEGORY: OrderErrorCategory =
 // execution gate (`ExecutionEngine::submit_live_order`, via the
 // `MarketDataFreshnessProbe` port) rejects `MARKET_DATA_STALE` on.
 //
-// The runtime adapter that implements `MarketDataFreshnessProbe` from this
-// detector is the deferred orchestrator-layer half (atp-execution must not
-// depend on atp-market-data per SRS-ARCH-002). Note a real seam gap it must
-// close: the CURRENT `MarketDataFreshnessProbe` is SYMBOL-ONLY
-// (`freshness(&self, symbol: &str)`), while the detector is keyed on the full
-// [`SecurityKey`] (symbol + asset class). Faithfully bridging the two requires
-// the port to become security-aware — carry the `asset_class` the
-// `OrderSubmission` already holds, or a `SecurityKey` — which is a deferred
-// change on the SRS-MD-004 / ERR-3 port surface (see
-// `runtime_services.json` `sequence_gap_contract.deferred[]`). Until then an
-// equity and an option sharing a display ticker cannot be distinguished by the
-// symbol-only probe; the detector fails closed on options (they are never
-// tracked, so `freshness` returns `Stale`) and options are rejected upstream,
-// so equities — the only currently-tradable class — are unaffected.
+// SRS-MD-004 built the bridge: [`freshness_board::LineFreshnessBoard`] holds
+// this detector (when its provider supplies an upstream sequence,
+// `GapTracking::Tracked`) beside the heartbeat monitor, and
+// `atp-orchestrator`'s `BoardFreshnessProbe` implements
+// `MarketDataFreshnessProbe` over it (atp-execution must not depend on
+// atp-market-data per SRS-ARCH-002). The port is security-aware: it carries
+// the order's asset class, so the board canonicalizes to the same
+// [`SecurityKey`] this detector keys on, and an option (which a `SecurityKey`
+// cannot yet name) fails closed to `Stale`.
 
 /// Why a concrete [`SequenceGapEventSink`] failed to publish a gap event — a
 /// durable SRS-LOG-001 write error, a dashboard-transport failure, etc. Opaque
@@ -440,9 +440,10 @@ impl SecurityStreamState {
 /// returns `Stale` so the SRS-MD-004 bridge blocks orders on a silent line.
 ///
 /// The detector is single-threaded and models the structural sequence/
-/// staleness contract; the async feed loop, wall clock, `MarketDataFreshness
-/// Probe` bridge to `atp-execution`, and the SRS-LOG-001 / dashboard sinks are
-/// the deferred runtime (see `runtime_services.json`
+/// staleness contract. The thread-safe wrapper the order path reads is
+/// [`freshness_board::LineFreshnessBoard`] (SRS-MD-004); a producer that
+/// feeds it ticks with an upstream sequence, and the SRS-LOG-001 / dashboard
+/// sinks, are the deferred runtime (see `runtime_services.json`
 /// `sequence_gap_contract.deferred[]`).
 #[derive(Debug, Default)]
 pub struct SequenceGapDetector {

@@ -20,10 +20,13 @@
 //!   Every reply says `tier=FIXTURE`. `--fixture-wire-ledger` appends one line per
 //!   order that reached the gateway, which is how a test proves a rejected strategy
 //!   never got there (`wire-attempts:0`).
-//! * `--transport ib` — REFUSED. Every live order must pass the stale-data gate,
-//!   and no production freshness producer exists yet (owner SRS-MD-004). Starting a
-//!   live tier with a fixture "always fresh" probe would disable stale-data blocking
-//!   on real orders, so the host does not start that tier at all.
+//! * `--transport ib` — REFUSED. Every live order must pass the stale-data gate.
+//!   The production probe exists (SRS-MD-004: `BoardFreshnessProbe` over a
+//!   `LineFreshnessBoard`), but nothing in this host feeds that board from the live
+//!   IB tick stream yet: composing the SRS-MD-003 feed loop into the host is
+//!   SRS-EXE-001's IB-tier wiring. A board nobody feeds reads every line stale, and
+//!   a fixture "always fresh" probe would disable stale-data blocking on real
+//!   orders, so the host does not start that tier at all.
 
 use atp_adapters::{
     DataBatch, HistoricalDataRequest, HistoricalQueryResult, IbApiError, IbGatewayConnection,
@@ -55,8 +58,9 @@ FLAGS:
     --socket-dir <dir>             mode 0700 directory; each strategy gets <dir>/<strategy>/order.sock
                                    (required)
     --strategy <id>                a strategy to serve; repeat for each (at least one)
-    --transport <fixture|ib>       broker transport (required). `ib` is refused until a
-                                   real stale-data producer exists (SRS-MD-004)
+    --transport <fixture|ib>       broker transport (required). `ib` is refused until
+                                   the live tick feed is composed into the host's
+                                   freshness board (SRS-EXE-001)
     --fixture-wire-ledger <file>   fixture tier only: append one line per order that
                                    reached the gateway
 ";
@@ -192,10 +196,10 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Err(
                 "SRS-EXE-001 live execution host refused to start the live IB tier: every \
-                 live order must pass the stale-data gate, and no production market-data \
-                 freshness producer exists yet (owner SRS-MD-004). A fixture freshness probe \
-                 on real orders would disable stale-data blocking, so this tier stays closed \
-                 until SRS-MD-004 lands."
+                 live order must pass the stale-data gate, and this host does not yet feed \
+                 the production freshness board (SRS-MD-004) from the live IB tick stream \
+                 (owner SRS-EXE-001). A fixture freshness probe on real orders would disable \
+                 stale-data blocking, so this tier stays closed until that feed is composed."
                     .to_string(),
             )
         }

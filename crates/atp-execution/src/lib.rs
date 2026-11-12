@@ -6,12 +6,12 @@
 
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
-    ClientCorrelationId, CompositeOrderSubmission, ConnectivityEvent, ConnectivityState,
-    KillSwitchAlertEvent, KillSwitchCleanupOutcome, KillSwitchLiquidationOutcome,
-    KillSwitchTimeoutEvent, KillSwitchTimeoutRequest, MarketDataFreshness, OperatorAlertChannel,
-    OrderErrorCategory, OrderReceipt, OrderState, OrderSubmission, RuntimeService,
-    SideEffectOutcome, StaleDataEvent, StrategyMode, StructuredCompositeOrderError,
-    StructuredKillSwitchTimeoutError, StructuredOrderError,
+    AssetClass, ClientCorrelationId, CompositeOrderSubmission, ConnectivityEvent,
+    ConnectivityState, KillSwitchAlertEvent, KillSwitchCleanupOutcome,
+    KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest,
+    MarketDataFreshness, OperatorAlertChannel, OrderErrorCategory, OrderReceipt, OrderState,
+    OrderSubmission, RuntimeService, SideEffectOutcome, StaleDataEvent, StrategyMode,
+    StructuredCompositeOrderError, StructuredKillSwitchTimeoutError, StructuredOrderError,
 };
 use std::fmt;
 use std::path::Path;
@@ -209,16 +209,40 @@ pub trait ConnectivityEventSink {
 }
 
 /// ERR-3 / SRS-MD-004 / NFR-P5: port the execution engine consults at
-/// every live submission to decide whether the subscribed market data for
-/// the order's symbol is fresh enough to trade against. The implementation
-/// (later: the market-data subscription manager) owns the actual heartbeat
-/// timestamp / sequence-gap tracking and the configurable 15s threshold.
+/// every live AND paper submission to decide whether the subscribed market
+/// data for the order's security is fresh enough to trade against. The
+/// production implementation is `atp-orchestrator`'s `BoardFreshnessProbe`
+/// over `atp-market-data`'s `LineFreshnessBoard`, which owns the heartbeat
+/// timestamps, the optional sequence-gap tracking and the 15 s threshold.
 /// Defining the port at the execution layer keeps the data-freshness gate
 /// observable from execution without pulling `atp-execution` into a
 /// dependency on `atp-market-data` (SRS-ARCH-002 dependency direction).
+///
+/// **Security-aware.** Both methods take the asset class as well as the
+/// symbol, because a market-data line is identified by both: an equity and
+/// an option sharing a display ticker are different lines, and fresh
+/// underlying data says nothing about an option contract's quotes. A
+/// production implementation must fail closed (`Stale`) on any identity it
+/// cannot canonicalize.
+///
+/// **The verdict is authoritative; the age is descriptive.** The engine
+/// decides on [`freshness`](Self::freshness) alone and calls
+/// [`staleness_seconds`](Self::staleness_seconds) only to label a rejection
+/// it has already made. `None` means no age is known (the line was never
+/// observed, or the implementation cannot read its state) and must never be
+/// replaced by `0`, which would read as "just updated".
 pub trait MarketDataFreshnessProbe {
-    fn freshness(&self, symbol: &str) -> MarketDataFreshness;
-    fn staleness_seconds(&self, symbol: &str) -> u64;
+    fn freshness(&self, symbol: &str, asset_class: AssetClass) -> MarketDataFreshness;
+    fn staleness_seconds(&self, symbol: &str, asset_class: AssetClass) -> Option<u64>;
+}
+
+/// SRS-MD-004: the human-readable age shown in a `MARKET_DATA_STALE`
+/// rejection. An unknown age says so instead of printing a number.
+pub(crate) fn describe_staleness(staleness_seconds: Option<u64>) -> String {
+    match staleness_seconds {
+        Some(seconds) => format!("{seconds}s"),
+        None => "age unknown".to_string(),
+    }
 }
 
 /// ERR-3 / SRS-MD-004: structured-event sink the execution engine pushes a
@@ -581,63 +605,66 @@ impl ExecutionEngine {
     {
         match mode {
             StrategyMode::Live => match connectivity.state() {
-                ConnectivityState::Connected => match freshness.freshness(&submission.symbol) {
-                    // SRS-EXE-003 — VALIDATE the order on the live path immediately
-                    // before the broker-port call, AFTER the ERR-2/3 connectivity +
-                    // freshness reachability gates (those take precedence) but
-                    // BEFORE `broker.submit_order`, so a malformed order (blank
-                    // symbol / non-positive quantity / non-positive price) can
-                    // never reach the live broker even when a caller enters via
-                    // `submit_live_order` / `route_order` directly (the adapter
-                    // validation is defense-in-depth, not the only guard). The
-                    // rejection carries ORDER_PARAMETERS_INVALID — the dedicated
-                    // invalid-order-parameters category SRS-ERR-001 added — and the
-                    // precise reason in error_type. It is deliberately NOT
-                    // INVALID_SYMBOL: that category means the broker says the symbol
-                    // does not exist, which a non-positive quantity is not.
-                    // SRS-EXE-009: the durable-submit path already exists as
-                    // [`Self::route_order_durably`] (authority-gated: commit +
-                    // persist to the OUTBOX BEFORE the broker, bind the ack, mark a
-                    // rejection terminal). This pinned ERR-1/2/3 entry is NOT yet
-                    // routed through it — making the durable path the PRODUCTION one
-                    // (or making this non-durable path unreachable for live) is the
-                    // deferred SRS-EXE-001 runtime + Strategy Orchestrator, since it
-                    // re-architects this pinned contract (see
-                    // `outbox_reconciliation_contract.deferred[]`). SRS-EXE-009 stays
-                    // passes:false until that wiring + the real-IB restart
-                    // reconciliation e2e (NFR-R3) land.
-                    MarketDataFreshness::Fresh => match submission.validate() {
-                        Ok(()) => broker.submit_order(submission),
-                        Err(err) => Err(StructuredOrderError {
-                            category: OrderErrorCategory::OrderParametersInvalid,
-                            error_type: err.error_type().to_string(),
-                            message: err.to_string(),
-                            original_order: submission,
-                        }),
-                    },
-                    MarketDataFreshness::Stale => {
-                        let staleness_seconds = freshness.staleness_seconds(&submission.symbol);
-                        stale_events.record(StaleDataEvent {
-                            state: MarketDataFreshness::Stale,
-                            strategy_id: submission.strategy_id.clone(),
-                            symbol: submission.symbol.clone(),
-                            staleness_seconds,
-                        });
-                        Err(StructuredOrderError {
-                            category: OrderErrorCategory::MarketDataStale,
-                            error_type: "MarketDataStale".to_string(),
-                            message: format!(
-                                "live order submission for strategy `{}` blocked: \
-                                 subscribed market data for `{}` is stale ({}s; \
-                                 threshold 15s per NFR-P5; SRS-MD-004)",
-                                submission.strategy_id.as_str(),
-                                submission.symbol,
+                ConnectivityState::Connected => {
+                    match freshness.freshness(&submission.symbol, submission.asset_class) {
+                        // SRS-EXE-003 — VALIDATE the order on the live path immediately
+                        // before the broker-port call, AFTER the ERR-2/3 connectivity +
+                        // freshness reachability gates (those take precedence) but
+                        // BEFORE `broker.submit_order`, so a malformed order (blank
+                        // symbol / non-positive quantity / non-positive price) can
+                        // never reach the live broker even when a caller enters via
+                        // `submit_live_order` / `route_order` directly (the adapter
+                        // validation is defense-in-depth, not the only guard). The
+                        // rejection carries ORDER_PARAMETERS_INVALID — the dedicated
+                        // invalid-order-parameters category SRS-ERR-001 added — and the
+                        // precise reason in error_type. It is deliberately NOT
+                        // INVALID_SYMBOL: that category means the broker says the symbol
+                        // does not exist, which a non-positive quantity is not.
+                        // SRS-EXE-009: the durable-submit path already exists as
+                        // [`Self::route_order_durably`] (authority-gated: commit +
+                        // persist to the OUTBOX BEFORE the broker, bind the ack, mark a
+                        // rejection terminal). This pinned ERR-1/2/3 entry is NOT yet
+                        // routed through it — making the durable path the PRODUCTION one
+                        // (or making this non-durable path unreachable for live) is the
+                        // deferred SRS-EXE-001 runtime + Strategy Orchestrator, since it
+                        // re-architects this pinned contract (see
+                        // `outbox_reconciliation_contract.deferred[]`). SRS-EXE-009 stays
+                        // passes:false until that wiring + the real-IB restart
+                        // reconciliation e2e (NFR-R3) land.
+                        MarketDataFreshness::Fresh => match submission.validate() {
+                            Ok(()) => broker.submit_order(submission),
+                            Err(err) => Err(StructuredOrderError {
+                                category: OrderErrorCategory::OrderParametersInvalid,
+                                error_type: err.error_type().to_string(),
+                                message: err.to_string(),
+                                original_order: submission,
+                            }),
+                        },
+                        MarketDataFreshness::Stale => {
+                            let staleness_seconds = freshness
+                                .staleness_seconds(&submission.symbol, submission.asset_class);
+                            stale_events.record(StaleDataEvent {
+                                state: MarketDataFreshness::Stale,
+                                strategy_id: submission.strategy_id.clone(),
+                                symbol: submission.symbol.clone(),
                                 staleness_seconds,
-                            ),
-                            original_order: submission,
-                        })
+                            });
+                            Err(StructuredOrderError {
+                                category: OrderErrorCategory::MarketDataStale,
+                                error_type: "MarketDataStale".to_string(),
+                                message: format!(
+                                    "live order submission for strategy `{}` blocked: \
+                                 subscribed market data for `{}` is stale ({}; \
+                                 threshold 15s per NFR-P5; SRS-MD-004)",
+                                    submission.strategy_id.as_str(),
+                                    submission.symbol,
+                                    describe_staleness(staleness_seconds),
+                                ),
+                                original_order: submission,
+                            })
+                        }
                     }
-                },
+                }
                 state @ (ConnectivityState::Unreachable
                 | ConnectivityState::ScheduledRestartWindow) => {
                     events.record(ConnectivityEvent {
@@ -1053,8 +1080,15 @@ impl ExecutionEngine {
                     // order. Keying by underlying would conflate distinct contracts.
                     for leg in &submission.legs {
                         let symbol = leg.contract.canonical_key();
-                        if matches!(freshness.freshness(&symbol), MarketDataFreshness::Stale) {
-                            let staleness_seconds = freshness.staleness_seconds(&symbol);
+                        // The contract key with `AssetClass::Option`: a
+                        // production probe keys lines on the full identity
+                        // and fails closed on one it cannot canonicalize.
+                        if matches!(
+                            freshness.freshness(&symbol, AssetClass::Option),
+                            MarketDataFreshness::Stale
+                        ) {
+                            let staleness_seconds =
+                                freshness.staleness_seconds(&symbol, AssetClass::Option);
                             stale_events.record(StaleDataEvent {
                                 state: MarketDataFreshness::Stale,
                                 strategy_id: submission.strategy_id.clone(),
@@ -1067,10 +1101,10 @@ impl ExecutionEngine {
                                 message: format!(
                                     "live composite submission for strategy `{}` blocked: \
                                      subscribed market data for leg option contract `{}` is stale \
-                                     ({}s; threshold 15s per NFR-P5; SRS-MD-004)",
+                                     ({}; threshold 15s per NFR-P5; SRS-MD-004)",
                                     submission.strategy_id.as_str(),
                                     symbol,
-                                    staleness_seconds,
+                                    describe_staleness(staleness_seconds),
                                 ),
                                 original_order: submission,
                             });
@@ -1509,11 +1543,19 @@ mod tests {
     struct AlwaysFresh;
 
     impl MarketDataFreshnessProbe for AlwaysFresh {
-        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        fn freshness(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
             MarketDataFreshness::Fresh
         }
 
-        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
             panic!("staleness_seconds must not be consulted when freshness is Fresh");
         }
     }
@@ -1523,11 +1565,19 @@ mod tests {
     struct ForbiddenFreshness;
 
     impl MarketDataFreshnessProbe for ForbiddenFreshness {
-        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        fn freshness(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
             panic!("freshness must not be consulted on this branch");
         }
 
-        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
             panic!("staleness_seconds must not be consulted on this branch");
         }
     }
@@ -1841,13 +1891,21 @@ mod tests {
     }
 
     impl MarketDataFreshnessProbe for StubFreshness {
-        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        fn freshness(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
             self.freshness_calls.set(self.freshness_calls.get() + 1);
             self.state
         }
 
-        fn staleness_seconds(&self, _symbol: &str) -> u64 {
-            self.staleness_seconds
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
+            Some(self.staleness_seconds)
         }
     }
 
@@ -1910,7 +1968,7 @@ mod tests {
         assert_eq!(recorded[0].state, MarketDataFreshness::Stale);
         assert_eq!(recorded[0].strategy_id.as_str(), "live-alpha");
         assert_eq!(recorded[0].symbol, "AAPL");
-        assert_eq!(recorded[0].staleness_seconds, 22);
+        assert_eq!(recorded[0].staleness_seconds, Some(22));
         assert_eq!(freshness.freshness_calls.get(), 1);
     }
 
@@ -1970,7 +2028,11 @@ mod tests {
     }
 
     impl MarketDataFreshnessProbe for StaleForSymbol {
-        fn freshness(&self, symbol: &str) -> MarketDataFreshness {
+        fn freshness(
+            &self,
+            symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> MarketDataFreshness {
             if symbol == self.stale_symbol {
                 MarketDataFreshness::Stale
             } else {
@@ -1978,8 +2040,12 @@ mod tests {
             }
         }
 
-        fn staleness_seconds(&self, _symbol: &str) -> u64 {
-            self.staleness_seconds
+        fn staleness_seconds(
+            &self,
+            _symbol: &str,
+            _asset_class: atp_types::AssetClass,
+        ) -> Option<u64> {
+            Some(self.staleness_seconds)
         }
     }
 
@@ -2133,7 +2199,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         // The event names the SPECIFIC stale contract, not the underlying.
         assert_eq!(recorded[0].symbol, "SPY:20240621:C:52000000");
-        assert_eq!(recorded[0].staleness_seconds, 30);
+        assert_eq!(recorded[0].staleness_seconds, Some(30));
     }
 
     #[test]

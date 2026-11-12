@@ -54,7 +54,7 @@
 //! submitting through `dispatch_order`, authored by the Python strategy host
 //! (SRS-SDK runtime / SRS-ORCH-*), the
 //! `ClientCorrelationId` idempotency key on the shared envelope (SRS-EXE-008),
-//! the simulated-order stale-data gate (SRS-MD-004), the live composite
+//! the live composite
 //! multi-leg envelope (SRS-EXE-004), and the SIM-002 fill-loop evolution that
 //! rests limit/stop orders for later fills (today's shipped SIM-002 flow fills
 //! marketable orders instantly; the book rests what routing accepted).
@@ -489,19 +489,21 @@ impl BrokerageConnectivity for HealthyConnectivityFixture {
     fn request_reconnect(&self) {}
 }
 
-/// Fresh-market-data fixture for scenario verification (the live-leg ERR-3
-/// gate consults it; SRS-MD-004 owns the real probe and the deferred
-/// simulated-order staleness gate).
+/// Fresh-market-data fixture for scenario verification: both the live-leg
+/// ERR-3 gate and the paper-leg SRS-MD-004 gate consult it, and it always
+/// answers fresh. The production probe is
+/// [`BoardFreshnessProbe`](crate::market_data_freshness::BoardFreshnessProbe);
+/// this fixture belongs only to fixture-tier scenarios.
 #[derive(Debug, Default)]
 pub struct FreshMarketDataFixture;
 
 impl MarketDataFreshnessProbe for FreshMarketDataFixture {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         MarketDataFreshness::Fresh
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        0
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        None
     }
 }
 

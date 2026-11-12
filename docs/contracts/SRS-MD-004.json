@@ -9,11 +9,17 @@
     "SN-1.29",
     "SN-2.04"
   ],
-  "scope": "A production MarketDataFreshnessProbe backed by SRS-MD-003's HeartbeatFreshnessMonitor, consulted by the live order path (route_order) and the paper order path (dispatch_order), so that stale subscribed data blocks submissions with MARKET_DATA_STALE and fresh data resumes them. Unblocks the live execution host's ib tier (crates/atp-orchestrator/src/bin/live_execution_host.rs:189), which refuses to start without a non-fixture probe. Also closes ERR-3's paper half (crates/atp-execution/src/order_routing.rs:197).",
+  "scope": "A production MarketDataFreshnessProbe (atp-orchestrator BoardFreshnessProbe) answered from a shared, thread-safe LineFreshnessBoard in atp-market-data that wraps SRS-MD-003's HeartbeatFreshnessMonitor (and, for providers with an upstream sequence, SRS-MD-007's SequenceGapDetector via combined_line_freshness), evaluated at read time on one monotonic clock. The live order path (route_order and route_order_durably, through submit_live_order) and the paper order path (dispatch_order's InternalSimulation arm, new) consult it, so stale subscribed data blocks submissions with MARKET_DATA_STALE and fresh data resumes them. The port becomes security-aware (symbol + asset class) and age-honest (staleness_seconds: Option<u64>). Closes ERR-3's paper half. Does NOT feed the board from the live IB tick stream: composing the SRS-MD-003 feed loop into the live execution host is SRS-EXE-001's IB-tier wiring, so that tier stays refused.",
   "implementation_paths": [
+    "crates/atp-market-data/src/freshness_board.rs",
+    "crates/atp-market-data/src/lib.rs",
+    "crates/atp-orchestrator/src/market_data_freshness.rs",
     "crates/atp-execution/src/lib.rs",
     "crates/atp-execution/src/order_routing.rs",
-    "crates/atp-market-data/src/lib.rs"
+    "crates/atp-types/src/lib.rs",
+    "crates/atp-orchestrator/src/bin/live_execution_host.rs",
+    "tools/freshness_check.py",
+    "architecture/runtime_services.json"
   ],
   "interfaces": {
     "consumes": [
@@ -26,14 +32,27 @@
         "name": "MarketDataFreshnessProbe",
         "path": "crates/atp-execution/src/lib.rs",
         "symbol": "pub trait MarketDataFreshnessProbe"
+      },
+      {
+        "name": "SequenceGapDetector",
+        "path": "crates/atp-market-data/src/lib.rs",
+        "symbol": "pub struct SequenceGapDetector"
       }
     ],
     "provides": [
       {
-        "name": "production MarketDataFreshnessProbe adapter",
+        "name": "production MarketDataFreshnessProbe adapter (BoardFreshnessProbe)",
+        "path": "crates/atp-orchestrator/src/market_data_freshness.rs",
         "consumers": [
           "SRS-EXE-001",
           "SRS-MD-007"
+        ]
+      },
+      {
+        "name": "LineFreshnessBoard writer API (watch / observe_security / observe_tick)",
+        "path": "crates/atp-market-data/src/freshness_board.rs",
+        "consumers": [
+          "SRS-EXE-001"
         ]
       }
     ]
@@ -59,9 +78,17 @@
     {
       "id": "C3",
       "level": "component",
-      "criterion": "Given the probe reports an instrument stale, a paper submission for it through dispatch_order returns MARKET_DATA_STALE, produces no simulated fill, and creates no IB order; after the probe reports fresh, the next paper submission is accepted and filled by the simulator.",
+      "criterion": "Given the probe reports an instrument stale, a paper submission for it through dispatch_order returns MARKET_DATA_STALE, reaches no simulation port and creates no IB order; after the probe reports fresh, the next paper submission is accepted by the simulation port.",
       "tests": [
         "cargo test -p atp-execution --test srs_md_004_paper_stale_gate"
+      ]
+    },
+    {
+      "id": "C4",
+      "level": "component",
+      "criterion": "Through the shipped composition (LineFreshnessBoard + BoardFreshnessProbe + ExecutionEngine::dispatch_order + WiredPaperSimulation + IbBrokerageBridge over a recording gateway), with fixture market data and an injected clock: a subscribed line that never ticked or has been silent for more than 15 s blocks both the designated live strategy's order and a paper strategy's order with MARKET_DATA_STALE and creates no IB order and no resting paper order; after a tick, the next live order reaches the IB bridge exactly once and the next paper order rests in the VirtualOrderBook.",
+      "tests": [
+        "cargo test -p atp-orchestrator --test srs_md_004_stale_gate_wired"
       ]
     },
     {
@@ -82,12 +109,14 @@
     }
   ],
   "completion_evidence": [
-    "tools/evidence.py run SRS-MD-004 --obligation C1|C2|C3 -- <the listed test>, each exit 0 at the evidenced commit",
+    "tools/evidence.py run SRS-MD-004 --obligation C1|C2|C3|C4 -- <the listed test>, each exit 0 at the evidenced commit",
     "an approving tools/adversarial_review.py round at that commit (the reviewer receives this contract)",
-    "agent_pool.py integrate SRS-MD-004 --mode implemented, which re-runs C1-C3 itself"
+    "agent_pool.py integrate SRS-MD-004 --mode implemented, which re-runs C1-C4 itself"
   ],
   "limitations": [
-    "C1 and C3 name tests this feature must add; they do not exist yet.",
+    "C3 proves acceptance by the simulation port, not a simulated fill: WiredPaperSimulation accepts and rests orders, and the fill loop behind it is SRS-SIM-002/003/004. C4 shows the real PaperSimulationEngine accepting and resting the order.",
+    "No production producer feeds a LineFreshnessBoard yet. The live execution host's IB tier stays refused until SRS-EXE-001 composes the SRS-MD-003 feed loop into a board; dispatch_order's current callers are fixture-tier scenarios.",
+    "Option lines always read Stale: a SecurityKey cannot carry an option contract identity yet (SRS-MD-001 / SRS-DATA-004).",
     "I1 needs an operator-gated IB paper-gateway window and is not a component criterion."
   ]
 }

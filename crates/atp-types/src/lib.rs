@@ -789,9 +789,10 @@ impl MarketDataAdmission {
 //
 // `StaleDataEvent` is the structured payload published whenever the engine
 // blocks a submission for staleness. It carries the state, the submitting
-// strategy, the symbol, and the observed staleness in seconds so dashboards
-// and the notification dispatcher can surface the age without re-probing
-// the freshness port. The struct deliberately carries no broker / vendor /
+// strategy, the symbol, and the observed staleness in seconds (`None` when the
+// line was never observed, so no age exists) so dashboards and the
+// notification dispatcher can surface the age without re-probing the
+// freshness port. The struct deliberately carries no broker / vendor /
 // session / tick identifiers — staleness is a data-side condition.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -811,7 +812,11 @@ pub struct StaleDataEvent {
     pub state: MarketDataFreshness,
     pub strategy_id: StrategyId,
     pub symbol: String,
-    pub staleness_seconds: u64,
+    /// Observed age of the line in whole seconds, or `None` when no age is
+    /// known (SRS-MD-004): a line that has never delivered a tick has no
+    /// observation to age, and `0` would read as "just updated" — the
+    /// opposite of the truth. Unknown is never rendered as a number.
+    pub staleness_seconds: Option<u64>,
 }
 
 // --------------------------------------------------------------------------- //
@@ -5111,7 +5116,7 @@ mod tests {
             state: MarketDataFreshness::Stale,
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
-            staleness_seconds: 22,
+            staleness_seconds: Some(22),
         };
         let StaleDataEvent {
             state: _,
@@ -5122,7 +5127,7 @@ mod tests {
         assert_eq!(event.state, MarketDataFreshness::Stale);
         assert_eq!(event.strategy_id.as_str(), "live-alpha");
         assert_eq!(event.symbol, "AAPL");
-        assert_eq!(event.staleness_seconds, 22);
+        assert_eq!(event.staleness_seconds, Some(22));
     }
 
     #[test]
@@ -5135,10 +5140,10 @@ mod tests {
             state: MarketDataFreshness::Stale,
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "MSFT".to_string(),
-            staleness_seconds: 16,
+            staleness_seconds: Some(16),
         };
         assert!(
-            event.staleness_seconds > 15,
+            event.staleness_seconds.is_some_and(|age| age > 15),
             "the event must accommodate ages above the NFR-P5 15s floor"
         );
     }

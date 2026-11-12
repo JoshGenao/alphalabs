@@ -17,6 +17,7 @@ as having a paired ``tests/domain/`` safety test.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -109,3 +110,86 @@ def test_stale_state_holds_across_many_live_submissions() -> None:
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# SRS-MD-004 — the production probe, the paper gate, and the real composition.
+# Each case runs ONE named Rust test and requires that exactly one test ran and
+# passed: a filter that matched nothing would otherwise exit 0 having proved
+# nothing.
+# --------------------------------------------------------------------------- #
+
+_ONE_PASSED = re.compile(r"test result: ok\. 1 passed; 0 failed")
+
+
+def _run_one(crate: str, target: str, test_name: str) -> None:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
+    result = subprocess.run(
+        [cargo, "test", "-p", crate, "--test", target, test_name, "--", "--exact"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, f"{crate}::{target}::{test_name} failed:\n{combined}"
+    assert _ONE_PASSED.search(combined), (
+        f"{crate}::{target}::{test_name} did not run exactly one passing test:\n{combined}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("crate", "target", "test_name"),
+    [
+        # Live: the production entry points block while stale and resume when fresh.
+        (
+            "atp-execution",
+            "err_3_stale_data_blocked",
+            "srs_md_004_route_order_blocks_while_stale_and_resumes_when_fresh",
+        ),
+        (
+            "atp-execution",
+            "err_3_stale_data_blocked",
+            "srs_md_004_durable_live_path_blocks_while_stale_and_marks_the_intent_terminal",
+        ),
+        # Paper: a stale simulated order never reaches the simulator; fresh resumes it.
+        (
+            "atp-execution",
+            "srs_md_004_paper_stale_gate",
+            "c3_a_stale_paper_order_is_refused_and_a_fresh_one_reaches_the_simulator",
+        ),
+        (
+            "atp-execution",
+            "srs_md_004_paper_stale_gate",
+            "c3_live_and_paper_on_one_engine_are_both_blocked_with_one_event_each",
+        ),
+        # The verdict itself fails closed.
+        (
+            "atp-market-data",
+            "srs_md_004_freshness_probe",
+            "c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh",
+        ),
+        (
+            "atp-market-data",
+            "srs_md_004_freshness_probe",
+            "c1_a_poisoned_board_reads_every_line_stale_and_drops_observations",
+        ),
+        (
+            "atp-market-data",
+            "srs_md_004_freshness_probe",
+            "c1_identities_the_board_cannot_name_fail_closed",
+        ),
+        # The shipped composition: real probe, dispatch, simulator and IB bridge.
+        (
+            "atp-orchestrator",
+            "srs_md_004_stale_gate_wired",
+            "c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives",
+        ),
+    ],
+)
+def test_srs_md_004_stale_data_blocks_live_and_paper(
+    crate: str, target: str, test_name: str
+) -> None:
+    _run_one(crate, target, test_name)

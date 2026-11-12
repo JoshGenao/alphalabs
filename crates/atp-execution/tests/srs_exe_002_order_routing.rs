@@ -14,8 +14,8 @@
 //! dispatch routes to a counting simulation spy while the **broker** port is
 //! panic-on-touch (`ForbiddenBroker` — the order-creating port); the read-only
 //! connectivity/freshness gates are benign stubs, because the SRS-MD-004 /
-//! SYS-87 simulated-order stale-data gate (deferred) will legitimately consult
-//! freshness on the paper path. A designated dispatch routes to the live broker
+//! SYS-87 simulated-order stale-data gate legitimately consults freshness on
+//! the paper path (`srs_md_004_paper_stale_gate` tests it). A designated dispatch routes to the live broker
 //! while the simulation port is panic-on-touch. The one-live-among-thirty-paper
 //! sweep is the AC-10 acceptance scenario: exactly one IB order side effect,
 //! with all 30 paper orders handled by the simulation engine.
@@ -116,12 +116,12 @@ impl ConnectivityEventSink for EventSinkSpy {
 struct AlwaysFresh;
 
 impl MarketDataFreshnessProbe for AlwaysFresh {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         MarketDataFreshness::Fresh
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        0
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        None
     }
 }
 

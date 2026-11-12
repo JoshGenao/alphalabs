@@ -153,11 +153,11 @@ impl ConnectivityEventSink for NoopConnectivityEvents {
 
 struct AlwaysFresh;
 impl MarketDataFreshnessProbe for AlwaysFresh {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         MarketDataFreshness::Fresh
     }
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        0
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        None
     }
 }
 

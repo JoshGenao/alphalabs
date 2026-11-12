@@ -228,10 +228,12 @@ class DispatchGuardTest(unittest.TestCase):
     def test_extra_unreviewed_dispatch_arm_is_caught(self) -> None:
         # An extra dispatch arm that routes straight to the broker must not
         # escape inspection (it would never be checked for forbidden ports).
+        anchor = "OrderRoute::InternalSimulation => {"
+        self.assertEqual(self.exec_src.count(anchor), 1, "mutation anchor must exist exactly once")
         mutated = self.exec_src.replace(
-            "OrderRoute::InternalSimulation => simulation",
+            anchor,
             "OrderRoute::DirectIbBypass => broker.submit_order(submission).map(OrderRoutingReceipt::Live),\n"
-            "            OrderRoute::InternalSimulation => simulation",
+            "            " + anchor,
             1,
         )
         with self.assertRaises(OrderRoutingCheckError) as ctx:

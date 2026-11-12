@@ -699,12 +699,12 @@ struct StubFreshness {
 }
 
 impl MarketDataFreshnessProbe for StubFreshness {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         self.freshness
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        self.staleness
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        Some(self.staleness)
     }
 }
 

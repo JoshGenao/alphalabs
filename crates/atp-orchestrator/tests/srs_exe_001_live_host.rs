@@ -83,11 +83,11 @@ impl BrokerageConnectivity for Connectivity {
 
 struct Freshness(MarketDataFreshness);
 impl MarketDataFreshnessProbe for Freshness {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         self.0
     }
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        30
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        Some(30)
     }
 }
 

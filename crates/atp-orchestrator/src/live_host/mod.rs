@@ -25,9 +25,11 @@
 //!
 //! The ports are injected. This module never picks a fixture: the binary decides,
 //! and labels every reply with the [`HostTier`] it chose, so fixture evidence can
-//! never be read as a live run. The live IB tier needs a real stale-data producer,
-//! which does not exist yet (owner SRS-MD-004), so the binary refuses to start that
-//! tier. Restart reconciliation of an in-flight order is SRS-EXE-009: [`open`]
+//! never be read as a live run. The live IB tier needs its stale-data gate fed by
+//! the live tick stream: the production probe exists (SRS-MD-004,
+//! [`BoardFreshnessProbe`](crate::market_data_freshness::BoardFreshnessProbe)), but
+//! composing the SRS-MD-003 feed loop into its board inside this host is not built
+//! yet (owner SRS-EXE-001), so the binary refuses to start that tier. Restart reconciliation of an in-flight order is SRS-EXE-009: [`open`]
 //! refuses an outbox holding an unbound, unresolved intent rather than guessing.
 //!
 //! [`open`]: LiveExecutionHost::open

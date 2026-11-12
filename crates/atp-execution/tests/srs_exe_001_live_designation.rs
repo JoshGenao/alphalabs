@@ -94,12 +94,12 @@ impl ConnectivityEventSink for EventSinkSpy {
 struct AlwaysFresh;
 
 impl MarketDataFreshnessProbe for AlwaysFresh {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         MarketDataFreshness::Fresh
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
-        0
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
+        None
     }
 }
 
@@ -108,11 +108,11 @@ impl MarketDataFreshnessProbe for AlwaysFresh {
 struct ForbiddenFreshness;
 
 impl MarketDataFreshnessProbe for ForbiddenFreshness {
-    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+    fn freshness(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> MarketDataFreshness {
         panic!("SRS-EXE-001: NotDesignated rejection must not consult the freshness port");
     }
 
-    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+    fn staleness_seconds(&self, _symbol: &str, _asset_class: atp_types::AssetClass) -> Option<u64> {
         panic!("SRS-EXE-001: NotDesignated rejection must not consult staleness_seconds");
     }
 }

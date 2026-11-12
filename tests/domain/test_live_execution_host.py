@@ -248,7 +248,10 @@ def test_the_live_ib_tier_refuses_to_start_without_a_stale_data_producer(binarie
         timeout=30,
     )
     assert refused.returncode == 2
-    assert "SRS-MD-004" in refused.stderr
+    # The refusal names what is missing and who owns it: the production probe
+    # exists (SRS-MD-004), the live tick feed into it does not (SRS-EXE-001).
+    assert "stale-data gate" in refused.stderr
+    assert "owner SRS-EXE-001" in refused.stderr
     assert "live-host-ready" not in refused.stdout
     assert not (root / "outbox").exists(), "a refused tier created durable state"
     assert os.listdir(root / "s") == [], "a refused tier bound a socket"

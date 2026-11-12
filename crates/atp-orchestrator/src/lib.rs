@@ -45,14 +45,18 @@ pub mod hot_swap_demotion_drill;
 pub mod hot_swap_promotion;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
-/// SRS-MD-003 — composition of the IB transport with the live freshness feed
-/// loop (operator-gated `ib-live-transport`).
 // SRS-EXE-001: the ONE durable single-live designation snapshot every live-slot
 // reader and writer shares (Hot-Swap CLI, operator designation CLI, live host).
 pub mod live_designation_store;
 // SRS-EXE-001: the live execution host - the production call site of route_order.
 pub mod live_host;
+/// SRS-MD-003 — composition of the IB transport with the live freshness feed
+/// loop (operator-gated `ib-live-transport`).
 pub mod live_market_data;
+/// SRS-MD-004 — the production `MarketDataFreshnessProbe`: the execution
+/// gate's view of `atp-market-data`'s shared line-freshness board, plus the
+/// monotonic clock both sides of the board share.
+pub mod market_data_freshness;
 pub mod operator_channels;
 pub mod order_routing_wiring;
 pub mod quarantine_notification;

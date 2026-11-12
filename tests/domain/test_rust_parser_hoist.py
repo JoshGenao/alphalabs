@@ -156,3 +156,31 @@ def test_match_arm_respects_nested_braces_and_strings() -> None:
     arm = _match_arm(body, "Pattern")
     assert "nested: 1" in arm
     assert "Other" not in arm
+
+
+def test_a_block_arm_without_a_trailing_comma_ends_at_its_brace() -> None:
+    # Rust needs no comma after a block-bodied arm and rustfmt never writes
+    # one. Scanning on to the next top-level comma swallowed the arms after it,
+    # so a check looking for a blocked-state branch "outside" the Connected arm
+    # found nothing there (SRS-MD-004, when rustfmt wrapped the Connected arm).
+    body = (
+        "match state { Connected => { match fresh { Fresh => go(), Stale => stop() } }\n"
+        "    blocked @ (Unreachable | Restart) => { reconnect(); refuse(blocked) } }"
+    )
+    connected = _match_arm(body, "Connected")
+    assert connected.startswith("{") and connected.endswith("}")
+    assert "Fresh => go()" in connected
+    assert "reconnect" not in connected
+    blocked = _match_arm(body, "blocked @ (Unreachable | Restart)")
+    assert "reconnect(); refuse(blocked)" in blocked
+
+
+def test_a_block_struct_variant_arm_ends_at_its_brace() -> None:
+    body = "match r { Ready { at } => { emit(at) }\n Late => { destroy() } }"
+    assert "destroy" not in _variant_arm(body, "Ready")
+    assert "emit(at)" in _variant_arm(body, "Ready")
+
+
+def test_a_non_block_arm_still_ends_at_its_comma() -> None:
+    body = "match x { A => call({ y }), B => other() }"
+    assert _match_arm(body, "A") == "call({ y })"
