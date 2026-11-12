@@ -19,6 +19,13 @@ Usage:
     tools/close_feature.py --dry-run SRS-EXE-001
     tools/close_feature.py --no-fold SRS-EXE-001     # flip only
     tools/close_feature.py --keep-note SRS-EXE-001   # fold but keep the note
+    tools/close_feature.py --implemented SRS-MD-004  # record implementation complete;
+                                                     # passes stays false
+
+``--implemented`` and ``--verified`` are separate lifecycle events. The first
+records that the feature's implementation met its acceptance contract (component
+evidence + an independent review); it never touches ``passes``. The second is the
+requirement close, and it now also refuses while any prerequisite is unverified.
 """
 
 from __future__ import annotations
@@ -79,6 +86,51 @@ def flip_passes(feature_id: str, *, dry_run: bool) -> bool:
     _atomic_write(FEATURE_FILE, body)
     print(f"  ✓ {feature_id}: flipped passes:false → true")
     return True
+
+
+def mark_implemented(feature_id: str, record: dict, *, dry_run: bool) -> bool:
+    """Write ``implementation: complete`` for one feature. ``passes`` is untouched."""
+    raw = FEATURE_FILE.read_text(encoding="utf-8")
+    features = json.loads(raw)
+    match = next((f for f in features if f.get("id") == feature_id), None)
+    if match is None:
+        print(f"  ✗ {feature_id}: not found in feature_list.json", file=sys.stderr)
+        return False
+    if (match.get("implementation") or {}).get("status") == "complete":
+        print(f"  • {feature_id}: implementation already recorded complete")
+        return False
+    if dry_run:
+        print(f"  [dry-run] would record {feature_id} implementation: complete")
+        return True
+    match["implementation"] = record
+    body = json.dumps(features, indent=2)
+    if raw.endswith("\n"):
+        body += "\n"
+    _atomic_write(FEATURE_FILE, body)
+    print(
+        f"  ✓ {feature_id}: implementation recorded complete (passes stays {match.get('passes')})"
+    )
+    return True
+
+
+def unverified_prerequisites(feature_id: str, batch: tuple = ()) -> list[str]:
+    """Prerequisites of ANY dependency type that are not yet ``passes: true``.
+
+    Typed dependencies let a feature be IMPLEMENTED while its prerequisites are
+    still being verified. They must not let a requirement CLOSE on less than the
+    old claim-time rule demanded, so the requirement close checks every edge.
+    """
+    import agent_pool  # noqa: PLC0415  (pure helper only: live_deps)
+    import dependency_model as dm  # noqa: PLC0415
+
+    features = json.loads(FEATURE_FILE.read_text(encoding="utf-8"))
+    by_id = {f["id"]: f for f in features}
+    deps_file = ROOT / "tools" / "feature_deps.json"
+    deps = json.loads(deps_file.read_text(encoding="utf-8")) if deps_file.exists() else {}
+    # A prerequisite closing in the SAME batch counts: every id's evidence is verified
+    # before any flip is written, so the batch closes together or not at all.
+    pending = dm.close_gate(feature_id, agent_pool.live_deps(deps, by_id), by_id)
+    return [d for d in pending if d not in batch]
 
 
 def feature_is_passing(feature_id: str) -> bool:
@@ -179,6 +231,18 @@ def main() -> int:
         "reach main.",
     )
     parser.add_argument(
+        "--implemented",
+        action="store_true",
+        help="record implementation complete instead of closing the requirement. Needs "
+        "a valid acceptance contract, passing component evidence, and an approving "
+        "independent review round (tools/evidence.py implemented <id>). Never flips passes.",
+    )
+    parser.add_argument(
+        "--review-file",
+        help="with --implemented: a JSON review round the INTEGRATOR obtained by running "
+        "the reviewer itself. Used instead of the branch-controlled review.jsonl.",
+    )
+    parser.add_argument(
         "--no-fold", action="store_true", help="only flip passes; do not fold the progress note"
     )
     parser.add_argument(
@@ -192,6 +256,16 @@ def main() -> int:
     if not FEATURE_FILE.exists():
         print(f"✗ {FEATURE_FILE} not found", file=sys.stderr)
         return 1
+
+    if args.implemented:
+        if args.verified or args.attested_by:
+            print(
+                "✗ --implemented records implementation completion; it cannot be combined "
+                "with --verified/--attested-by (requirement verification is a separate event).",
+                file=sys.stderr,
+            )
+            return 2
+        return _close_implemented(args)
 
     # A feature must never be marked passing just because work merged. Refuse to
     # touch feature_list.json unless the caller explicitly attests verification.
@@ -253,6 +327,20 @@ def main() -> int:
             )
             return 3
 
+    # Prerequisites first, for every id, before anything is written.
+    for feature_id in args.feature_ids:
+        pending = unverified_prerequisites(feature_id, tuple(args.feature_ids))
+        if pending:
+            print(
+                f"✗ refusing to close {feature_id}: prerequisite(s) not yet verified: "
+                f"{', '.join(pending)}.\n"
+                "  Its implementation may be complete, but the requirement closes only after\n"
+                "  every prerequisite's requirement is verified. If an edge is wrong, retract\n"
+                "  it (`agent_pool.py unblock`) with a reason; never close around it.",
+                file=sys.stderr,
+            )
+            return 4
+
     for feature_id in args.feature_ids:
         print(f"→ {feature_id}")
         flipped = flip_passes(feature_id, dry_run=args.dry_run)
@@ -277,6 +365,51 @@ def main() -> int:
             retire_plan(feature_id, keep_note=args.keep_note, dry_run=args.dry_run)
 
     print("\n✓ done. Review with: git diff -- feature_list.json progress.txt progress.d")
+    return 0
+
+
+def _close_implemented(args) -> int:
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    ledger = None
+    if args.review_file:
+        try:
+            ledger = [json.loads(Path(args.review_file).read_text(encoding="utf-8"))]
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"✗ --review-file unreadable: {exc}", file=sys.stderr)
+            return 3
+    for feature_id in args.feature_ids:
+        try:
+            ok, problems, summary = evidence.implementation_verify(feature_id, ledger=ledger)
+        except evidence.EvidenceError as exc:
+            ok, problems, summary = False, [str(exc)], {}
+        if not ok:
+            print(
+                f"✗ refusing to record {feature_id} implementation-complete:\n"
+                + "".join(f"    · {p}\n" for p in problems),
+                file=sys.stderr,
+            )
+            return 3
+        review = summary.get("review") or {}
+        feat = evidence.feat_of(feature_id) or {}
+        record = {
+            "status": "complete",
+            # Re-specifying the feature voids this record (dependency_model.implementation_complete).
+            "steps_digest": evidence.steps_digest(list(feat.get("steps", []))),
+            "commit": evidence._head(),
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "component": summary.get("component", {}),
+            "reviewer": review.get("reviewer"),
+            "review_head": review.get("head"),
+        }
+        print(f"→ {feature_id}")
+        if mark_implemented(feature_id, record, dry_run=args.dry_run) and not args.dry_run:
+            evidence.log_close(
+                feature_id,
+                mode="implemented",
+                attestation="evidence-record",
+                detail=f"component {summary.get('component')}; reviewer {review.get('reviewer')}",
+            )
     return 0
 
 

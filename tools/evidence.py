@@ -501,6 +501,11 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
         # every quoted argument, which turned `pytest -m "not integration and not
         # e2e"` — the standard solo-test command — into seven separate tokens.
         argv = entry.get("argv") or shlex.split(cmd)
+        # Run exactly what was vetted: `reexecutable` judged `command`, so an `argv`
+        # that says something else (both are fields the branch wrote) is refused.
+        if shlex.join(argv) != shlex.join(shlex.split(cmd)):
+            problems.append(f"step {n}: recorded argv {argv!r} does not match command {cmd!r}")
+            continue
         try:
             proc = subprocess.run(
                 argv,
@@ -523,6 +528,289 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
                 f"{proc.returncode} re-running {cmd!r}"
             )
     return (not problems), problems
+
+
+# ----------------------------------------------------------------------------
+# Obligation evidence and the implementation gate
+# ----------------------------------------------------------------------------
+# Implementation completion is judged against the feature's acceptance CONTRACT
+# (docs/contracts/<id>.json, see tools/contracts.py), not its four boilerplate
+# steps. Each run of a contract obligation is APPENDED, never replaced: the latest
+# executed run decides the obligation, and every failure stays in the record.
+# Reviewers that cannot be used as independent evidence: unknown, absent, or the
+# implementer itself.
+NOT_INDEPENDENT = frozenset({"", "?", "none", "self", "implementer"})
+
+
+def _contract_digest(contract: dict | None) -> str:
+    return hashlib.sha256(json.dumps(contract or {}, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def store_obligation_run(fid: str, oid: str, entry: dict, contract: dict | None) -> dict:
+    """Append one executed run of contract obligation ``oid``. Returns the run."""
+    import platform  # noqa: PLC0415
+
+    rec = load_record(fid)
+    ob = next((o for o in (contract or {}).get("obligations", []) if o.get("id") == oid), {})
+    run = dict(entry)
+    run.update(
+        {
+            "head": _head(),
+            "contract_digest": _contract_digest(contract),
+            "env": {"python": platform.python_version(), "platform": platform.platform()},
+            "ts": _now(),
+        }
+    )
+    slot = rec.setdefault("obligations", {}).setdefault(oid, {"runs": []})
+    slot["level"] = ob.get("level", "?")
+    slot["criterion"] = ob.get("criterion", "")
+    slot["runs"].append(run)
+    save_record(fid, rec)
+    return run
+
+
+def run_obligation(fid: str, oid: str, cmd: list[str], contract: dict | None) -> dict:
+    """Execute ``cmd`` for obligation ``oid`` and record what actually happened."""
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return store_obligation_run(
+        fid,
+        oid,
+        {
+            "command": shlex.join(cmd),
+            "argv": list(cmd),
+            "observed": out[-4000:],
+            "exit_code": proc.returncode,
+            "status": "pass" if proc.returncode == 0 else "fail",
+            "executed": True,
+        },
+        contract,
+    )
+
+
+def _norm_cmd(command: str) -> str:
+    try:
+        return shlex.join(shlex.split(str(command)))
+    except ValueError:
+        return str(command).strip()
+
+
+def _run_cmd(run: dict) -> str:
+    argv = run.get("argv")
+    return shlex.join(argv) if argv else _norm_cmd(run.get("command", ""))
+
+
+def latest_review_round(fid: str, ledger: list[dict] | None = None) -> dict | None:
+    """The newest COUNTED review round for ``fid``, from the reviewer's own ledger.
+
+    ``ledger`` given: the integrator's own round(s). ``ledger`` None: the branch's
+    ``.harness/runs/<id>/review.jsonl``, appended by ``tools/adversarial_review.py``
+    but committed by the branch - so it is a pre-check, never the integrator's proof.
+    """
+    if ledger is None:
+        import adversarial_review  # noqa: PLC0415
+
+        ledger = adversarial_review.ledger_records(fid)
+        if ledger is None:
+            raise EvidenceError(f"review ledger for {fid} is unreadable")
+    rounds = [r for r in ledger if r.get("kind") == "round"]
+    return rounds[-1] if rounds else None
+
+
+def implementation_verify(
+    fid: str,
+    *,
+    features: list | None = None,
+    contract: dict | None = None,
+    deps: dict | None = None,
+    types: dict | None = None,
+    trace: dict | None = None,
+    ledger: list[dict] | None = None,
+    reexecute_in: Path | None = None,
+    require_review: bool = True,
+) -> tuple[bool, list[str], dict]:
+    """May ``fid`` be recorded implementation-complete? Returns (ok, problems, summary).
+
+    Three independent things must all hold:
+
+    1. A valid, non-draft acceptance contract whose system obligation is the
+       feature's acceptance criterion verbatim (so nothing was weakened).
+    2. Every COMPONENT obligation's latest executed run exited 0, against this
+       contract, at a head no code has moved past since.
+    3. An independent review round APPROVES at a head no code has moved past.
+       ``ledger`` supplies the round. The integrator passes the round it obtained
+       by running the reviewer ITSELF (agent_pool ``integrate --mode implemented``);
+       when ``ledger`` is None this reads ``.harness/runs/<id>/review.jsonl``, which
+       the branch controls - fine as a pre-check, never as the integrator's proof.
+
+    ``reexecute_in`` makes the integrator re-run every component command itself,
+    so the pass the gate depends on is observed here, not asserted by the branch.
+    Integration and system obligations are deliberately NOT required: they are
+    the requirement close's business (``verify``), not the implementation's.
+    """
+    import contracts as contracts_mod  # noqa: PLC0415
+    import dependency_model as dm  # noqa: PLC0415
+
+    problems: list[str] = []
+    summary: dict = {"component": {}, "review": None}
+    feats = features if features is not None else load_features()
+    feat = feat_of(fid, feats)
+    if feat is None:
+        return False, [f"{fid} not found in feature_list.json"], summary
+    if contract is None:
+        try:
+            contract = contracts_mod.load_contract(fid)
+        except contracts_mod.ContractError as exc:
+            return False, [f"contract unreadable: {exc}"], summary
+    if contract is None:
+        return (
+            False,
+            [
+                f"no acceptance contract at docs/contracts/{fid}.json - "
+                f"`python3 tools/contracts.py draft {fid}` and fill in the component criteria"
+            ],
+            summary,
+        )
+    if deps is None or types is None:
+        import agent_pool  # noqa: PLC0415  (pure helper only: live_deps)
+
+        # The graph of THIS tree: the integrator runs this inside the feature's
+        # worktree after syncing the canonical deps/types into it.
+        by_id = {f["id"]: f for f in feats}
+        deps_file = ROOT / "tools" / "feature_deps.json"
+        if deps is None:
+            raw = json.loads(deps_file.read_text(encoding="utf-8")) if deps_file.exists() else {}
+            deps = agent_pool.live_deps(raw, by_id)
+        types = types if types is not None else dm.load_types(ROOT / dm.TYPES_REL)
+    if trace is None:
+        trace = contracts_mod.load_trace()
+    problems += [
+        f"contract: {p}"
+        for p in contracts_mod.validate(
+            contract, feat, deps=deps, types=types, trace=trace, reexecutable=reexecutable
+        )
+    ]
+
+    for rel in contract.get("implementation_paths") or []:
+        if not (ROOT / str(rel)).is_file():
+            problems.append(f"implementation path {rel} does not exist in this tree")
+    try:
+        rec = load_record(fid)
+    except EvidenceError as exc:
+        return False, problems + [f"evidence record unreadable: {exc}"], summary
+    digest = _contract_digest(contract)
+    for ob in [o for o in contract.get("obligations", []) if o.get("level") == "component"]:
+        oid = ob.get("id")
+        # A run counts only if it executed one of the contract's DECLARED tests. An
+        # obligation id is a label the implementer chooses; without this, any passing
+        # command recorded under "C1" satisfied C1, whatever it tested.
+        declared = [_norm_cmd(t) for t in ob.get("tests") or []]
+        runs = [
+            r
+            for r in ((rec.get("obligations") or {}).get(oid) or {}).get("runs", [])
+            if r.get("executed")
+        ]
+        undeclared = sorted({_run_cmd(r) for r in runs if _run_cmd(r) not in declared})
+        if undeclared:
+            summary.setdefault("ignored_runs", {})[oid] = undeclared
+        state = "passed"
+        for test in declared:
+            mine = [r for r in runs if _run_cmd(r) == test]
+            if not mine:
+                problems.append(
+                    f"{oid}: declared test never run - `tools/evidence.py run {fid} "
+                    f"--obligation {oid} -- {test}`"
+                    + (f" (ignored undeclared runs: {', '.join(undeclared)})" if undeclared else "")
+                )
+                state = "not_tested" if state == "passed" else state
+                continue
+            last = mine[-1]
+            if last.get("exit_code") != 0:
+                problems.append(
+                    f"{oid}: latest run of {test!r} FAILED (exit {last.get('exit_code')})"
+                )
+                state = "failed"
+                continue
+            if last.get("contract_digest") != digest:
+                problems.append(
+                    f"{oid}: {test!r} last ran against a different version of the contract; re-run it"
+                )
+                state = "stale" if state == "passed" else state
+                continue
+            moved = code_changed_since(last.get("head", ""))
+            if moved is None or moved:
+                problems.append(
+                    f"{oid}: code has moved since {test!r} passed "
+                    f"({', '.join(sorted(moved or ['unplaceable head'])[:3])}); re-run it"
+                )
+                state = "stale" if state == "passed" else state
+                continue
+            if reexecute_in is not None:
+                # Re-run the DECLARED command, never the recorded argv: the argv is a
+                # field the branch wrote, and checking one string while running another
+                # is exactly the gap this re-execution exists to close.
+                if not reexecutable(test):
+                    problems.append(f"{oid}: {test!r} is not a command the integrator will re-run")
+                    state = "failed"
+                    continue
+                try:
+                    proc = subprocess.run(
+                        shlex.split(test),
+                        cwd=str(reexecute_in),
+                        capture_output=True,
+                        text=True,
+                        timeout=REEXEC_TIMEOUT,
+                        check=False,
+                    )
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    problems.append(f"{oid}: integrator could not re-run {test!r}: {exc}")
+                    state = "failed"
+                    continue
+                if proc.returncode != 0:
+                    problems.append(
+                        f"{oid}: integrator re-ran {test!r} and it exited {proc.returncode}"
+                    )
+                    state = "failed"
+        if not declared:
+            problems.append(f"{oid}: declares no test command")
+            state = "not_tested"
+        summary["component"][oid] = state
+
+    if not require_review:
+        # The integrator's cheap pre-pass: contract + declared tests only, so a
+        # feature that cannot pass them spends no reviewer quota.
+        return (not problems), problems, summary
+    try:
+        review = latest_review_round(fid, ledger)
+    except EvidenceError as exc:
+        review = None
+        problems.append(str(exc))
+    summary["review"] = review
+    if review is None:
+        problems.append(
+            "no independent review round recorded - run `python3 tools/adversarial_review.py "
+            "origin/main` with ATP_FEATURE_ID set (the reviewer writes its own ledger)"
+        )
+    else:
+        reviewer = str(review.get("reviewer") or "")
+        if reviewer in NOT_INDEPENDENT:
+            problems.append(f"latest review round has no independent reviewer ({reviewer!r})")
+        if review.get("verdict") != "approve":
+            problems.append(
+                f"independent reviewer ({reviewer}) returned {review.get('verdict')!r} with "
+                f"{review.get('n_findings', '?')} finding(s): {str(review.get('summary') or '')[:200]}"
+            )
+        head = review.get("head")
+        if not head:
+            problems.append(
+                "latest review round records no reviewed commit - re-run the reviewer "
+                "(rounds from before the head was recorded cannot be placed)"
+            )
+        else:
+            moved = code_changed_since(head)
+            if moved is None or moved:
+                problems.append("code has moved since the approving review; re-run the reviewer")
+    return (not problems), problems, summary
 
 
 def verify(
@@ -914,6 +1202,8 @@ def cmd_run(args) -> int:
     ``executed: true`` with the real exit code and captured output, which is the
     only thing ``verify`` accepts by default (see ``--allow-attested``).
     """
+    if getattr(args, "obligation", None):
+        return _cmd_run_obligation(args)
     steps = _check_step_range(args.id, args.step)
     if steps is None:
         return 2
@@ -946,6 +1236,45 @@ def cmd_run(args) -> int:
     print(f"{'✓' if status == 'pass' else '✗'} {args.id} step {args.step}: {status} — {tail}")
     _refresh_markdown(args.id)
     return 0 if status == "pass" else 1
+
+
+def _cmd_run_obligation(args) -> int:
+    import contracts as contracts_mod  # noqa: PLC0415
+
+    try:
+        contract = contracts_mod.load_contract(args.id)
+    except contracts_mod.ContractError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    if contract is None:
+        print(f"✗ {args.id} has no contract (docs/contracts/{args.id}.json)", file=sys.stderr)
+        return 2
+    if not any(o.get("id") == args.obligation for o in contract.get("obligations", [])):
+        print(f"✗ {args.id}'s contract has no obligation {args.obligation}", file=sys.stderr)
+        return 2
+    print(f"→ {args.obligation}: {' '.join(args.command)}")
+    run = run_obligation(args.id, args.obligation, args.command, contract)
+    out = run.get("observed") or ""
+    tail = out.splitlines()[-1][:100] if out else "(no output)"
+    print(
+        f"{'✓' if run['exit_code'] == 0 else '✗'} {args.id} {args.obligation}: {run['status']} - {tail}"
+    )
+    return 0 if run["exit_code"] == 0 else 1
+
+
+def cmd_implemented(args) -> int:
+    ok, problems, summary = implementation_verify(args.id)
+    if args.json:
+        print(
+            json.dumps({"ok": ok, "problems": problems, "summary": summary}, indent=2, default=str)
+        )
+    else:
+        print(
+            f"{'✓' if ok else '✗'} {args.id} implementation-complete gate: {'PASS' if ok else 'not yet'}"
+        )
+        for p in problems:
+            print(f"    · {p}")
+    return 0 if ok else 3
 
 
 def cmd_record(args) -> int:
@@ -1126,10 +1455,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    rn = sub.add_parser("run", help="EXECUTE a step's command and record what happened")
+    rn = sub.add_parser(
+        "run", help="EXECUTE a step's or contract obligation's command and record what happened"
+    )
     rn.add_argument("id")
-    rn.add_argument("--step", type=int, required=True)
+    target = rn.add_mutually_exclusive_group(required=True)
+    target.add_argument("--step", type=int)
+    target.add_argument(
+        "--obligation",
+        metavar="OID",
+        help="a docs/contracts/<id>.json obligation (C1, I1, ...); every run is kept",
+    )
     rn.add_argument("command", nargs="+", help="the command, after a `--` separator")
+
+    im = sub.add_parser(
+        "implemented",
+        help="may this feature be recorded implementation-complete? (contract + component "
+        "evidence + independent review)",
+    )
+    im.add_argument("id")
+    im.add_argument("--json", action="store_true")
 
     r = sub.add_parser(
         "record", help="hand-record a step the tool cannot execute (needs --attested-by to close)"
@@ -1183,6 +1528,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     handlers = {
         "run": cmd_run,
+        "implemented": cmd_implemented,
         "record": cmd_record,
         "gate": cmd_gate,
         "critic": cmd_critic,

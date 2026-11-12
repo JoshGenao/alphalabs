@@ -50,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adversarial_review  # noqa: E402  (sibling module in tools/; path set just above)
+import dependency_model as dm  # noqa: E402  (sibling module in tools/; path set just above)
 import evidence  # noqa: E402  (sibling module in tools/; path set just above)
 
 # ----------------------------------------------------------------------------
@@ -67,6 +68,7 @@ INTEGRATE_ALLOWLIST = (
     "progress.txt",
     "progress.d",
     "tools/feature_deps.json",
+    "tools/dependency_types.json",
 )
 
 # Files ONLY the integrator may author. `integrate` hard-resets these to the base ref
@@ -194,6 +196,9 @@ def primary_root() -> Path:
 ROOT = primary_root()
 FEATURE_FILE = ROOT / "feature_list.json"
 DEPS_FILE = ROOT / "tools" / "feature_deps.json"
+# Edge types for DEPS_FILE (implementation / interface / integration / verification).
+# Same lock, same sync, same integrator-only write path as the edges themselves.
+TYPES_FILE = ROOT / dm.TYPES_REL
 RUNTIME_FILE = ROOT / "tools" / ".agent_runtime.json"
 LOCK_FILE = ROOT / "tools" / ".agent_pool.lock"
 
@@ -245,6 +250,14 @@ def save_deps(d: dict) -> None:
     _atomic_write(DEPS_FILE, json.dumps(d, indent=2, sort_keys=True) + "\n")
 
 
+def load_types() -> dict:
+    return dm.load_types(TYPES_FILE)
+
+
+def save_types(t: dict) -> None:
+    _atomic_write(TYPES_FILE, json.dumps(t, indent=2, sort_keys=True) + "\n")
+
+
 def _union_deps(base: dict, extra: dict) -> dict:
     """Per-key union of dependency edge-lists (deduped, sorted).
 
@@ -257,6 +270,19 @@ def _union_deps(base: dict, extra: dict) -> dict:
     for fid, edges in extra.items():
         merged[fid] = sorted(set(merged.get(fid, [])) | set(edges))
     return merged
+
+
+def merge_types(head: dict, local: dict, base: dict) -> dict:
+    """Three-way merge of dependency_types.json: local's changes since ``head``, onto ``base``."""
+    h, lo = head.get("edges") or {}, local.get("edges") or {}
+    edges = dict(base.get("edges") or {})
+    for k, v in lo.items():
+        if h.get(k) != v:
+            edges[k] = v  # added or edited locally
+    for k in h:
+        if k not in lo:
+            edges.pop(k, None)  # removed locally
+    return {**base, "edges": edges}
 
 
 def _sync_primary_checkout(root: Path = ROOT) -> None:
@@ -273,6 +299,7 @@ def _sync_primary_checkout(root: Path = ROOT) -> None:
     """
     git = ["git", "-C", str(root)]
     deps_rel = "tools/feature_deps.json"
+    types_rel = dm.TYPES_REL
     if _run(git + ["fetch", "--quiet", "origin", "main"], check=False).returncode != 0:
         return  # offline / no remote -- best effort
     if (
@@ -288,7 +315,7 @@ def _sync_primary_checkout(root: Path = ROOT) -> None:
         for line in _run(git + ["status", "--porcelain"], check=False).stdout.splitlines()
         if line.strip()
     ]
-    unexpected = [p for p in dirty if p != deps_rel]
+    unexpected = [p for p in dirty if p not in (deps_rel, types_rel)]
     if unexpected:
         print(
             "⚠ agent_pool: primary checkout has unexpected local changes "
@@ -298,13 +325,34 @@ def _sync_primary_checkout(root: Path = ROOT) -> None:
         )
         return  # never stomp an operator's local edits
     deps_path = root / deps_rel
+    types_path = root / types_rel
     local = load_json(deps_path, {})  # snapshot the canonical deps (may hold in-flight block edits)
+    # In-flight classifications exist only if the file is DIRTY. Reading it when clean
+    # and merging it over the fetched version let a stale local copy win, undoing
+    # every re-type or removal merged to main.
+    local_types = load_json(types_path, None) if types_rel in dirty else None
+    head_types: dict = {}
+    if local_types is not None:
+        shown = _run(git + ["show", f"HEAD:{types_rel}"], check=False)
+        if shown.returncode == 0 and shown.stdout.strip():
+            head_types = json.loads(shown.stdout)
     _run(git + ["checkout", "--", deps_rel], check=False)  # clean the tree so the ff can apply
+    if types_rel in dirty:
+        _run(git + ["checkout", "--", types_rel], check=False)
     if _run(git + ["merge", "--ff-only", "--quiet", "FETCH_HEAD"], check=False).returncode != 0:
         # Unexpected ff failure -- restore our snapshot and bail (never leave ROOT worse).
         _atomic_write(deps_path, json.dumps(local, indent=2, sort_keys=True) + "\n")
+        if local_types is not None:
+            _atomic_write(types_path, json.dumps(local_types, indent=2, sort_keys=True) + "\n")
         print("⚠ agent_pool: ROOT fast-forward failed; restored feature_deps.json", file=sys.stderr)
         return
+    if local_types is not None:
+        # Three-way: apply only what the LOCAL copy changed relative to the commit it
+        # was edited on (additions, edits, removals) onto the fetched version.
+        base_types = load_json(types_path, {"edges": {}})
+        merged_types = merge_types(head_types, local_types, base_types)
+        if merged_types != base_types:
+            _atomic_write(types_path, json.dumps(merged_types, indent=2, sort_keys=True) + "\n")
     merged = _union_deps(
         load_json(deps_path, {}), local
     )  # origin/main's edges ∪ our in-place edits
@@ -496,10 +544,51 @@ def live_deps(deps: dict, by_id: dict) -> dict:
     return out
 
 
-def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
-    """Return (ready, blocked, active_leases, held_subsystems, by_id)."""
+# Phases a feature can be in. Only the two claimable ones are offered by `claim`.
+CLAIMABLE_PHASES = ("implement", "verify")
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def current_fingerprint(fid, by_id, deps, types, root: Path) -> str:
+    """Everything that could unblock ``fid``, digested (see dependency_model.fingerprint)."""
+    return dm.fingerprint(
+        fid,
+        by_id,
+        deps,
+        types,
+        root,
+        contract_text=_read_text(root / "docs" / "contracts" / f"{fid}.json"),
+        record_text=_read_text(root / ".harness" / "runs" / fid / "evidence.json"),
+    )
+
+
+def classify(features, deps, runtime, *, allow_foreign_reclaim=False, types=None, root=None):
+    """Per-feature scheduling state. Returns (states, by_id, active, held, live_deps).
+
+    Implementation and requirement verification are separate events, so a feature
+    is in exactly one phase:
+
+    ``implement``          claimable: its implementation-gating prerequisites are met
+    ``implement-blocked``  an implementation or interface edge is unmet
+    ``parked``             a session recorded a blocker and nothing has changed since
+    ``verify``             claimable: implemented, solo-verifiable, every
+                           prerequisite verified - an agent can close it
+    ``verify-blocked``     implemented; a prerequisite is not yet verified
+    ``awaiting``           implemented; the rest needs an operator window
+    plus ``done``, ``deferred``, ``clarify``, ``external``, ``leased``.
+
+    Integration and verification edges NEVER stop implementation from starting.
+    """
     by_id = {f["id"]: f for f in features}
     deps = live_deps(deps, by_id)
+    types = load_types() if types is None else types
+    root = ROOT if root is None else root
     passed = {fid for fid, f in by_id.items() if f.get("passes") is True}
     now = time.time()
     active = {
@@ -508,32 +597,84 @@ def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
         if lease_active(lease, now, allow_foreign_reclaim=allow_foreign_reclaim)
     }
     held = {subsystem(by_id[fid]) for fid in active if fid in by_id}
+    parked_all = runtime.get("parked") or {}
+    landed = serialized_notes()
 
-    ready, blocked = [], {}
+    states: dict = {}
     for fid, f in by_id.items():
-        if f.get("passes") is True or f.get("needs_clarification") is True:
+        st = {
+            "phase": "",
+            "impl_blockers": [],
+            "close_blockers": [],
+            "parked": None,
+            "code_landed": fid in landed,
+        }
+        states[fid] = st
+        if fid in passed:
+            st["phase"] = "done"
             continue
-        # Out of the active release, or untagged (fails closed): never offered.
-        # `status` lists both, so a missing tag cannot hide a feature silently.
         if not in_active_release(f):
+            st["phase"] = "deferred"
+            continue
+        # Computed for every open feature, so `status` can show WHY even for the
+        # ones another rule already holds back.
+        st["impl_blockers"] = dm.implementation_blockers(fid, deps, types, by_id, root)
+        st["close_blockers"] = dm.close_gate(fid, deps, by_id)
+        if f.get("needs_clarification") is True:
+            st["phase"] = "clarify"
             continue
         # A blocker no FEATURE owns. `block --on` cannot express "needs 30 real
         # market-hours days" or "needs an SMS provider account", because the thing
         # in the way is not a feature — SRS-REL-001's own note says so: "the block
-        # is real-operation evidence, not an unbuilt feature." With nowhere to put
-        # it, those features stayed `ready`, fell into the serialized-note bucket,
-        # and made `assess_frontier` report DEADLOCK over work no agent could ever
-        # have done. Skipped here exactly like needs_clarification: not ready, not
-        # blocked, and surfaced to the operator by `status` instead.
+        # is real-operation evidence, not an unbuilt feature." Skipped here exactly
+        # like needs_clarification: not ready, not blocked, surfaced by `status`.
         if external_blocker(f):
+            st["phase"] = "external"
             continue
         if fid in active:
+            st["phase"] = "leased"
             continue
-        unmet = [d for d in deps.get(fid, []) if d not in passed and d in by_id]
-        if unmet:
-            blocked[fid] = unmet
+        park = parked_all.get(fid)
+        if park and park.get("fingerprint") == current_fingerprint(fid, by_id, deps, types, root):
+            st["parked"] = park
+        if not dm.implementation_complete(f):
+            if st["impl_blockers"]:
+                st["phase"] = "implement-blocked"
+            elif st["parked"]:
+                st["phase"] = "parked"
+            else:
+                st["phase"] = "implement"
+            continue
+        if st["close_blockers"]:
+            st["phase"] = "verify-blocked"
+        elif st["parked"]:
+            st["phase"] = "parked"
+        elif not needs_serialized(f)[0]:
+            st["phase"] = "verify"
         else:
-            ready.append(fid)
+            st["phase"] = "awaiting"
+    return states, by_id, active, held, deps
+
+
+def compute(features, deps, runtime, *, allow_foreign_reclaim=False, types=None, root=None):
+    """Return (ready, blocked, active_leases, held_subsystems, by_id).
+
+    ``ready`` is every feature with executable work now (phase ``implement`` or
+    ``verify``). ``blocked`` maps a feature to the prerequisites in its way: the
+    implementation-gating ones while it is unimplemented, the unverified ones once
+    it is implemented. With no edge classified, every edge gates implementation and
+    a prerequisite counts as implemented only when it passes - today's behaviour.
+    """
+    states, by_id, active, held, _deps = classify(
+        features, deps, runtime, allow_foreign_reclaim=allow_foreign_reclaim, types=types, root=root
+    )
+    ready = [fid for fid, st in states.items() if st["phase"] in CLAIMABLE_PHASES]
+    blocked = {}
+    for fid, st in states.items():
+        if st["phase"] == "implement-blocked":
+            blocked[fid] = list(dict.fromkeys(b["dep"] for b in st["impl_blockers"]))
+        elif st["phase"] == "verify-blocked":
+            blocked[fid] = list(st["close_blockers"])
     return ready, blocked, active, held, by_id
 
 
@@ -716,7 +857,7 @@ def serialized_notes(progress_dir: Path | None = None) -> set:
     return local if integrated is None else (local | integrated)
 
 
-def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
+def assess_frontier(features, deps, runtime, *, skip_awaiting=True, types=None, root=None) -> dict:
     """Classify the board as done / progressing / deadlock and name the keystones.
 
     This is what tells "the application is finished" apart from "the scheduler is
@@ -724,10 +865,18 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
     action. ``deadlock`` means nothing is claimable yet features remain — the
     ``root_blockers`` (ranked by impact) are the not-passing prerequisites the
     blocked set waits on, and ``guarded_root_blockers`` are the subset that match
-    the IB/integration/e2e honesty guard and so can *only* be closed by a human
-    ``integrate --force-complete`` or the ``verified-e2e`` label.
+    the IB/integration/e2e honesty guard and so need a human window.
+
+    ``awaiting_verification`` is the operator's queue: features whose
+    implementation is COMPLETE and whose remaining verification needs a live,
+    integration, or e2e window. A merged-but-unrecorded implementation is not in
+    it - that feature still has executable work (contract, component evidence,
+    independent review) and is claimable. ``skip_awaiting=False`` offers the
+    operator queue to `claim` too.
     """
-    ready, blocked, active, held, by_id = compute(features, deps, runtime)
+    states, by_id, active, _held, live = classify(features, deps, runtime, types=types, root=root)
+    types = load_types() if types is None else types
+    root = ROOT if root is None else root
     # "Done" is scoped to the active release. Untagged features stay IN scope:
     # a release whose scope is unknown cannot be declared finished.
     in_scope = [fid for fid, f in by_id.items() if not deferred(f)]
@@ -736,9 +885,16 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
     deferred_open = sorted(
         fid for fid, f in by_id.items() if deferred(f) and f.get("passes") is not True
     )
-    awaiting = sorted(serialized_notes() & set(ready)) if skip_awaiting else []
-    awaiting_set = set(awaiting)
-    claimable = [fid for fid in ready if fid not in awaiting_set]
+    awaiting = sorted(fid for fid, st in states.items() if st["phase"] == "awaiting")
+    claimable = [fid for fid, st in states.items() if st["phase"] in CLAIMABLE_PHASES]
+    if not skip_awaiting:
+        claimable += awaiting
+    blocked = {}
+    for fid, st in states.items():
+        if st["phase"] == "implement-blocked":
+            blocked[fid] = list(dict.fromkeys(b["dep"] for b in st["impl_blockers"]))
+        elif st["phase"] == "verify-blocked":
+            blocked[fid] = list(st["close_blockers"])
 
     if len(passed) == total:
         state = "done"
@@ -755,22 +911,65 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
     guarded = [d for d in blockers if d in by_id and needs_serialized(by_id[d])[0]]
     # Split the root blockers by WHAT WOULD MOVE THEM. `guarded` says "a human must
     # verify this"; external says "a human must obtain something first, and no
-    # amount of verification helps until they do". Merging the two is why the
-    # deadlock message prescribed `integrate --force-complete` for SRS-NOTIF-001,
-    # whose actual blocker is that nobody has chosen an SMS provider.
+    # amount of verification helps until they do".
     external = externally_blocked(features)
     external_roots = [d for d in blockers if d in external]
+    cycles = dm.cycle_report(live, types, by_id)
+    parked = {fid: st["parked"] for fid, st in states.items() if st["phase"] == "parked"}
+    report = dm.blocker_report(
+        {
+            fid: st["impl_blockers"]
+            for fid, st in states.items()
+            if st["phase"] == "implement-blocked"
+        },
+        parked,
+        cycles,
+        close_blocked={
+            fid: st["close_blockers"]
+            for fid, st in states.items()
+            if st["phase"] == "verify-blocked"
+        },
+    )
+    # Code landed (a `serialized` note) but implementation never recorded complete.
+    # These are claimable, so they are not in the operator's queue - but they must not
+    # vanish from view: one that cannot be component-tested can never be recorded
+    # implemented, and the operator has to see it to decide.
+    merged_unrecorded = sorted(
+        fid
+        for fid, st in states.items()
+        if st["code_landed"]
+        and st["phase"] not in ("done", "deferred")
+        and not dm.implementation_complete(by_id[fid])
+    )
+    impl_counts: dict = {}
+    for fid in in_scope:
+        st = states[fid]
+        status = dm.implementation_status(
+            by_id[fid],
+            in_scope=True,
+            leased=st["phase"] == "leased",
+            blockers=st["impl_blockers"],
+            parked=st["parked"],
+            code_landed=st["code_landed"],
+        )["status"]
+        impl_counts[status] = impl_counts.get(status, 0) + 1
     return {
         "state": state,
         "total": total,
         "passed": len(passed),
         "ready": claimable,
+        "merged_unrecorded": merged_unrecorded,
+        "phases": {fid: st["phase"] for fid, st in states.items()},
+        "implementation": impl_counts,
         "awaiting_verification": awaiting,
         "blocked": blocked,
         "root_blockers": blockers,
         "guarded_root_blockers": [d for d in guarded if d not in external],
         "external_blocked": external,
         "external_root_blockers": external_roots,
+        "parked": parked,
+        "cycles": cycles,
+        "blocker_report": report,
         "active": active,
         "release": ACTIVE_RELEASE,
         "deferred": deferred_open,
@@ -819,6 +1018,31 @@ def deadlock_advice(assessment: dict) -> list:
             "  or the verified-e2e PR label. Both still require a complete evidence record;"
         )
         lines.append("  `integrate --force-complete` does NOT skip it: " + ", ".join(guarded[:5]))
+    report = assessment.get("blocker_report") or {}
+    for cycle in report.get("implementation_cycles") or []:
+        lines.append(
+            "IMPLEMENTATION CYCLE - none of these can ever start: "
+            + " -> ".join(cycle)
+            + ". Retype the edge whose consumer needs only a contract (`interface`) or a "
+            "running peer (`integration`), or split the shared criterion."
+        )
+    cover = report.get("cover") or []
+    if cover:
+        lines.append("smallest set of prerequisites that restores implementation progress:")
+        for item in cover[:6]:
+            lines.append(
+                f"  frees {len(item['fully_freed'])} (touches {len(item['frees'])}) · {item['action']}"
+            )
+    verify_first = report.get("verify_first") or []
+    if verify_first:
+        lines.append("implemented features wait on these prerequisites' verification:")
+        for item in verify_first[:6]:
+            lines.append(
+                f"  {item['prerequisite']} holds back {len(item['holds_back'])} close(s): "
+                + ", ".join(item["holds_back"][:4])
+            )
+    for item in (report.get("parked") or [])[:6]:
+        lines.append(f"parked ({item['kind']}): {item['feature']} - {item['reason']}")
     return lines
 
 
@@ -935,14 +1159,26 @@ def cmd_status(args):
     features = load_features(fetch=not args.no_fetch)
     deps = load_deps()
     runtime = load_runtime()
-    ready, blocked, active, held, by_id = compute(features, deps, runtime)
-
+    types = load_types()
+    states, by_id, active, held, live = classify(features, deps, runtime, types=types)
     skip_awaiting = not getattr(args, "include_awaiting", False)
-    awaiting = sorted(serialized_notes() & set(ready)) if skip_awaiting else []
-    awaiting_set = set(awaiting)
-    claimable = [fid for fid in ready if fid not in awaiting_set]
+    assessment = assess_frontier(features, deps, runtime, skip_awaiting=skip_awaiting, types=types)
+    claimable = assessment["ready"]
+    awaiting = assessment["awaiting_verification"]
+    blocked = assessment["blocked"]
     impact = impact_scores(deps, by_id)
-    assessment = assess_frontier(features, deps, runtime, skip_awaiting=skip_awaiting)
+    edges = [(a, b) for a, prereqs in live.items() for b in prereqs]
+    unclassified_edges = [
+        dm.edge_key(a, b)
+        for a, b in edges
+        if dm.edge_type(types, a, b) == dm.UNCLASSIFIED
+        and by_id.get(b, {}).get("passes") is not True
+    ]
+    needs_review = sorted(
+        k
+        for k, m in (types.get("edges") or {}).items()
+        if m.get("review") or m.get("confidence") == "low"
+    )
 
     if args.json:
         print(
@@ -950,9 +1186,21 @@ def cmd_status(args):
                 {
                     "assessment": assessment["state"],
                     "ready": sorted(claimable),
+                    "phases": assessment["phases"],
+                    "implementation": assessment["implementation"],
                     "awaiting_verification": awaiting,
-                    "awaiting_without_dep_edges": [f for f in awaiting if not deps.get(f)],
+                    "merged_unrecorded": assessment["merged_unrecorded"],
                     "blocked": {k: v for k, v in sorted(blocked.items())},
+                    "blocked_detail": {
+                        fid: st["impl_blockers"] or st["close_blockers"]
+                        for fid, st in sorted(states.items())
+                        if st["phase"] in ("implement-blocked", "verify-blocked")
+                    },
+                    "parked": assessment["parked"],
+                    "cycles": assessment["cycles"],
+                    "blocker_report": assessment["blocker_report"],
+                    "unclassified_open_edges": unclassified_edges,
+                    "edges_needing_review": needs_review,
                     "leases": active,
                     "done": sorted(f for f, x in by_id.items() if x.get("passes")),
                     "root_blockers": assessment["root_blockers"],
@@ -968,11 +1216,16 @@ def cmd_status(args):
         )
         return 0
 
+    impl = assessment["implementation"]
     print(
         f"== agent pool [{assessment['release']}] == "
-        f"done:{assessment['passed']}/{assessment['total']}  ready:{len(claimable)}  "
+        f"verified:{assessment['passed']}/{assessment['total']}  ready:{len(claimable)}  "
         f"awaiting-verify:{len(awaiting)}  blocked:{len(blocked)}  leased:{len(active)}  "
         f"deferred:{len(assessment['deferred'])}"
+    )
+    print(
+        "   implementation: "
+        + "  ".join(f"{k}:{impl.get(k, 0)}" for k in dm.IMPL_STATES if impl.get(k))
     )
     print(f"   frontier: {assessment['state'].upper()}")
     if assessment["unknown_release"]:
@@ -983,7 +1236,7 @@ def cmd_status(args):
             + ", ".join(assessment["unknown_release"][:5])
         )
 
-    # How much of `done` is actually backed by evidence. A feature closed before
+    # How much of `verified` is actually backed by evidence. A feature closed before
     # the evidence gate existed is not re-verified and must not read as if it were.
     passing = [f for f in by_id.values() if f.get("passes")]
     pre_gate = [f["id"] for f in passing if f.get("evidence") == evidence.PRE_GATE]
@@ -1007,12 +1260,16 @@ def cmd_status(args):
             f"guard is falling back to keyword matching for them "
             f"(fix: tools/classify_verification.py propose)"
         )
-
-    if assessment["state"] == "deadlock" and assessment["root_blockers"]:
+    if unclassified_edges:
         print(
-            "   ⚠ no autonomous progress possible — highest-impact blockers: "
-            + ", ".join(assessment["root_blockers"][:5])
+            f"   ⚠ {len(unclassified_edges)} open dependency edge(s) are unclassified and gate "
+            f"implementation by default - classify them in {dm.TYPES_REL}"
         )
+    if needs_review:
+        print(f"   ⓘ {len(needs_review)} classified edge(s) are flagged for operator review")
+
+    if assessment["state"] == "deadlock":
+        print("   ⚠ no autonomous progress possible:")
         for line in deadlock_advice(assessment):
             print(f"   {line}")
     if active:
@@ -1026,37 +1283,57 @@ def cmd_status(args):
     print("\n-- ready frontier (most-unblocking first) --")
     for fid in pick_order(claimable, by_id, held, impact):
         f = by_id[fid]
+        phase = states[fid]["phase"]
+        tag = {"implement": "impl", "verify": "verify"}.get(phase, phase)
+        landed = " (code merged)" if phase == "implement" and states[fid]["code_landed"] else ""
         print(
-            f"  {fid:18} {f.get('priority', '?'):3} unblocks:{impact.get(fid, 0):<3} "
-            f"{subsystem(f):20} {f['description'][:40]}"
+            f"  {fid:18} {f.get('priority', '?'):3} {tag:6} unblocks:{impact.get(fid, 0):<3} "
+            f"{subsystem(f):20} {f['description'][:34]}{landed}"
         )
-    if awaiting:
-        print("\n-- awaiting human verification (serialized; not re-offered) --")
-        edgeless = []
-        for fid in awaiting:
-            if deps.get(fid):
-                print(f"  {fid:18} {by_id[fid]['description'][:52]}")
-            else:
-                edgeless.append(fid)
-                print(f"  {fid:18} {by_id[fid]['description'][:44]}  ⚠ no dep edges")
-        if edgeless:
-            # A note is the only thing keeping these off the frontier, and a note
-            # is only as good as the reader's view of it. A `block --on` edge is
-            # branch-independent and immediate -- it is the durable de-churn.
+    merged = assessment["merged_unrecorded"]
+    if merged:
+        print(
+            "\n-- code merged, implementation not yet recorded (contract + component evidence "
+            "+ independent review still owed) --"
+        )
+        for fid in merged:
+            f = by_id[fid]
             print(
-                "   ⚠ these are de-churned by their note ALONE. If a real unbuilt producer\n"
-                "     blocks the flip, record it: agent_pool.py block <id> --on <owner ids>\n"
-                f"     (derive the owners from the code, not from prose): {', '.join(edgeless[:5])}"
+                f"  {fid:18} {f.get('verification_method', '?'):11} "
+                f"{states[fid]['phase']:18} {f['description'][:30]}"
+            )
+    if awaiting:
+        print("\n-- awaiting operator verification (implementation complete) --")
+        for fid in awaiting:
+            print(
+                f"  {fid:18} {by_id[fid].get('verification_method', '?'):11} {by_id[fid]['description'][:44]}"
             )
     if blocked:
-        print("\n-- blocked (waiting on deps) --")
-        for fid, unmet in sorted(blocked.items()):
-            print(f"  {fid:18} blocked-on {', '.join(unmet)}")
+        print("\n-- blocked --")
+        for fid in sorted(blocked):
+            st = states[fid]
+            if st["phase"] == "implement-blocked":
+                why = "; ".join(f"{b['dep']} [{b['type']}]" for b in st["impl_blockers"])
+                print(f"  {fid:18} implementation blocked-on {why}")
+            else:
+                print(
+                    f"  {fid:18} implemented; requirement close waits on {', '.join(st['close_blockers'])}"
+                )
+    if assessment["parked"]:
+        print("\n-- parked (not re-offered until something they depend on changes) --")
+        for fid, park in sorted(assessment["parked"].items()):
+            print(f"  {fid:18} {park.get('kind', '?'):10} {park.get('reason', '')[:60]}")
+    cycles = assessment["cycles"]
+    for cycle in cycles.get("implementation", []):
+        print(f"\n  ✗ implementation cycle: {' -> '.join(cycle)}")
+    for cycle in cycles.get("deferred", []):
+        print(
+            f"\n  ⓘ verification cycle (implementation may proceed; the close needs a decision): {' -> '.join(cycle)}"
+        )
     ext = assessment["external_blocked"]
     if ext:
         # The operator's procurement/ops backlog. These are NOT stalled work — they
-        # are stalled purchases, provisioning, and calendar time, and printing them
-        # next to "blocked (waiting on deps)" is what let them read as engineering.
+        # are stalled purchases, provisioning, and calendar time.
         print("\n-- blocked on an external resource (operator; no feature owns these) --")
         for fid in sorted(ext, key=lambda f: (-impact.get(f, 0), f)):
             print(f"  {fid:18} unblocks:{impact.get(fid, 0):<3} {ext[fid]}")
@@ -1256,14 +1533,30 @@ def cmd_claim(args):
                     f"claiming anyway (operator-selected): {allow}",
                     file=sys.stderr,
                 )
+            # Not a refusal: implementation may proceed. But SRS-LOG-001 was hand-claimed
+            # with producers missing and spent 38 rounds - say plainly what its CLOSE
+            # still waits on, so nobody plans to finish it in this session by accident.
+            pending_close = dm.close_gate(fid, live_deps(deps, by_id), by_id)
+            if pending_close:
+                print(
+                    f"# note: {fid}'s requirement close waits on unverified "
+                    f"{', '.join(pending_close)}; implementation can proceed, the close cannot.",
+                    file=sys.stderr,
+                )
             return _finish_claim(runtime, active, fid, branch, wt, owner)
 
         # Steer toward keystones (most-unblocking first) and skip features that
         # are code-done but awaiting human e2e verification (the churn loop).
         impact = impact_scores(deps, by_id)
         skip_awaiting = not getattr(args, "include_awaiting", False)
-        awaiting = serialized_notes() & set(ready) if skip_awaiting else set()
-        claimable = [fid for fid in ready if fid not in awaiting]
+        # `ready` already excludes the operator's queue (implemented, needs a
+        # live/e2e window). --include-awaiting offers that queue as well.
+        claimable = list(ready)
+        awaiting: set = set()
+        if not skip_awaiting:
+            states, *_ = classify(features, deps, runtime, allow_foreign_reclaim=args.reclaim)
+            awaiting = {fid for fid, st in states.items() if st["phase"] == "awaiting"}
+            claimable += sorted(awaiting)
 
         choice = None
         skipped_dirty = []
@@ -1306,10 +1599,11 @@ def cmd_claim(args):
                 # the evidence gate silently undoes.
                 note.extend(deadlock_advice(assessment))
                 note.append("full triage: docs/verification-queue.md")
-            if awaiting:
+            queue = assessment.get("awaiting_verification") or []
+            if queue:
                 note.append(
-                    f"{len(awaiting)} awaiting human verification (serialized): "
-                    + ", ".join(sorted(awaiting))
+                    f"{len(queue)} implemented and awaiting operator verification: "
+                    + ", ".join(sorted(queue))
                 )
             if skipped_dirty:
                 note.append(
@@ -1333,6 +1627,13 @@ def cmd_claim(args):
 
 def cmd_block(args):
     fid = args.id
+    if getattr(args, "type", None) == "interface" and not getattr(args, "contract", None):
+        print(
+            "✗ an interface dependency needs --contract <file that defines it> "
+            "(and optionally --symbol <name>), so the scheduler can tell when it exists.",
+            file=sys.stderr,
+        )
+        return 1
     with Lock():
         feats = {f["id"]: f for f in load_features(fetch=False)}
         ids = set(feats)
@@ -1435,11 +1736,79 @@ def cmd_block(args):
                     file=sys.stderr,
                 )
             return 13
+        # The edge's TYPE decides what it blocks. Decide the classification BEFORE
+        # anything is written: a refusal must leave both files untouched (the same
+        # all-or-nothing rule as the cycle refusal above).
+        kind = getattr(args, "type", None)
+        types = load_types()
+        new_meta: dict = {}
+        relaxed: list[str] = []
+        if kind:
+            existing_edges = set(deps.get(fid, []))
+            clash = []
+            for dep in known:
+                key = dm.edge_key(fid, dep)
+                old = types["edges"].get(key)
+                old_kind = (
+                    (old or {}).get("type")
+                    if old
+                    else (dm.UNCLASSIFIED if dep in existing_edges else None)
+                )
+                if old and old_kind != kind:
+                    clash.append(f"{key} is already {old_kind}")
+                meta = {
+                    "type": kind,
+                    "reason": args.reason or f"recorded by `block` from {fid}'s session",
+                    "source": getattr(args, "source", None) or f"progress.d/session-{fid}.md",
+                    "confidence": "medium",
+                    "classified_by": "block",
+                }
+                if kind == "interface":
+                    meta["contract"] = {
+                        "path": args.contract,
+                        **({"symbol": args.symbol} if args.symbol else {}),
+                    }
+                # Re-typing an EXISTING edge so that it stops gating implementation is
+                # a relaxation an agent cannot grant itself: it is recorded at low
+                # confidence, which keeps gating, until an operator confirms it by
+                # raising the confidence. Tightening applies at once.
+                # Ranked by how much they hold back: an `interface` edge clears as soon
+                # as ANY named file exists, so implementation -> interface is a
+                # relaxation too, not a sideways move.
+                if (
+                    old_kind is not None
+                    and old_kind != kind
+                    and GATING_STRENGTH[kind] < GATING_STRENGTH[old_kind]
+                ):
+                    meta["confidence"] = "low"
+                    meta["review"] = (
+                        f"relaxation from {old_kind} requested by {fid}'s session: "
+                        f"{args.reason or '(no reason given)'} - operator: confirm by "
+                        "setting confidence to medium or high"
+                    )
+                    relaxed.append(key)
+                # A low-confidence record is an UNCONFIRMED relaxation. Re-issuing the
+                # same type must not launder it to medium: only an operator raises it.
+                elif old and old.get("confidence") == "low" and old_kind == kind:
+                    meta["confidence"] = "low"
+                    meta["review"] = old.get("review") or "unconfirmed classification"
+                    relaxed.append(key)
+                new_meta[key] = meta
+            if clash and not getattr(args, "retype", False):
+                print(
+                    f"✗ {fid}: refusing to re-type: {'; '.join(clash)}. NOTHING was written. "
+                    f"If the type is wrong, re-run with --retype and a --reason saying why.",
+                    file=sys.stderr,
+                )
+                return 14
         # Unconditional write: `known` is non-empty (argparse requires --on) and no
         # edge was refused, so there is always something to record here.
         deps[fid] = sorted(set(deps.get(fid, [])) | set(known))
         save_deps(deps)
         recorded = deps[fid]
+        if new_meta:
+            types["edges"].update(new_meta)
+            save_types(types)
         # NOTE: block does NOT release the lease — you keep ownership until you
         # `integrate --mode partial` (which releases it on success). Releasing
         # here would open a window where a sibling could claim the same worktree
@@ -1450,6 +1819,190 @@ def cmd_block(args):
         f"✓ {fid} blocked-on {recorded}; lease kept "
         f"(release it via `integrate --mode partial` or `release {fid}`)"
     )
+    types_now = load_types()
+    print("  types: " + ", ".join(f"{d} [{dm.edge_type(types_now, fid, d)}]" for d in recorded))
+    for key in relaxed:
+        print(
+            f"  ⚠ {key}: relaxation recorded at LOW confidence - it keeps gating "
+            "implementation until an operator confirms it.",
+            file=sys.stderr,
+        )
+    kind = dm.edge_type(types_now, fid, known[0])
+    if kind not in dm.IMPLEMENTATION_GATING:
+        print(
+            f"  ⓘ a {kind} dependency does not block {fid}'s implementation - keep building; "
+            f"it gates the {'integration run' if kind == 'integration' else 'requirement close'} only."
+        )
+    elif kind == dm.UNCLASSIFIED and not relaxed:
+        print(
+            "  ⚠ unclassified: it gates implementation. Re-run with --type so the edge "
+            "blocks only what it must.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+# Paths whose behaviour decides whether a feature is implementation-complete. A branch
+# that changes them would be judged by its own modified judge, so `implemented` refuses
+# it and leaves that feature to the operator.
+GATE_PATHS = (
+    "tools/agent_pool.py",
+    "tools/evidence.py",
+    "tools/close_feature.py",
+    "tools/adversarial_review.py",
+    "tools/codex_review.sh",
+    "tools/contracts.py",
+    "tools/dependency_model.py",
+    "tools/critic_check.py",
+    "prompts/critic_prompt.md",
+)
+INTEGRATOR_REVIEWS = "integrator-reviews.jsonl"
+UNREADABLE_LEDGER = 10**6  # integrator_rounds_since_reset: fail closed
+# How much each edge type holds back a claim for implementation.
+GATING_STRENGTH = {
+    dm.UNCLASSIFIED: 3,
+    "implementation": 3,
+    "interface": 2,
+    "integration": 1,
+    "verification": 1,
+}
+
+
+def integrator_rounds_since_reset(fid: str) -> int:
+    """Verdict-bearing integrator rounds for ``fid`` since the operator last reset them."""
+    path = evidence.LEDGER_DIR / INTEGRATOR_REVIEWS
+    if not path.is_file():
+        return 0
+    n = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            # Unreadable is not empty (CLAUDE.md rule 3): an unreadable ledger cannot
+            # prove the budget has room, so it reads as spent.
+            return UNREADABLE_LEDGER
+        if rec.get("feature") != fid:
+            continue
+        if rec.get("reset"):
+            n = 0
+        elif rec.get("round"):
+            n += 1
+    return n
+
+
+def integrator_review(fid: str, review_fn=None) -> dict | None:
+    """Run the independent reviewer FROM THE INTEGRATOR and return its round.
+
+    Full branch diff (never a path-scoped one), with the feature's contract and
+    recorded results as context (adversarial_review.feature_context). The round is
+    logged to the PRIMARY checkout's gitignored ledger (evidence.LEDGER_DIR), never
+    to the worktree's tracked review.jsonl: writing there dirtied the worktree,
+    made integrate refuse (exit 7), and broke the session note's round count. An
+    exhausted round budget or an availability failure (timeout, no reviewer) is not
+    a verdict and returns None, which the gate refuses.
+    """
+    # The budget counts the integrator's OWN rounds, from the primary's ledger: the
+    # branch's review.jsonl is a file the branch can truncate.
+    used = integrator_rounds_since_reset(fid)
+    if used >= adversarial_review.round_budget():
+        evidence._append_jsonl(
+            evidence.LEDGER_DIR / INTEGRATOR_REVIEWS,
+            {"ts": evidence._now(), "feature": fid, "outcome": f"round budget exhausted ({used})"},
+        )
+        print(
+            f"✗ {fid}: the integrator has reviewed this feature {used} time(s); budget spent. "
+            f"Operator: `agent_pool.py unpark {fid} --reset-review-budget` after deciding.",
+            file=sys.stderr,
+        )
+        return None
+    review_fn = review_fn or adversarial_review.review
+    # The commit the reviewer is about to judge, captured BEFORE it starts: stamping
+    # the round with HEAD after a minutes-long review would let code committed during
+    # the review ride on an approval of the older diff.
+    reviewed_head = adversarial_review.current_head()
+    previous = os.environ.get("ATP_FEATURE_ID")
+    os.environ["ATP_FEATURE_ID"] = fid
+    try:
+        result = review_fn(base_ref())
+    finally:
+        if previous is None:
+            os.environ.pop("ATP_FEATURE_ID", None)
+        else:
+            os.environ["ATP_FEATURE_ID"] = previous
+    result = {**result, "head": reviewed_head}
+    record = None if result.get("no_verdict") else adversarial_review.round_record(result)
+    try:
+        evidence._append_jsonl(
+            evidence.LEDGER_DIR / INTEGRATOR_REVIEWS,
+            {"ts": evidence._now(), "feature": fid, "round": record, "no_verdict": record is None},
+        )
+    except OSError as exc:  # telemetry must never fail the gate it measures
+        print(f"(could not log integrator review: {exc!r})", file=sys.stderr)
+    return record
+
+
+def cmd_park(args):
+    """Record a blocker that is not a feature edge, and stop re-offering the feature.
+
+    Use when the work cannot proceed for a reason `block --on` cannot express: an
+    interface contract nobody has defined, an operator decision, a failing test you
+    cannot fix in scope, or an external resource. The feature is not offered again
+    until something it depends on CHANGES (its fingerprint: prerequisite states,
+    edge types, contracts, its own spec, contract, or evidence) - re-trying with
+    nothing changed is the churn loop. It is not a dependency edge, so it never
+    blocks any other feature.
+    """
+    fid = args.id
+    with Lock():
+        features = load_features(fetch=False)
+        by_id = {f["id"]: f for f in features}
+        if fid not in by_id:
+            print(f"✗ unknown feature id: {fid}", file=sys.stderr)
+            return 1
+        deps = live_deps(load_deps(), by_id)
+        types = load_types()
+        runtime = load_runtime()
+        runtime.setdefault("parked", {})[fid] = {
+            "kind": args.kind,
+            "reason": args.reason,
+            "fingerprint": current_fingerprint(fid, by_id, deps, types, ROOT),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        save_runtime(runtime)
+    print(f"✓ {fid} parked ({args.kind}): {args.reason}")
+    print("  It returns to the frontier by itself when a prerequisite, contract, or its")
+    print("  evidence changes. Claim another ready feature now.")
+    return 0
+
+
+def cmd_unpark(args):
+    with Lock():
+        runtime = load_runtime()
+        park = (runtime.get("parked") or {}).pop(args.id, None)
+        save_runtime(runtime)
+        if getattr(args, "reset_review_budget", False):
+            evidence._append_jsonl(
+                evidence.LEDGER_DIR / INTEGRATOR_REVIEWS,
+                {"ts": evidence._now(), "feature": args.id, "reset": True},
+            )
+            print(f"✓ {args.id}: integrator review budget reset")
+    print(f"✓ {args.id} unparked" if park else f"• {args.id} was not parked")
+    return 0
+
+
+def cmd_blockers(args):
+    """What would restore progress, smallest set first."""
+    features = load_features(fetch=False)
+    assessment = assess_frontier(features, load_deps(), load_runtime())
+    report = assessment["blocker_report"]
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    print(f"frontier: {assessment['state'].upper()}  ready: {len(assessment['ready'])}")
+    for line in deadlock_advice(assessment) or ["nothing is blocked on a missing prerequisite"]:
+        print(f"  {line}")
     return 0
 
 
@@ -1487,6 +2040,13 @@ def cmd_unblock(args):
         else:
             deps.pop(fid, None)
         save_deps(deps)
+        # A classification must annotate a real edge (tools/dependency_check.py).
+        types = load_types()
+        dropped = [k for k in (dm.edge_key(fid, d) for d in wanted) if k in types["edges"]]
+        for k in dropped:
+            types["edges"].pop(k)
+        if dropped:
+            save_types(types)
     reason = args.reason or "(no reason given)"
     print(f"✓ {fid} no longer blocked on {sorted(wanted)} — {reason}")
     print(f"  remaining: {sorted(cur) if cur else 'none'}")
@@ -1494,12 +2054,11 @@ def cmd_unblock(args):
 
 
 def _sync_deps_into(wt: Path) -> None:
-    """Copy the canonical deps file into a worktree so it lands on main."""
-    if DEPS_FILE.exists():
-        (wt / "tools").mkdir(parents=True, exist_ok=True)
-        (wt / "tools" / "feature_deps.json").write_text(
-            DEPS_FILE.read_text(encoding="utf-8"), encoding="utf-8"
-        )
+    """Copy the canonical deps (and edge-type) files into a worktree so they land on main."""
+    for src, rel in ((DEPS_FILE, "tools/feature_deps.json"), (TYPES_FILE, dm.TYPES_REL)):
+        if src.exists():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _has_staged(wt: Path) -> bool:
@@ -1594,7 +2153,7 @@ def shared_state_violations(committed_paths: list[str], fid: str) -> list[str]:
     permanent = {"progress.d/README.md", "progress.d/.gitkeep"}
     bad = []
     for p in committed_paths:
-        if p in ("feature_list.json", "progress.txt", "tools/feature_deps.json"):
+        if p in ("feature_list.json", "progress.txt", "tools/feature_deps.json", dm.TYPES_REL):
             bad.append(p)
         elif p.startswith("progress.d/") and p != own_note and p not in permanent:
             bad.append(p)
@@ -1699,6 +2258,71 @@ def cmd_integrate(args):
     # directly with --attested-by. Captured here only so the ledger entry survives the
     # degrade rewriting `mode` below.
     forced_complete = mode == "complete" and args.force_complete
+    review_file = None
+    park_reason = None
+    if mode == "implemented":
+        # Implementation completion: contract + component evidence + an approving
+        # independent review. Both halves are produced HERE, by the integrator: it
+        # re-runs every declared component test itself, and it runs the reviewer
+        # itself over the branch's full diff. review.jsonl is a file the branch
+        # commits, so a round read from it is the implementer's account of a review.
+        # `passes` is never touched. A failure DEGRADES to `serialized` (the code still
+        # lands) and PARKS the feature, so it is not re-offered until something changes.
+        review_round = None
+        touched = [p for p in _branch_committed(wt) if p in GATE_PATHS]
+        if touched:
+            ok, problems = (
+                False,
+                [
+                    f"the branch changes the verification harness itself ({', '.join(touched)}); "
+                    "it would be judged by its own modified judge - implementation-complete for "
+                    "it needs the operator"
+                ],
+            )
+        else:
+            try:
+                # Cheap checks first (contract, declared tests re-run by the integrator),
+                # so a feature that cannot pass spends no reviewer quota.
+                ok, problems, _summary = evidence.implementation_verify(
+                    fid, reexecute_in=wt, require_review=False
+                )
+                if ok:
+                    review_round = integrator_review(fid)
+                    ok, problems, _summary = evidence.implementation_verify(
+                        fid, ledger=[review_round] if review_round else []
+                    )
+            except evidence.EvidenceError as exc:
+                ok, problems = False, [str(exc)]
+        if not ok:
+            print(
+                f"⚠ {fid}: implementation-complete gate not met - integrating as "
+                f"`serialized` (code lands; implementation stays incomplete; feature parked):",
+                file=sys.stderr,
+            )
+            for p in problems[:10]:
+                print(f"    · {p}", file=sys.stderr)
+            park_reason = "implementation gate: " + (problems[0] if problems else "not met")
+            mode = "serialized"
+        else:
+            # A fixed path under the primary's gitignored .harness/tmp/, overwritten each
+            # time: one file per feature, never an accumulating temp file.
+            review_file = evidence.LEDGER_DIR / "tmp" / f"integrator-review-{fid}.json"
+            review_file.parent.mkdir(parents=True, exist_ok=True)
+            review_file.write_text(json.dumps(review_round), encoding="utf-8")
+    if mode == "complete":
+        # The requirement close needs every prerequisite verified (close_feature.py
+        # refuses otherwise). Checking it HERE, before the rebase, degrades cleanly
+        # instead of failing late with exit 11 and the code not landing.
+        by_id_now = {f["id"]: f for f in load_features(fetch=False)}
+        pending = dm.close_gate(fid, live_deps(load_deps(), by_id_now), by_id_now)
+        if pending:
+            print(
+                f"⚠ {fid}: requirement close waits on unverified {', '.join(pending)} - "
+                f"integrating as `serialized`. If the implementation is done, record it with "
+                f"`integrate {fid} --mode implemented`.",
+                file=sys.stderr,
+            )
+            mode = "serialized"
     if mode == "complete":
         try:
             ok, problems, summary = evidence.verify(fid)
@@ -1854,6 +2478,37 @@ def cmd_integrate(args):
             # close commit is fresh each attempt — never rebased, so a concurrent
             # flip on main can't conflict on the whole-file feature_list rewrite.
             _sync_deps_into(wt)
+            if mode == "implemented":
+                close = _run(
+                    [
+                        sys.executable,
+                        str(wt / "tools" / "close_feature.py"),
+                        fid,
+                        "--implemented",
+                        "--review-file",
+                        str(review_file),
+                    ],
+                    check=False,
+                )
+                if close.returncode != 0:
+                    # Typically main moved while the review ran, so the pre-rebase
+                    # evidence and review heads no longer place. Land the code as
+                    # `serialized` and park, rather than stranding it with exit 11.
+                    print(
+                        f"⚠ {fid}: close_feature --implemented refused after the rebase "
+                        f"(exit {close.returncode}):\n{close.stderr.strip()}\n"
+                        f"  Integrating as `serialized` and parking; re-record and re-run "
+                        f"`integrate --mode implemented` on the rebased branch.",
+                        file=sys.stderr,
+                    )
+                    _run(
+                        ["git", "-C", str(wt), "checkout", base_ref(), "--", *INTEGRATOR_OWNED],
+                        check=False,
+                    )
+                    park_reason = (
+                        "post-rebase: evidence/review no longer placeable; re-run implemented"
+                    )
+                    mode = "serialized"
             if mode == "complete":
                 # No --attested-by here, ever. agent_pool is the agent's own CLI; an
                 # attestation it can grant itself is not an attestation, and writing
@@ -1906,11 +2561,11 @@ def cmd_integrate(args):
                 )
                 return 9
             if _has_staged(wt):
-                tag = (
-                    "verified e2e — flip passes:true + fold note"
-                    if mode == "complete"
-                    else f"{mode} — synced deps/notes (passes stays false)"
-                )
+                tag = {
+                    "complete": "verified e2e — flip passes:true + fold note",
+                    "implemented": "implementation complete - contract + component evidence "
+                    "+ independent review (passes stays false)",
+                }.get(mode, f"{mode} — synced deps/notes (passes stays false)")
                 _run(
                     [
                         "git",
@@ -1938,6 +2593,21 @@ def cmd_integrate(args):
 
         runtime = load_runtime()
         runtime["leases"].pop(fid, None)
+        if park_reason:
+            # Fingerprint against what just landed on main (the rebased worktree), so
+            # the park lifts when the contract, evidence, or a prerequisite changes -
+            # not merely because the primary checkout caught up with this push.
+            wt_feats = json.loads((wt / "feature_list.json").read_text(encoding="utf-8"))
+            wt_by_id = {f["id"]: f for f in wt_feats}
+            wt_deps = live_deps(load_json(wt / "tools" / "feature_deps.json", {}), wt_by_id)
+            runtime.setdefault("parked", {})[fid] = {
+                "kind": "test-failure",
+                "reason": park_reason[:300],
+                "fingerprint": current_fingerprint(
+                    fid, wt_by_id, wt_deps, dm.load_types(wt / dm.TYPES_REL), wt
+                ),
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
         save_runtime(runtime)
 
     print(f"✓ integrated {fid} (mode={mode}) → origin/main; lease released")
@@ -2047,6 +2717,40 @@ def main() -> int:
     bp.add_argument("id")
     bp.add_argument("--on", nargs="+", required=True, metavar="DEP_ID")
     bp.add_argument("--reason", default="")
+    bp.add_argument(
+        "--type",
+        choices=dm.EDGE_TYPES,
+        help="what the dependency blocks: implementation (needs its code), interface (needs "
+        "only its contract: give --contract), integration (needs it running to test), "
+        "verification (needs its evidence). Omitted = unclassified = gates implementation.",
+    )
+    bp.add_argument("--source", help="where the dependency is evidenced (file:line)")
+    bp.add_argument("--contract", help="interface edges: the file that defines the contract")
+    bp.add_argument("--symbol", help="interface edges: a name that must appear in --contract")
+    bp.add_argument(
+        "--retype",
+        action="store_true",
+        help="allow replacing an existing classification with a different --type",
+    )
+
+    pk = sub.add_parser("park", help="record a non-edge blocker; not re-offered until it changes")
+    pk.add_argument("id")
+    pk.add_argument(
+        "--kind",
+        required=True,
+        choices=("contract", "decision", "test-failure", "external", "other"),
+    )
+    pk.add_argument("--reason", required=True)
+    upk = sub.add_parser("unpark", help="return a parked feature to the frontier now")
+    upk.add_argument("id")
+    upk.add_argument(
+        "--reset-review-budget",
+        action="store_true",
+        help="OPERATOR ONLY (by convention, like adversarial_review.py --authorize-continue): "
+        "allow the integrator another round budget of reviews",
+    )
+    bl = sub.add_parser("blockers", help="the smallest set of prerequisites that restores progress")
+    bl.add_argument("--json", action="store_true")
 
     up = sub.add_parser("unblock", help="retract dependency edge(s) recorded by `block`")
     up.add_argument("id")
@@ -2055,7 +2759,13 @@ def main() -> int:
 
     ip = sub.add_parser("integrate", help="rebase+merge to main; flip passes on complete")
     ip.add_argument("id")
-    ip.add_argument("--mode", choices=["complete", "partial", "serialized"], required=True)
+    ip.add_argument(
+        "--mode",
+        choices=["complete", "implemented", "partial", "serialized"],
+        required=True,
+        help="implemented: record implementation complete (contract + component evidence + "
+        "independent review), passes stays false. complete: requirement close.",
+    )
     ip.add_argument(
         "--force-complete",
         action="store_true",
@@ -2086,6 +2796,9 @@ def main() -> int:
         "claim": cmd_claim,
         "block": cmd_block,
         "unblock": cmd_unblock,
+        "park": cmd_park,
+        "unpark": cmd_unpark,
+        "blockers": cmd_blockers,
         "integrate": cmd_integrate,
         "heartbeat": cmd_heartbeat,
         "release": cmd_release,

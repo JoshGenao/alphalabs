@@ -131,6 +131,15 @@ flowchart TD
     C --> PROC(["appears in status under<br/>blocked on an external resource<br/>= the procurement backlog"])
 ```
 
+**A class-B edge has a type, and the type decides what it blocks.**
+`tools/dependency_types.json` records each edge as `implementation`, `interface`,
+`integration`, or `verification`. Only the first two keep a feature from being
+claimed; the last two gate its integration run and its requirement close. A feature
+whose implementation is recorded complete (`integrate --mode implemented`) unblocks
+downstream implementation while its own verification is still open. A blocker that is
+not a feature edge goes to `agent_pool.py park`, and the feature is not re-offered
+until something it depends on changes.
+
 **Never use `block --on` for class C.** A dependency edge asserts some feature owns
 the blocker; if none does, the edge never clears and the feature is parked forever.
 Class C today: an SMS provider account, a PTP-disciplined host, 30 real market

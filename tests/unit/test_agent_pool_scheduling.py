@@ -10,6 +10,7 @@ and make its terminal state legible (done vs deadlock), plus the anti-churn
 """
 
 import agent_pool
+import dependency_model as dm
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -107,10 +108,12 @@ def test_assess_frontier_progressing_with_ready_work():
     assert a["state"] == "progressing" and "B" in a["ready"]
 
 
-def test_assess_frontier_deadlock_names_guarded_blocker(monkeypatch):
-    # R is ready but awaiting human verification (serialized note); everything
-    # else depends on R → nothing claimable → deadlock, and R is guarded because
-    # its text trips the IB/dashboard honesty guard.
+def test_merged_code_without_recorded_implementation_is_claimable_not_awaiting(monkeypatch):
+    # This used to be the deadlock case: R's session note said `serialized`, so R
+    # was "awaiting human verification" and everything behind it froze. But R's
+    # implementation was never RECORDED complete (no contract, no component
+    # evidence, no independent review) - that is executable work, not a wait. The
+    # note alone no longer parks a feature.
     features = [
         _feat("R", category="ui_requirements", description="provide a web dashboard"),
         _feat("C1"),
@@ -118,8 +121,31 @@ def test_assess_frontier_deadlock_names_guarded_blocker(monkeypatch):
     ]
     deps = {"C1": ["R"], "C2": ["R"]}
     monkeypatch.setattr(agent_pool, "serialized_notes", lambda *a, **k: {"R"})
-    a = agent_pool.assess_frontier(features, deps, {"leases": {}})
+    a = agent_pool.assess_frontier(features, deps, {"leases": {}}, types={"edges": {}})
+    assert a["state"] == "progressing"
+    assert a["ready"] == ["R"]
+    assert a["phases"]["R"] == "implement"
+    assert a["awaiting_verification"] == []
+
+
+def test_assess_frontier_deadlock_names_guarded_blocker(monkeypatch):
+    # R's implementation IS complete and its verification needs a human (its text
+    # trips the IB/dashboard honesty guard). C1 and C2 are implemented too, and their
+    # requirement close waits on R's - so nothing is claimable: deadlock, R is the
+    # guarded root blocker, and R sits in the operator's queue.
+    impl = {"status": "complete", "commit": "abc", "ts": "2026-11-10"}
+    features = [
+        _feat("R", category="ui_requirements", description="provide a web dashboard"),
+        _feat("C1"),
+        _feat("C2"),
+    ]
+    for f in features:
+        f["implementation"] = {**impl, "steps_digest": dm.steps_digest(f.get("steps", []))}
+    deps = {"C1": ["R"], "C2": ["R"]}
+    monkeypatch.setattr(agent_pool, "serialized_notes", lambda *a, **k: set())
+    a = agent_pool.assess_frontier(features, deps, {"leases": {}}, types={"edges": {}})
     assert a["state"] == "deadlock"
     assert a["awaiting_verification"] == ["R"]
+    assert a["phases"]["C1"] == a["phases"]["C2"] == "verify-blocked"
     assert "R" in a["root_blockers"]
     assert "R" in a["guarded_root_blockers"]  # matches "dashboard" keyword

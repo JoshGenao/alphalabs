@@ -354,18 +354,140 @@ def record_cooldown(summary: str, now: datetime | None = None) -> datetime | Non
 # ----------------------------------------------------------------------------
 # Reviewers (I/O)
 # ----------------------------------------------------------------------------
+def current_head() -> str:
+    """HEAD of the reviewed tree, or "" when it cannot be read. Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+PER_FILE_CHARS = 40_000
+# The Codex companion takes its focus text as ONE argv argument, and Linux caps a
+# single argument at 128 KiB. Keep the context well under it, and say when it is cut.
+CODEX_CONTEXT_BYTES = 100_000
+
+
+def cap_context(text: str, limit: int = CODEX_CONTEXT_BYTES) -> str:
+    """Trim ``text`` to ``limit`` UTF-8 bytes, marking the cut so the reviewer knows."""
+    data = text.encode("utf-8")
+    if len(data) <= limit:
+        return text
+    marker = (
+        f"\n[CONTEXT TRUNCATED at {limit} of {len(data)} bytes for the command line. "
+        "Read the contract and implementation files from the repository; treat anything "
+        "not shown as unreviewed.]"
+    )
+    keep = limit - len(marker.encode("utf-8"))
+    return data[:keep].decode("utf-8", errors="ignore") + marker
+
+
+def feature_context(fid: str | None = None) -> str:
+    """What the reviewer should judge the diff AGAINST: contract and test results.
+
+    The diff alone lets a reviewer find defects; it cannot tell the reviewer what
+    the code was supposed to do. With the acceptance contract and the component
+    results beside it, the reviewer can check the implementation against its
+    criteria instead of trusting the author's account of them. The author's
+    session notes are deliberately NOT included: claims are not evidence.
+    Never raises - a missing contract just means a diff-only review, as before.
+    """
+    fid = fid or os.environ.get("ATP_FEATURE_ID", "")
+    if not fid:
+        return ""
+    try:
+        contract_file = REPO_ROOT / "docs" / "contracts" / f"{fid}.json"
+        record_file = REPO_ROOT / ".harness" / "runs" / fid / "evidence.json"
+        parts = []
+        if contract_file.is_file():
+            parts.append(
+                f"ACCEPTANCE CONTRACT for {fid} (judge the diff against every component "
+                f"obligation; a passing test that does not exercise its criterion is a "
+                f"finding):\n{contract_file.read_text(encoding='utf-8')}"
+            )
+        if record_file.is_file():
+            rec = json.loads(record_file.read_text(encoding="utf-8"))
+            lines = []
+            for oid, slot in sorted((rec.get("obligations") or {}).items()):
+                runs = slot.get("runs") or []
+                if runs:
+                    last = runs[-1]
+                    lines.append(
+                        f"- {oid} ({slot.get('level')}): exit {last.get('exit_code')} "
+                        f"at {str(last.get('head', ''))[:10]} running `{last.get('command')}`"
+                    )
+            if lines:
+                parts.append(
+                    "RECORDED COMPONENT RESULTS (machine-executed; re-run any you doubt):\n"
+                    + "\n".join(lines)
+                )
+        # A feature whose code already landed on main has almost nothing in its branch
+        # diff - the contract and the evidence. Show the reviewer the implementation
+        # the contract names, or it can approve code it never saw.
+        if contract_file.is_file():
+            contract = json.loads(contract_file.read_text(encoding="utf-8"))
+            budget = 150_000
+            for rel in contract.get("implementation_paths") or []:
+                path = (REPO_ROOT / str(rel)).resolve()
+                if not path.is_file() or REPO_ROOT.resolve() not in path.parents:
+                    parts.append(f"IMPLEMENTATION FILE {rel}: MISSING")
+                    continue
+                full = path.read_text(encoding="utf-8", errors="replace")
+                if budget <= 0:
+                    parts.append(
+                        f"IMPLEMENTATION FILE {rel}: NOT SHOWN (context budget spent) - "
+                        "treat it as unreviewed; read it from the repository yourself"
+                    )
+                    continue
+                shown = full[: min(PER_FILE_CHARS, budget)]
+                budget -= len(shown)
+                tail = (
+                    f"\n[TRUNCATED: showed the first {len(shown)} of {len(full)} characters. "
+                    "The rest was NOT shown - read the file from the repository before "
+                    "approving, or treat the unseen code as unreviewed.]"
+                    if len(shown) < len(full)
+                    else ""
+                )
+                parts.append(
+                    f"IMPLEMENTATION FILE {rel} (as on this branch; it may already be on main "
+                    f"and absent from the diff - judge it against the contract):\n{shown}{tail}"
+                )
+        return "\n\n".join(parts)
+    except Exception:  # noqa: BLE001 - context is advisory; never fail the review
+        return ""
+
+
 def run_codex(base_ref: str) -> tuple[int, str]:
     # ATP_REVIEW_DISPATCHED tells codex_review.sh that THIS process will record the
     # round, so it must not record it too. Without the flag a dispatched round would
     # land in review.jsonl twice and inflate every count derived from it.
     env = {**os.environ, "ATP_REVIEW_DISPATCHED": "1"}
-    proc = subprocess.run(
-        ["bash", str(CODEX_REVIEW), base_ref],
-        cwd=str(REPO_ROOT),
-        text=True,
-        capture_output=True,
-        env=env,
-    )
+    context = cap_context(feature_context())
+    ctx_file = None
+    if context:
+        import tempfile  # noqa: PLC0415
+
+        fd, ctx_file = tempfile.mkstemp(prefix="atp-review-context-", suffix=".md")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(context)
+        env["ATP_REVIEW_CONTEXT_FILE"] = ctx_file
+    try:
+        proc = subprocess.run(
+            ["bash", str(CODEX_REVIEW), base_ref],
+            cwd=str(REPO_ROOT),
+            text=True,
+            capture_output=True,
+            env=env,
+        )
+    finally:
+        if ctx_file:
+            Path(ctx_file).unlink(missing_ok=True)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -383,6 +505,9 @@ def run_claude_fallback(
     if paths:
         cmd += ["--", *paths]
     diff = subprocess.run(cmd, text=True, capture_output=True).stdout
+    context = feature_context()
+    if context:
+        diff = f"{context}\n\n===== DIFF UNDER REVIEW =====\n{diff}"
     prompt = CRITIC_PROMPT.read_text(encoding="utf-8")
     proc = subprocess.run(
         [
@@ -774,6 +899,11 @@ def round_record(result: dict) -> dict:
         "kind": ROUND_KIND,
         "reviewer": result.get("reviewer", "?"),
         "verdict": result.get("verdict", "?"),
+        # The commit the reviewer judged. A verdict is a statement ABOUT A TREE;
+        # without the head, the implementation gate (tools/evidence.py
+        # implementation_verify) cannot tell an approval of this code from an
+        # approval of code that has since changed underneath it.
+        "head": str(result.get("head") or current_head()),
         "n_findings": len(findings),
         # The rule ids are what P2-4 mines for defect classes worth promoting into
         # tools/critic_check.py — the loop the playbooks currently run by hand.

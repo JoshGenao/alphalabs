@@ -17,6 +17,19 @@ trigger matches your feature.** Do not read them all; do not skip the always-on 
 add it — same rule format, with provenance — in your chore commit. That is what makes the
 next session smarter than this one.
 
+## Implementation and verification are separate events
+
+Implementation completion and system requirement verification are separate lifecycle
+events. A feature completes its implementation when its acceptance contract's
+declared component tests pass and an independent reviewer approves - both
+re-run by the integrator itself at `integrate --mode implemented`
+(`tools/evidence.py implemented <ID>` is the pre-check).
+Outstanding integration and system obligations stay tracked in
+`docs/contracts/<ID>.json`. Only `implementation` and `interface` edges
+(`tools/dependency_types.json`) block a claim; a verification dependency is never a
+reason to stop building. A requirement is verified (`passes: true`) only on
+complete evidence, and only after every prerequisite is verified.
+
 ## Rules that cost the most when broken
 
 1. **On a BLOCK, fix the *class*, not the instance.** Before re-requesting review: grep

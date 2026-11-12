@@ -62,6 +62,12 @@ back to `main`. No file, branch, or port collisions.
   private port block, then opens an interactive `claude` session in that worktree
   seeded with `prompts/coding_prompt.md`. Open N terminals → N agents on N
   features. (`tools/spawn_agents.sh` still exists for headless/CI pre-assignment.)
+- **Typed dependencies:** each edge has a type in `tools/dependency_types.json` -
+  `implementation`, `interface`, `integration`, or `verification`. Only the first two
+  gate a claim; integration and verification edges gate the integration run and the
+  requirement close. Untyped edges gate implementation (fail closed).
+  `tools/dependency_check.py` (CI) refuses an unsound classification or an
+  implementation cycle; `agent_pool.py blockers` names what would restore progress.
 - **Dependency graph:** `tools/feature_deps.json` (committed) records what blocks
   what; it's seeded (`agent_pool.py seed`) and **self-learns** — when an agent
   hits an unbuilt prerequisite it runs `agent_pool.py block <id> --on <dep>`,
@@ -79,7 +85,14 @@ back to `main`. No file, branch, or port collisions.
 - **Integrate + flip (auto):** after the full gate (`run_ci_locally.sh` + tests +
   both critics — deterministic `critic_check.py` **and** the judgment pass via
   `tools/adversarial_review.py`, Codex or fresh-context Claude), the agent runs
-  `agent_pool.py integrate <id> --mode complete|serialized`. `complete` rebases
+  `agent_pool.py integrate <id> --mode implemented|complete|serialized`.
+  `implemented` re-runs the contract's declared component tests, runs the
+  independent reviewer itself over the branch's full diff, and only on an approval
+  records `implementation: complete` (`passes` stays false; downstream
+  implementation unblocks). A failed gate integrates `serialized` and parks the feature.
+  "Independent" means a separate fresh-context reviewer that also sees the contract's
+  `implementation_paths`; it is not a security boundary, and a branch that edits the
+  gate itself (`GATE_PATHS`) is left to the operator. `complete` rebases
   on `main`, runs `close_feature.py <id> --verified` (flip `passes:true` + fold
   note), and fast-forward-pushes `main` — all under the lock. **Honesty guard:**
   a feature with a step that *needs* IB/integration/live integrates
@@ -112,6 +125,8 @@ back to `main`. No file, branch, or port collisions.
 | Judgment critic dispatcher | `tools/adversarial_review.py` | Adversarial review with Codex→fresh-context-Claude failover on usage limits |
 | Codex reviewer (low-level) | `tools/codex_review.sh` | The Codex leg of the judgment pass (wrapped by the dispatcher) |
 | Dependency graph | `tools/feature_deps.json` | Committed DAG of feature prerequisites (seeded + self-learned) |
+| Dependency types | `tools/dependency_types.json` + `tools/dependency_model.py` | What each edge blocks (implementation / interface / integration / verification) |
+| Acceptance contracts | `docs/contracts/` + `tools/contracts.py` | Per-feature component / integration / system obligations; `contracts.py requirements` traces SyRS → features → status |
 | Parallel launcher (headless) | `tools/spawn_agents.sh` | Pre-assign worktrees to headless agents (legacy/CI path) |
 | Feature closer | `tools/close_feature.py` | Flip `passes` + fold the progress note (run by `integrate` on main) |
 | Worktree teardown | `tools/cleanup_agents.sh` | Remove closed agents' worktrees + branches |

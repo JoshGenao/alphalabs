@@ -220,3 +220,36 @@ WHERE the findings land, not how many there are. `(SRS-MD-005 r12)`
     `compute()` was not enough: `block --on <R2 id>` would record an edge the scheduler
     then ignores, so the feature returns to the frontier and the agent churns. `block`
     refuses it, all-or-nothing, like a cycle. `(MVP scope, 2026-10-08)`
+
+## Implementation is not verification (typed dependencies, 2026-11-10)
+
+28. **Record WHAT a dependency blocks, not just that it exists.** One `passes` flag
+    gated claims, so a feature waited on its prerequisite's live window, critic verdict,
+    and human attestation before it could even start: 37 of 50 open MVP features had
+    merged code while 41 showed "blocked" and 4 were claimable. Of 70 audited edges, 1
+    was a true implementation dependency; 35 were verification waits or stale. Type
+    every `block` (`--type`), and remember an `integration` or `verification` edge is
+    not a reason to stop building. `(dependency audit 2026-11-07)`
+29. **Merged code is not implemented.** `implementation: complete` needs a contract,
+    executed component evidence, and an approving round in the reviewer's own ledger
+    at that commit. A `serialized` note means "the code landed"; the remaining work
+    (contract, component evidence, review) is claimable, not a wait. `(2026-11-10)`
+30. **A name in a file is not a contract.** UI-4 needs `activation_id` in
+    `LIQUIDATION_TIMEOUT_FIELDS`; the word already appears in `audit.py`'s docstring
+    and its correlation ids. Give an interface edge a `pattern` when a bare symbol
+    would match something that is not the contract. `(UI-4, 2026-11-10)`
+31. **Moving the dependency rule must not weaken the close.** Claims now ignore
+    integration and verification edges, so the requirement close (`close_feature.py
+    --verified`) checks every prerequisite of every type instead. Relaxing WHEN work
+    starts is safe only if WHAT a close requires is unchanged. `(2026-11-10)`
+32. **A ledger the branch commits is the implementer's account, not the review.** The
+    first version of the implemented gate trusted `.harness/runs/<id>/review.jsonl`;
+    `adversarial_review.py --record-round` appends any payload to it. The integrator now
+    runs the reviewer itself and logs to the primary checkout's gitignored ledger -
+    writing to the worktree's tracked file dirtied it and made integrate refuse (exit 7),
+    which a unit test that mocked the append never saw. Test integrate paths end to end
+    against scratch repos (`tests/unit/test_integrate_implemented.py`). `(review r1-r2, 2026-11-11)`
+33. **An obligation id is a label, not evidence.** A passing run counts only if it ran a
+    DECLARED test, and re-execution runs the declared command - never the recorded argv,
+    which the branch also wrote. `(review r1, 2026-11-11)`
+

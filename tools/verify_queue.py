@@ -250,7 +250,18 @@ def build_queue(features=None, deps=None, runtime=None) -> dict:
     runtime = runtime if runtime is not None else agent_pool.load_runtime()
 
     by_id = {f["id"]: f for f in features}
-    _ready, blocked, active, _held, _ = agent_pool.compute(features, deps, runtime)
+    # This queue answers "what stands between the feature and a CLOSE", so it needs
+    # every unverified prerequisite of every type - not compute()'s `blocked`, which
+    # for an unimplemented feature holds only its implementation gate. Reading that
+    # instead put 39 features in class A ("only evidence missing") while
+    # close_feature.py refused every one of them (CLAUDE.md rule 2: a second reader
+    # does not inherit the first reader's guarantees).
+    states, _by, active, _held, _live = agent_pool.classify(features, deps, runtime)
+    blocked = {
+        fid: list(dict.fromkeys([b["dep"] for b in st["impl_blockers"]] + st["close_blockers"]))
+        for fid, st in states.items()
+        if st["impl_blockers"] or st["close_blockers"]
+    }
     impact = agent_pool.impact_scores(deps, by_id)
     cycles = graph_cycles(deps)
     cycle_members = {fid for path in cycles for fid in path}

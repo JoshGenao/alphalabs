@@ -1,0 +1,557 @@
+{
+  "$comment": [
+    "Edge types for tools/feature_deps.json. Key: 'A -> B' means A depends on B.",
+    "implementation: A's code needs B's implementation complete (gates A's implementation).",
+    "interface: A needs only B's contract, which must exist at contract.path (gates until it does).",
+    "integration: proving A's integration obligations needs B running (gates that run only).",
+    "verification: A's requirement evidence relies on B's (gates nothing before the close).",
+    "Unclassified edges gate implementation. Every requirement close still needs every",
+    "prerequisite of every type verified (tools/close_feature.py). `review` marks an",
+    "operator follow-up; nothing here removes an edge. See tools/dependency_model.py."
+  ],
+  "edges": {
+    "ERR-7 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "ERR-7's criterion has no logging clause",
+      "review": "proposed-removal: no matching criterion clause",
+      "source": "feature_list.json ERR-7",
+      "type": "verification"
+    },
+    "ERR-7 -> SRS-RESV-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "the same demotion-timeout behaviour (SRS.md traces ERR-7 to RESV-004)",
+      "source": "docs/SRS.md:361",
+      "type": "verification"
+    },
+    "ERR-8 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the KILL_SWITCH LIQUIDATION_TIMEOUT record is already produced",
+      "source": "python/atp_safety/audit.py:160",
+      "type": "verification"
+    },
+    "ERR-8 -> SRS-SAFE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "kill-switch activation runtime, on main",
+      "source": "crates/atp-orchestrator/src/kill_switch_timeout.rs",
+      "type": "verification"
+    },
+    "ERR-9 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "GET /api/v1/system/status is runtime-owned and on main",
+      "source": "python/atp_runtime/runtime.py:120",
+      "type": "verification"
+    },
+    "ERR-9 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the sink exists; ERR-9's own readiness log producer is its own work",
+      "source": "python/atp_logging/records.py:105",
+      "type": "verification"
+    },
+    "SRS-API-001 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "LIVE_DESIGNATION handler is registered",
+      "source": "python/atp_orchestration/live_designation.py:323",
+      "type": "verification"
+    },
+    "SRS-API-001 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "LOGS handler is registered",
+      "source": "python/atp_logs_service/wiring.py:88",
+      "type": "verification"
+    },
+    "SRS-API-001 -> SRS-RESV-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "Reservoir ranking; the MVP criterion excludes it",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:136",
+      "type": "verification"
+    },
+    "SRS-API-001 -> SRS-SAFE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "KILL_SWITCH handler is registered",
+      "source": "python/atp_safety/wiring.py:60",
+      "type": "verification"
+    },
+    "SRS-BT-001 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "contract": {
+        "path": "python/atp_runtime/registry.py"
+      },
+      "reason": "only the handler registry, to register POST /api/v1/backtests",
+      "review": "reversed: API-001 needs BT-001's launch handler",
+      "source": "python/atp_runtime/contract.py:45",
+      "type": "interface"
+    },
+    "SRS-BT-001 -> UI-3": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the dashboard date pickers",
+      "review": "reversed: UI-3's launch route returns 501 naming owner SRS-BT-001",
+      "source": "progress.d/session-UI-3.md:27",
+      "type": "integration"
+    },
+    "SRS-BT-004 -> SRS-MD-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "low",
+      "reason": "a live mark feed into PaperMetricsAccumulator::mark",
+      "review": "wrong-target: BT-004's note names the paper runtime, never MD-001",
+      "source": "progress.d/session-SRS-BT-004.md:80",
+      "type": "integration"
+    },
+    "SRS-BT-005 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the backtest benchmark is already shown via UI-3's drill-down",
+      "review": "proposed-removal: predates UI-3",
+      "source": "python/atp_dashboard/backtests.py:312",
+      "type": "verification"
+    },
+    "SRS-BT-007 -> SRS-BT-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a production SweepStrategyFactory backed by a Python strategy host; every impl today is a fixture",
+      "review": "wrong-target: the real need is an unowned Python backtest host",
+      "source": "progress.d/session-SRS-BT-007.md:80",
+      "type": "integration"
+    },
+    "SRS-BT-008 -> SRS-BT-007": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "SweepRunner is on main",
+      "source": "crates/atp-simulation/src/sweep.rs",
+      "type": "verification"
+    },
+    "SRS-DATA-003 -> SRS-DATA-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "contract": {
+        "path": "crates/atp-adapters/src/lib.rs",
+        "symbol": "BulkEquityDataProvider"
+      },
+      "reason": "the BulkEquityDataProvider port",
+      "source": "crates/atp-adapters/src/lib.rs:401",
+      "type": "interface"
+    },
+    "SRS-DATA-012 -> SRS-DATA-006": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "contract": {
+        "path": "crates/atp-data/src/store.rs",
+        "symbol": "OptionChainSnapshot"
+      },
+      "reason": "strategy-facing option-chain data; the store kind exists",
+      "source": "crates/atp-data/src/store.rs:152",
+      "type": "interface"
+    },
+    "SRS-DATA-012 -> SRS-MD-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "contract": {
+        "path": "crates/atp-market-data/src/subscriptions.rs"
+      },
+      "reason": "a normalization-mode field on live subscription requests",
+      "source": "progress.d/session-SRS-DATA-012.md:111",
+      "type": "interface"
+    },
+    "SRS-DATA-019 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "cancel resting orders and reject new ones on the live path",
+      "source": "progress.d/session-SRS-DATA-019.md:82",
+      "type": "integration"
+    },
+    "SRS-DATA-019 -> SRS-SDK-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "contract": {
+        "path": "python/atp_strategy/dispatch.py"
+      },
+      "reason": "the strategy callback dispatch seam",
+      "review": "wrong-target: a corporate-action callback is not in SDK-004's criterion",
+      "source": "python/atp_strategy/dispatch.py",
+      "type": "interface"
+    },
+    "SRS-DATA-020 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "not needed by the MVP criterion (re-read IB positions; never adjust)",
+      "review": "proposed-removal: predates the 2026-10-08 MVP split",
+      "source": "docs/SRS.md:131",
+      "type": "verification"
+    },
+    "SRS-DATA-020 -> SRS-SDK-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the MVP criterion has no strategy callback",
+      "review": "proposed-removal: predates the 2026-10-08 MVP split",
+      "source": "docs/SRS.md:131",
+      "type": "verification"
+    },
+    "SRS-DATA-021 -> SRS-EXE-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the VirtualOrderBook held by WiredPaperSimulation",
+      "source": "progress.d/session-SRS-DATA-021.md:52",
+      "type": "integration"
+    },
+    "SRS-EXE-001 -> SRS-MD-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "the live host's ib tier refuses to start until a production MarketDataFreshnessProbe exists (MD-004's deliverable)",
+      "source": "crates/atp-orchestrator/src/bin/live_execution_host.rs:189",
+      "type": "implementation"
+    },
+    "SRS-EXE-001 -> SRS-PERF-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "PTP latency measurement; SRS \u00a73.1 measures EXE-001's p95 on the host monotonic clock",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:124",
+      "type": "verification"
+    },
+    "SRS-EXE-002 -> SRS-SDK-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "waits on a deployed paper-strategy order path into dispatch_order; SDK-004's paper seam is already built",
+      "review": "wrong-target: the real need is an unowned deployed paper-strategy runtime",
+      "source": "progress.d/session-SRS-EXE-002.md:8",
+      "type": "integration"
+    },
+    "SRS-EXE-003 -> SRS-EXE-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "contract": {
+        "path": "crates/atp-types/src/composite_order.rs",
+        "symbol": "OptionContractIdentity"
+      },
+      "reason": "needs only the OptionContractIdentity type",
+      "source": "progress.d/session-SRS-EXE-004.md:127",
+      "type": "interface"
+    },
+    "SRS-EXE-003 -> SRS-EXE-008": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "'state-tracked' needs the lifecycle ledger wired into submissions",
+      "source": "crates/atp-types/src/order_lifecycle.rs",
+      "type": "integration"
+    },
+    "SRS-EXE-004 -> SRS-UI-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a composite dashboard position; UI-002's criterion covers only position count",
+      "review": "wrong-target: no positions view exists and no feature owns one",
+      "source": "progress.d/session-SRS-EXE-004.md:122",
+      "type": "integration"
+    },
+    "SRS-EXE-005 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "state-capture loop must be wired into the live host and exercised with a real restart",
+      "source": "progress.d/session-SRS-EXE-005.md:105",
+      "type": "integration"
+    },
+    "SRS-EXE-008 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "OrderLedger submit/cancel_replace must be wired into the live path",
+      "source": "crates/atp-execution/src/outbox.rs:155",
+      "type": "integration"
+    },
+    "SRS-EXE-008 -> SRS-EXE-009": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "durable ledger persistence; the outbox already consumes OrderLedger::submit",
+      "source": "crates/atp-execution/src/outbox.rs:155",
+      "type": "verification"
+    },
+    "SRS-EXE-009 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "outbox is wired into the host (route_order_durably); needs the ib tier and a real open-orders source",
+      "source": "progress.d/session-SRS-EXE-009.md:137",
+      "type": "integration"
+    },
+    "SRS-LOG-001 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "ORDER_ROUTING coverage: nothing writes ROUTING_OUTCOME records yet",
+      "source": "python/atp_dashboard/logs.py:131",
+      "type": "integration"
+    },
+    "SRS-LOG-001 -> SRS-MD-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "SUBSCRIPTION_CHANGE coverage: change events exist, the LogRecord bridge is unowned",
+      "source": "python/atp_dashboard/logs.py:184",
+      "type": "integration"
+    },
+    "SRS-LOG-001 -> SRS-RESV-005": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "HOT_SWAP promotion coverage: the gate emits no LogRecord",
+      "source": "python/atp_dashboard/logs.py:170",
+      "type": "integration"
+    },
+    "SRS-MD-001 -> SRS-PERF-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "PTP latency measurement; global rule 2 measures latency on the host clock at p95",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:100",
+      "type": "verification"
+    },
+    "SRS-MD-002 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "operator-alert display; ALERTS belongs to NOTIF-001, which passes",
+      "review": "proposed-removal: added without rationale in a531262",
+      "source": "python/atp_runtime/contract.py",
+      "type": "verification"
+    },
+    "SRS-MD-004 -> SRS-MD-003": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "uses HeartbeatFreshnessMonitor::combined_line_freshness, which is on main; waited only for MD-003's flag",
+      "source": "crates/atp-market-data/src/lib.rs:745",
+      "type": "verification"
+    },
+    "SRS-MD-007 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "SEQUENCE_GAP sink, on main",
+      "source": "progress.d/session-SRS-MD-007.md:79",
+      "type": "verification"
+    },
+    "SRS-MD-007 -> SRS-MD-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "gap-stale must block orders through the production freshness probe",
+      "source": "crates/atp-execution/src/order_routing.rs",
+      "type": "integration"
+    },
+    "SRS-RESV-001 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a 1 live + 5 paper system test on the reference host",
+      "source": "python/atp_dashboard/loadgen.py",
+      "type": "integration"
+    },
+    "SRS-RESV-001 -> SRS-PERF-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "PTP latency measurement; global rule 2 uses the host clock",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:100",
+      "type": "verification"
+    },
+    "SRS-RESV-004 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "durable log sink, which is on main",
+      "source": "python/atp_logging/persistence.py",
+      "type": "verification"
+    },
+    "SRS-RESV-004 -> SRS-RESV-005": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "POST /api/v1/hot-swap is RESV-005's route; RESV-004's demotion criterion never needs it",
+      "review": "reversed: RESV-005 needs RESV-004's real demotion runtime, not the other way round",
+      "source": "python/atp_orchestration/hot_swap_execution.py:659",
+      "type": "verification"
+    },
+    "SRS-RESV-005 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "'starts live' needs the live host to accept --transport ib",
+      "source": "progress.d/session-SRS-RESV-005.md:266",
+      "type": "integration"
+    },
+    "SRS-SAFE-001 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "live resting-order and position producers plus a real transport",
+      "source": "progress.d/session-SRS-SAFE-001.md:157",
+      "type": "integration"
+    },
+    "SRS-SAFE-001 -> SRS-EXE-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "real paper strategies registered on the halt gates",
+      "source": "crates/atp-simulation/src/halt.rs",
+      "type": "integration"
+    },
+    "SRS-SAFE-002 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a durable lockout workflow that is not in SAFE-002's criterion",
+      "review": "proposed-removal: no matching criterion clause",
+      "source": "progress.d/session-SRS-SAFE-002.md:124",
+      "type": "verification"
+    },
+    "SRS-SAFE-003 -> ERR-9": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "contract": {
+        "path": "python/atp_readiness/gate.py"
+      },
+      "reason": "the readiness gate on the live order path; wiring it is SAFE-003's own work",
+      "review": "mostly spurious: ERR-9's criterion is a startup-config hold",
+      "source": "progress.d/session-SRS-SAFE-003.md:155",
+      "type": "interface"
+    },
+    "SRS-SAFE-003 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "binding a real connectivity producer into the ib tier",
+      "review": "ownership overlap: EXE-001 claims the same connectivity-producer work",
+      "source": "progress.d/session-SRS-EXE-001.md:219",
+      "type": "integration"
+    },
+    "SRS-SAFE-003 -> SRS-MD-005": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "ScheduledRestartConnectivity is on main; waits only for MD-005's flag",
+      "source": "crates/atp-orchestrator/src/restart_window_connectivity.rs:362",
+      "type": "verification"
+    },
+    "SRS-SDK-004 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "live fill callbacks need a broker-fill path through the live host; the IB exec stream is unowned",
+      "source": "progress.d/session-SRS-SDK-004.md:85",
+      "type": "integration"
+    },
+    "SRS-SDK-007 -> SRS-MD-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a live minute feed into ctx.consolidate; the criterion names no live feed",
+      "review": "over-broad: the historical path already meets the criterion text",
+      "source": "progress.d/session-SRS-SDK-007.md:5",
+      "type": "integration"
+    },
+    "SRS-SEC-001 -> SRS-LOG-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "redaction at the persistence boundary, on main",
+      "source": "python/atp_logging/redaction.py",
+      "type": "verification"
+    },
+    "SRS-SIM-004 -> SRS-EXE-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "a paper container lifecycle to run the 60 s timer and the restart",
+      "source": "progress.d/session-SRS-SIM-004.md:4",
+      "type": "integration"
+    },
+    "SRS-UI-002 -> SRS-BT-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the per-strategy P&L cell needs a runtime metrics producer",
+      "source": "python/atp_dashboard/inventory.py:99",
+      "type": "integration"
+    },
+    "SRS-UI-003 -> SRS-RESV-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "SYS-48 rankings; the MVP criterion excludes them",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:133",
+      "type": "verification"
+    },
+    "UI-1 -> SRS-UI-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "roll-up of the inventory panel",
+      "source": "docs/SRS.md:329",
+      "type": "verification"
+    },
+    "UI-1 -> SRS-UI-003": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "roll-up of the account and reservoir panels",
+      "source": "docs/SRS.md:329",
+      "type": "verification"
+    },
+    "UI-2 -> SRS-BT-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "key-metric cells need a runtime metrics producer",
+      "source": "progress.d/session-UI-2.md:84",
+      "type": "integration"
+    },
+    "UI-2 -> SRS-EXE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "the promote-live handler, on main since 2026-10-10",
+      "source": "python/atp_orchestration/live_designation.py:323",
+      "type": "verification"
+    },
+    "UI-3 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "the backtest launch handler; contract.py names SRS-BT-001 as its owner",
+      "review": "wrong-target: re-pointing at SRS-BT-001 would form a cycle with BT-001 -> UI-3",
+      "source": "python/atp_runtime/contract.py:45",
+      "type": "verification"
+    },
+    "UI-4 -> SRS-SAFE-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "real wire_kill_switch composed into the dashboard env; on main",
+      "source": "progress.d/session-UI-4.md:128",
+      "type": "verification"
+    },
+    "UI-4 -> SRS-SAFE-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "contract": {
+        "path": "python/atp_safety/audit.py",
+        "pattern": "LIQUIDATION_TIMEOUT_FIELDS[^=]*=\\s*\\([^)]*\\\"activation_id\\\""
+      },
+      "reason": "needs an activation id in the LIQUIDATION_TIMEOUT record schema, which does not have one yet",
+      "source": "progress.d/session-UI-4.md:133",
+      "type": "interface"
+    },
+    "UI-5 -> SRS-API-001": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "hot-swap handlers are now bound by RESV-003 and RESV-005",
+      "review": "proposed-removal: predates RESV-005's handler",
+      "source": "python/atp_orchestration/hot_swap_execution.py:659",
+      "type": "verification"
+    },
+    "UI-5 -> SRS-RESV-002": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "high",
+      "reason": "Reservoir ranking; the MVP Hot-Swap is a manual trigger",
+      "review": "proposed-removal: R2 target (SyRS \u00a71.1 rule 5)",
+      "source": "docs/SRS.md:144",
+      "type": "verification"
+    },
+    "UI-5 -> SRS-RESV-004": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "demotion_pending cell; on main",
+      "source": "python/atp_hotswap",
+      "type": "verification"
+    },
+    "UI-5 -> SRS-RESV-005": {
+      "classified_by": "2026-11-07 dependency audit",
+      "confidence": "medium",
+      "reason": "promote control and current_live cell; the manual selector is unbuilt",
+      "source": "progress.d/session-SRS-RESV-005.md:282",
+      "type": "integration"
+    }
+  }
+}
