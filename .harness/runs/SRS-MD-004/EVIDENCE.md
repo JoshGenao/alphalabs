@@ -4,13 +4,13 @@
 
 - **method**: `solo`
 - **steps evidenced**: 4/4
-- **critics**: none recorded
+- **critics**: deterministic `approve`
 - **artifacts**: 0
 - **record complete**: NO
 
 ## Outstanding
 
-- no deterministic critic verdict recorded
+- deterministic critic approved at bb7f4208, but 8 non-evidence path(s) have changed since (architecture/runtime_services.json, crates/atp-market-data/src/freshness_board.rs, crates/atp-market-data/src/lib.rs…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - no judgment critic verdict recorded
 
 ## Acceptance criterion
@@ -102,8 +102,8 @@ Step 3: Verify acceptance criteria: While subscribed market data is stale, live 
 <details><summary>observed output (tail)</summary>
 
 ```
-............                                                             [100%]
-12 passed in 0.47s
+.............                                                            [100%]
+13 passed in 0.49s
 /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
 The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
 
