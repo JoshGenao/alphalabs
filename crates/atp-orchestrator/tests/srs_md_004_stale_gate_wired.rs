@@ -44,8 +44,8 @@ impl ManualClock {
 }
 
 impl FreshnessClock for ManualClock {
-    fn now_ns(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
+    fn now_ns(&self) -> Option<i64> {
+        Some(self.0.load(Ordering::SeqCst))
     }
 }
 

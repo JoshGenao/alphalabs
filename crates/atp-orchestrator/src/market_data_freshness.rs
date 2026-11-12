@@ -46,10 +46,15 @@ use atp_types::{AssetClass, MarketDataFreshness};
 /// * a backwards wall step, including the correction of an earlier forward
 ///   jump, advances it by the monotonic delta, so silent lines keep ageing.
 ///   Clamping ABSOLUTE readings instead would freeze the clock after a
-///   corrected jump and read a silent line as age zero for as long as the
-///   jump was (adversarial review round 2).
+///   corrected jump (adversarial review round 2).
 ///
-/// If the wall clock cannot be read, the monotonic delta alone is used.
+/// The wall clock is read as ABSOLUTE time since the Unix epoch, never as an
+/// offset from when this clock was built: a correction to before start-up is
+/// still a readable wall time, so a suspend after it is still seen (round 3).
+/// If the wall clock cannot be read at all (set before 1970), the clock
+/// returns `None`, because it could not see a suspend: the board then reads
+/// every line `Stale` until the wall clock is readable again. Deltas resume
+/// from the last good reading, so a suspend during the outage still counts.
 ///
 /// Both the feed side (stamping observations) and the order side (evaluating
 /// them) must read the SAME instance, which [`LineFreshnessBoard`] guarantees
@@ -64,61 +69,52 @@ struct ClockState {
     /// The logical reading handed out last, epoch nanoseconds.
     logical_ns: i64,
     last_monotonic: Duration,
-    /// `None` until the wall clock has been read successfully.
+    /// The last readable wall time since the epoch; `None` until one is read.
     last_wall: Option<Duration>,
 }
 
-/// The two elapsed-time readings the clock combines. A seam so tests can
-/// script a suspend or a wall-clock step deterministically.
+/// The two readings the clock combines. A seam so tests can script a suspend
+/// or a wall-clock step deterministically.
 trait ClockSources: Send + Sync {
-    /// Monotonic time since construction.
-    fn monotonic_elapsed(&self) -> Duration;
-    /// Wall-clock time since construction; `None` when it went backwards past
-    /// the anchor or cannot be read.
-    fn wall_elapsed(&self) -> Option<Duration>;
+    /// Monotonic time since an arbitrary fixed origin.
+    fn monotonic(&self) -> Duration;
+    /// Wall-clock time since the Unix epoch; `None` when it cannot be read.
+    fn wall_since_epoch(&self) -> Option<Duration>;
 }
 
 struct SystemSources {
-    anchor: Instant,
-    anchor_wall: SystemTime,
+    origin: Instant,
 }
 
 impl ClockSources for SystemSources {
-    fn monotonic_elapsed(&self) -> Duration {
-        self.anchor.elapsed()
+    fn monotonic(&self) -> Duration {
+        self.origin.elapsed()
     }
 
-    fn wall_elapsed(&self) -> Option<Duration> {
-        SystemTime::now().duration_since(self.anchor_wall).ok()
+    fn wall_since_epoch(&self) -> Option<Duration> {
+        SystemTime::now().duration_since(UNIX_EPOCH).ok()
     }
 }
 
 impl MonotonicEpochClock {
     pub fn new() -> Self {
-        let anchor_wall = SystemTime::now();
-        let anchor_epoch_ns = anchor_wall
-            .duration_since(UNIX_EPOCH)
-            .map(duration_ns)
-            // A wall clock set before 1970 gives a zero anchor. Ages stay
-            // correct, because they come from elapsed time.
-            .unwrap_or(0);
-        Self::with_sources(
-            anchor_epoch_ns,
-            Box::new(SystemSources {
-                anchor: Instant::now(),
-                anchor_wall,
-            }),
-        )
+        Self::with_sources(Box::new(SystemSources {
+            origin: Instant::now(),
+        }))
     }
 
-    fn with_sources(anchor_epoch_ns: i64, sources: Box<dyn ClockSources>) -> Self {
+    fn with_sources(sources: Box<dyn ClockSources>) -> Self {
+        let wall = sources.wall_since_epoch();
+        let state = ClockState {
+            // The epoch anchor only keeps readings recognizable as times; no
+            // decision depends on it. Ages come from deltas.
+            logical_ns: wall.map_or(0, duration_ns),
+            last_monotonic: sources.monotonic(),
+            last_wall: wall,
+        };
         Self {
             sources,
-            state: Mutex::new(ClockState {
-                logical_ns: anchor_epoch_ns,
-                last_monotonic: Duration::ZERO,
-                last_wall: Some(Duration::ZERO),
-            }),
+            state: Mutex::new(state),
         }
     }
 }
@@ -153,23 +149,23 @@ fn duration_ns(duration: Duration) -> i64 {
 }
 
 impl FreshnessClock for MonotonicEpochClock {
-    fn now_ns(&self) -> i64 {
+    fn now_ns(&self) -> Option<i64> {
         let mut state = self.lock_state();
-        let monotonic = self.sources.monotonic_elapsed();
-        let wall = self.sources.wall_elapsed();
+        // Unreadable wall time: this reading cannot see a suspend, so it
+        // vouches for nothing. State is left alone, so the deltas taken when
+        // the wall clock returns span the outage.
+        let wall = self.sources.wall_since_epoch()?;
+        let monotonic = self.sources.monotonic();
         let monotonic_delta = monotonic.saturating_sub(state.last_monotonic);
-        let wall_delta = match (wall, state.last_wall) {
-            (Some(now), Some(before)) => now.saturating_sub(before),
-            _ => Duration::ZERO,
-        };
+        let wall_delta = state
+            .last_wall
+            .map_or(Duration::ZERO, |before| wall.saturating_sub(before));
         state.logical_ns = state
             .logical_ns
             .saturating_add(duration_ns(monotonic_delta.max(wall_delta)));
         state.last_monotonic = monotonic;
-        if wall.is_some() {
-            state.last_wall = wall;
-        }
-        state.logical_ns
+        state.last_wall = Some(wall);
+        Some(state.logical_ns)
     }
 }
 
@@ -212,153 +208,164 @@ impl MarketDataFreshnessProbe for BoardFreshnessProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atp_types::SecurityKey;
 
-    const ANCHOR_NS: i64 = 1_750_000_000_000_000_000;
-    const SECOND: Duration = Duration::from_secs(1);
+    /// 2025-06-15T00:00:00Z, the scripted wall clock's starting point.
+    const BASE_S: i64 = 1_749_945_600;
 
-    /// Scripted sources: the test sets what each clock says has elapsed.
+    /// Scripted sources. Monotonic seconds since the script began, and wall
+    /// seconds relative to `BASE_S` (negative = before it; `None` = unreadable).
     #[derive(Clone, Default)]
-    struct Script(Arc<Mutex<(Duration, Option<Duration>)>>);
+    struct Script(Arc<Mutex<(u64, Option<i64>)>>);
 
     impl Script {
-        fn set(&self, monotonic: Duration, wall: Option<Duration>) {
-            *self.0.lock().unwrap() = (monotonic, wall);
+        fn at(monotonic_s: u64, wall_rel_s: Option<i64>) -> Self {
+            let script = Self::default();
+            script.set(monotonic_s, wall_rel_s);
+            script
+        }
+        fn set(&self, monotonic_s: u64, wall_rel_s: Option<i64>) {
+            *self.0.lock().unwrap() = (monotonic_s, wall_rel_s);
         }
     }
 
     impl ClockSources for Script {
-        fn monotonic_elapsed(&self) -> Duration {
-            self.0.lock().unwrap().0
+        fn monotonic(&self) -> Duration {
+            Duration::from_secs(self.0.lock().unwrap().0)
         }
-        fn wall_elapsed(&self) -> Option<Duration> {
-            self.0.lock().unwrap().1
+        fn wall_since_epoch(&self) -> Option<Duration> {
+            let rel = self.0.lock().unwrap().1?;
+            u64::try_from(BASE_S + rel).ok().map(Duration::from_secs)
         }
     }
 
-    fn scripted() -> (MonotonicEpochClock, Script) {
-        let script = Script::default();
-        let clock = MonotonicEpochClock::with_sources(ANCHOR_NS, Box::new(script.clone()));
-        (clock, script)
+    const S: i64 = 1_000_000_000;
+
+    fn clock(script: &Script) -> MonotonicEpochClock {
+        MonotonicEpochClock::with_sources(Box::new(script.clone()))
     }
 
-    fn secs(n: u64) -> Duration {
-        SECOND * u32::try_from(n).unwrap()
+    fn rig(script: &Script) -> (LineFreshnessBoard, BoardFreshnessProbe) {
+        let board = LineFreshnessBoard::new(Arc::new(clock(script)), GapTracking::Unavailable);
+        let probe = BoardFreshnessProbe::new(board.clone());
+        (board, probe)
+    }
+
+    fn tick(board: &LineFreshnessBoard) {
+        board
+            .observe_security(SecurityKey::new("AAPL", AssetClass::Equity).unwrap())
+            .unwrap();
+    }
+
+    fn aapl(probe: &BoardFreshnessProbe) -> (MarketDataFreshness, Option<u64>) {
+        (
+            probe.freshness("AAPL", AssetClass::Equity),
+            probe.staleness_seconds("AAPL", AssetClass::Equity),
+        )
     }
 
     #[test]
-    fn a_host_suspend_advances_the_clock_so_a_silent_line_goes_stale() {
+    fn readings_start_at_epoch_time() {
+        let script = Script::at(0, Some(0));
+        assert_eq!(clock(&script).now_ns(), Some(BASE_S * S));
+    }
+
+    #[test]
+    fn a_host_suspend_advances_the_clock() {
         // The monotonic source stood still for a 5-minute sleep; the wall
         // clock kept counting. The reading follows the wall clock.
-        let (clock, script) = scripted();
-        script.set(secs(10), Some(secs(10)));
-        assert_eq!(clock.now_ns(), ANCHOR_NS + duration_ns(secs(10)));
-        script.set(secs(10), Some(secs(310)));
-        assert_eq!(clock.now_ns(), ANCHOR_NS + duration_ns(secs(310)));
+        let script = Script::at(0, Some(0));
+        let clock = clock(&script);
+        script.set(10, Some(10));
+        assert_eq!(clock.now_ns(), Some((BASE_S + 10) * S));
+        script.set(10, Some(310));
+        assert_eq!(clock.now_ns(), Some((BASE_S + 310) * S));
     }
 
     #[test]
-    fn a_backwards_wall_clock_step_does_not_move_the_clock_back() {
-        let (clock, script) = scripted();
-        script.set(secs(100), Some(secs(100)));
-        let before = clock.now_ns();
-        // NTP steps the wall clock back an hour: the monotonic time rules.
-        script.set(secs(101), None);
-        assert_eq!(clock.now_ns(), before + duration_ns(SECOND));
-        script.set(secs(102), Some(secs(40)));
-        assert_eq!(clock.now_ns(), before + duration_ns(secs(2)));
+    fn a_backwards_wall_step_advances_by_monotonic_time() {
+        let script = Script::at(0, Some(0));
+        let clock = clock(&script);
+        script.set(100, Some(100));
+        let before = clock.now_ns().unwrap();
+        script.set(101, Some(-3_600)); // NTP steps back an hour
+        assert_eq!(clock.now_ns(), Some(before + S));
+        script.set(102, Some(-3_599));
+        assert_eq!(clock.now_ns(), Some(before + 2 * S));
     }
 
     #[test]
     fn a_corrected_forward_jump_never_goes_back_and_keeps_ageing() {
-        let (clock, script) = scripted();
-        script.set(secs(5), Some(secs(500)));
-        let jumped = clock.now_ns();
-        assert_eq!(
-            jumped,
-            ANCHOR_NS + duration_ns(secs(500)),
-            "the jump ages lines faster"
-        );
-        // NTP corrects the wall clock back; 16 s of real time pass.
-        script.set(secs(21), Some(secs(21)));
-        assert_eq!(
-            clock.now_ns(),
-            jumped + duration_ns(secs(16)),
-            "after the correction the clock keeps advancing by real time"
-        );
+        let script = Script::at(0, Some(0));
+        let clock = clock(&script);
+        script.set(5, Some(500));
+        let jumped = clock.now_ns().unwrap();
+        assert_eq!(jumped, (BASE_S + 500) * S, "the jump ages lines faster");
+        script.set(21, Some(21)); // corrected; 16 s of real time pass
+        assert_eq!(clock.now_ns(), Some(jumped + 16 * S));
+    }
+
+    #[test]
+    fn an_unreadable_wall_clock_vouches_for_nothing_and_resumes_across_the_outage() {
+        let script = Script::at(0, Some(0));
+        let clock = clock(&script);
+        script.set(10, None);
+        assert_eq!(clock.now_ns(), None);
+        // Back after a 60 s suspend (monotonic moved 1 s): the outage counts.
+        script.set(11, Some(70));
+        assert_eq!(clock.now_ns(), Some((BASE_S + 70) * S));
+    }
+
+    #[test]
+    fn a_suspend_makes_the_board_block_until_a_new_tick() {
+        let script = Script::at(1, Some(1));
+        let (board, probe) = rig(&script);
+        tick(&board);
+        assert_eq!(aapl(&probe).0, MarketDataFreshness::Fresh);
+        script.set(2, Some(61)); // a one-minute sleep: only the wall moves
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(60)));
+        tick(&board);
+        assert_eq!(aapl(&probe).0, MarketDataFreshness::Fresh);
     }
 
     #[test]
     fn a_corrected_forward_jump_cannot_keep_a_silent_line_fresh() {
-        use atp_types::SecurityKey;
-        let script = Script::default();
-        let board = LineFreshnessBoard::new(
-            Arc::new(MonotonicEpochClock::with_sources(
-                ANCHOR_NS,
-                Box::new(script.clone()),
-            )),
-            GapTracking::Unavailable,
-        );
-        let probe = BoardFreshnessProbe::new(board.clone());
-        // A tick lands while the wall clock is 495 s ahead.
-        script.set(secs(5), Some(secs(500)));
-        board
-            .observe_security(SecurityKey::new("AAPL", AssetClass::Equity).unwrap())
-            .unwrap();
-        // The wall clock is corrected; the line then stays silent for 16 s.
-        script.set(secs(21), Some(secs(21)));
-        assert_eq!(
-            probe.freshness("AAPL", AssetClass::Equity),
-            MarketDataFreshness::Stale,
-            "16 s of silence is stale whatever the wall clock did"
-        );
-        assert_eq!(
-            probe.staleness_seconds("AAPL", AssetClass::Equity),
-            Some(16)
-        );
+        let script = Script::at(0, Some(0));
+        let (board, probe) = rig(&script);
+        script.set(5, Some(500)); // a tick lands while the wall is 495 s ahead
+        tick(&board);
+        script.set(21, Some(21)); // corrected; then 16 s of silence
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(16)));
     }
 
     #[test]
-    fn a_suspend_makes_the_production_board_block_until_a_new_tick() {
-        use atp_types::SecurityKey;
-        let script = Script::default();
-        let board = LineFreshnessBoard::new(
-            Arc::new(MonotonicEpochClock::with_sources(
-                ANCHOR_NS,
-                Box::new(script.clone()),
-            )),
-            GapTracking::Unavailable,
-        );
-        let probe = BoardFreshnessProbe::new(board.clone());
-        let aapl = SecurityKey::new("AAPL", AssetClass::Equity).unwrap();
-        script.set(secs(1), Some(secs(1)));
-        board.observe_security(aapl.clone()).unwrap();
-        assert_eq!(
-            probe.freshness("AAPL", AssetClass::Equity),
-            MarketDataFreshness::Fresh
-        );
-        // The host sleeps for a minute: only the wall clock moves.
-        script.set(secs(2), Some(secs(61)));
-        assert_eq!(
-            probe.freshness("AAPL", AssetClass::Equity),
-            MarketDataFreshness::Stale
-        );
-        assert_eq!(
-            probe.staleness_seconds("AAPL", AssetClass::Equity),
-            Some(60)
-        );
-        board.observe_security(aapl).unwrap();
-        assert_eq!(
-            probe.freshness("AAPL", AssetClass::Equity),
-            MarketDataFreshness::Fresh
-        );
+    fn a_correction_before_start_up_then_a_suspend_still_blocks() {
+        // Round 3: the wall clock is corrected to BEFORE the moment this clock
+        // was built, a tick lands, then the host sleeps for a minute.
+        let script = Script::at(0, Some(0));
+        let (board, probe) = rig(&script);
+        script.set(2, Some(-600));
+        tick(&board);
+        assert_eq!(aapl(&probe).0, MarketDataFreshness::Fresh);
+        script.set(3, Some(-540)); // 60 s of wall time, 1 s of monotonic time
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(60)));
+    }
+
+    #[test]
+    fn an_unreadable_wall_clock_blocks_every_order() {
+        let script = Script::at(0, Some(0));
+        let (board, probe) = rig(&script);
+        tick(&board);
+        script.set(1, None);
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, None));
     }
 
     #[test]
     fn the_system_clock_never_goes_backwards_and_reads_as_epoch_time() {
         let clock = MonotonicEpochClock::new();
-        let mut previous = clock.now_ns();
+        let mut previous = clock.now_ns().expect("the host wall clock is readable");
         for _ in 0..10_000 {
-            let now = clock.now_ns();
+            let now = clock.now_ns().unwrap();
             assert!(now >= previous, "the board clock went backwards");
             previous = now;
         }

@@ -32,6 +32,7 @@ const START_NS: i64 = 1_700_000_000 * SECOND_NS;
 struct ManualClock {
     now_ns: AtomicI64,
     panic_on_read: AtomicBool,
+    unavailable: AtomicBool,
 }
 
 impl ManualClock {
@@ -47,12 +48,15 @@ impl ManualClock {
 }
 
 impl FreshnessClock for ManualClock {
-    fn now_ns(&self) -> i64 {
+    fn now_ns(&self) -> Option<i64> {
         assert!(
             !self.panic_on_read.load(Ordering::SeqCst),
             "injected clock fault"
         );
-        self.now_ns.load(Ordering::SeqCst)
+        if self.unavailable.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(self.now_ns.load(Ordering::SeqCst))
     }
 }
 
@@ -403,4 +407,28 @@ fn c1_an_unnameable_tick_is_refused_and_records_nothing() {
             "{gaps:?}: {result:?}"
         );
     }
+}
+
+#[test]
+fn c1_a_clock_that_cannot_read_the_time_blocks_reads_and_refuses_writes() {
+    let clock = ManualClock::at(START_NS);
+    let board = board(&clock, GapTracking::Unavailable);
+    board.observe_security(aapl()).unwrap();
+    assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
+
+    clock.unavailable.store(true, Ordering::SeqCst);
+    let read = board.freshness_for("AAPL", AssetClass::Equity);
+    assert_eq!(
+        read.freshness,
+        MarketDataFreshness::Stale,
+        "unknown time is not zero age"
+    );
+    assert_eq!(read.age, None);
+    assert_eq!(
+        board.observe_security(aapl()),
+        Err(BoardWriteError::ClockUnavailable)
+    );
+
+    clock.unavailable.store(false, Ordering::SeqCst);
+    assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
 }

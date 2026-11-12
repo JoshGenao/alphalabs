@@ -31,7 +31,8 @@
 //!   sequence-less observation is refused.
 //! * **Fail closed everywhere.** An unwatched or never-observed line, an
 //!   identity that cannot be canonicalized (an option without contract
-//!   identity), and a poisoned lock all read `Stale` with no age. A write
+//!   identity), a poisoned lock, and a clock that cannot read the time all
+//!   read `Stale` with no age. A write
 //!   that records nothing says so ([`BoardWriteError`]).
 //! * **No I/O under the lock.** The order path holds the lock for one map
 //!   lookup. Gap events are published to their sink only after the lock is
@@ -64,8 +65,13 @@ use crate::{
 /// clock (`SystemTime`) satisfies the second rule and not the first; the
 /// production clock in the composition layer combines both. Units are
 /// nanoseconds.
+///
+/// `None` means the clock cannot vouch for the current time (for example the
+/// wall clock it needs to see a suspend is unreadable). The board then reads
+/// every line `Stale` and refuses writes: an unknown time is never treated as
+/// "no time has passed".
 pub trait FreshnessClock: Send + Sync {
-    fn now_ns(&self) -> i64;
+    fn now_ns(&self) -> Option<i64>;
 }
 
 /// Whether the provider feeding a [`LineFreshnessBoard`] carries an upstream
@@ -93,8 +99,8 @@ pub struct LineVerdict {
     /// gap-stale line it is the time since the gap opened (data after a gap is
     /// not trustworthy until recovery); when both apply, the larger. For a
     /// fresh line it is the age of the last observation. `None` when no age is
-    /// known: the line was never observed, is not watched, cannot be named, or
-    /// the board's state is unreadable.
+    /// known: the line was never observed, is not watched, cannot be named, the
+    /// board's state is unreadable, or its clock cannot read the time.
     pub age: Option<Duration>,
 }
 
@@ -124,6 +130,9 @@ pub enum BoardWriteError {
     /// The tick could not name a security (blank symbol, or an option a
     /// `SecurityKey` cannot carry yet).
     Uncanonicalizable(SubscriptionRegistryError),
+    /// The board's clock cannot vouch for the current time, so no observation
+    /// can be stamped honestly.
+    ClockUnavailable,
 }
 
 impl From<SubscriptionRegistryError> for BoardWriteError {
@@ -146,6 +155,10 @@ impl fmt::Display for BoardWriteError {
             Self::Uncanonicalizable(error) => write!(
                 formatter,
                 "SRS-MD-004: the tick names no security ({error:?}); nothing was recorded"
+            ),
+            Self::ClockUnavailable => write!(
+                formatter,
+                "SRS-MD-004: the freshness clock cannot read the current time; nothing was recorded"
             ),
         }
     }
@@ -238,7 +251,10 @@ impl LineFreshnessBoard {
         if matches!(state.gaps, GapState::Tracked(_)) {
             return Err(BoardWriteError::SequenceRequired);
         }
-        let now_ns = self.clock.now_ns();
+        let now_ns = self
+            .clock
+            .now_ns()
+            .ok_or(BoardWriteError::ClockUnavailable)?;
         state.monitor.observe_security(key, now_ns);
         Ok(())
     }
@@ -266,7 +282,10 @@ impl LineFreshnessBoard {
         let pending = DeferredGapSink::default();
         let observation = {
             let mut state = self.lock().ok_or(BoardWriteError::Poisoned)?;
-            let now_ns = self.clock.now_ns();
+            let now_ns = self
+                .clock
+                .now_ns()
+                .ok_or(BoardWriteError::ClockUnavailable)?;
             let BoardState { monitor, gaps } = &mut *state;
             match gaps {
                 GapState::Unavailable => {
@@ -320,7 +339,9 @@ impl LineFreshnessBoard {
         };
         // Read the clock while holding the lock, so no observation can be
         // stamped between this reading and the evaluation below.
-        let now_ns = self.clock.now_ns();
+        let Some(now_ns) = self.clock.now_ns() else {
+            return LineVerdict::UNKNOWN;
+        };
         let feed = HeartbeatFeed::MarketData {
             symbol: key.symbol().to_string(),
             asset_class: key.asset_class(),
