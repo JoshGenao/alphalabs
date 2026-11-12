@@ -90,7 +90,9 @@ impl Rig {
         let clock = Arc::new(ManualClock::default());
         clock.set(START_NS);
         let board = LineFreshnessBoard::new(clock.clone(), GapTracking::Unavailable);
-        board.watch(SecurityKey::new("AAPL", AssetClass::Equity).unwrap());
+        board
+            .watch(SecurityKey::new("AAPL", AssetClass::Equity).unwrap())
+            .expect("a healthy board accepts the watch");
         Self {
             clock,
             // The feed side and the order side hold separate clones of ONE board.
@@ -107,7 +109,8 @@ impl Rig {
 
     fn tick(&self, symbol: &str) {
         self.feed
-            .observe_security(SecurityKey::new(symbol, AssetClass::Equity).unwrap());
+            .observe_security(SecurityKey::new(symbol, AssetClass::Equity).unwrap())
+            .expect("a healthy untracked board accepts the observation");
     }
 
     // Returns exactly what `dispatch_order` returns; the large error is the shared

@@ -17,8 +17,8 @@ use std::thread;
 use std::time::Duration;
 
 use atp_market_data::{
-    FreshnessClock, GapObservation, GapTracking, LineFreshnessBoard, ResyncOutcome,
-    SequenceGapEventSink, SequenceGapPublishError,
+    BoardWriteError, FreshnessClock, GapObservation, GapTracking, LineFreshnessBoard,
+    ResyncOutcome, SequenceGapEventSink, SequenceGapPublishError,
 };
 use atp_types::{AssetClass, MarketDataFreshness, MarketDataTick, SecurityKey, SequenceGapEvent};
 
@@ -97,7 +97,7 @@ fn verdict(board: &LineFreshnessBoard) -> MarketDataFreshness {
 fn c1_a_watched_line_that_never_ticked_is_stale_with_no_age() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.watch(aapl());
+    board.watch(aapl()).unwrap();
 
     let read = board.freshness_for("AAPL", AssetClass::Equity);
     assert_eq!(read.freshness, MarketDataFreshness::Stale);
@@ -109,7 +109,7 @@ fn c1_a_watched_line_that_never_ticked_is_stale_with_no_age() {
 fn c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.observe_security(aapl());
+    board.observe_security(aapl()).unwrap();
 
     // Exactly 15.000 s is still fresh: the threshold is "over 15 seconds".
     clock.set(START_NS + THRESHOLD_NS);
@@ -128,7 +128,7 @@ fn c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh() {
     assert_eq!(older.age_seconds(), Some(40));
 
     // A tick newer than the threshold resumes the line at once.
-    board.observe_security(aapl());
+    board.observe_security(aapl()).unwrap();
     let fresh = board.freshness_for("AAPL", AssetClass::Equity);
     assert_eq!(fresh.freshness, MarketDataFreshness::Fresh);
     assert_eq!(fresh.age, Some(Duration::ZERO));
@@ -138,7 +138,7 @@ fn c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh() {
 fn c1_the_order_symbol_is_canonicalized_like_the_subscription_registry() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.observe_security(aapl());
+    board.observe_security(aapl()).unwrap();
 
     for spelling in ["AAPL", "aapl", "  Aapl "] {
         assert_eq!(
@@ -157,7 +157,7 @@ fn c1_the_order_symbol_is_canonicalized_like_the_subscription_registry() {
 fn c1_identities_the_board_cannot_name_fail_closed() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.observe_security(aapl());
+    board.observe_security(aapl()).unwrap();
 
     // Fresh AAPL equity data says nothing about an AAPL option's quotes.
     let option = board.freshness_for("AAPL", AssetClass::Option);
@@ -234,7 +234,7 @@ fn c1_operator_resync_recovers_a_gap_stale_line() {
 
     assert_eq!(
         board.acknowledge_resync(&aapl()),
-        ResyncOutcome::Acknowledged
+        Ok(ResyncOutcome::Acknowledged)
     );
     assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
 }
@@ -280,14 +280,17 @@ fn c1_without_gap_tracking_ticks_are_time_observations_only() {
     ));
     assert!(sink.events.lock().unwrap().is_empty());
     assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
-    assert_eq!(board.acknowledge_resync(&aapl()), ResyncOutcome::NotTracked);
+    assert_eq!(
+        board.acknowledge_resync(&aapl()),
+        Ok(ResyncOutcome::NotTracked)
+    );
 }
 
 #[test]
 fn c1_a_poisoned_board_reads_every_line_stale_and_drops_observations() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.observe_security(aapl());
+    board.observe_security(aapl()).unwrap();
     assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
 
     // A panic while the lock is held poisons it.
@@ -300,7 +303,16 @@ fn c1_a_poisoned_board_reads_every_line_stale_and_drops_observations() {
     let read = board.freshness_for("AAPL", AssetClass::Equity);
     assert_eq!(read.freshness, MarketDataFreshness::Stale);
     assert_eq!(read.age, None);
-    board.observe_security(aapl());
+    assert_eq!(
+        board.observe_security(aapl()),
+        Err(BoardWriteError::Poisoned),
+        "a write to a poisoned board is refused, not silently dropped"
+    );
+    assert_eq!(board.watch(aapl()), Err(BoardWriteError::Poisoned));
+    assert_eq!(
+        board.acknowledge_resync(&aapl()),
+        Err(BoardWriteError::Poisoned)
+    );
     assert_eq!(
         verdict(&board),
         MarketDataFreshness::Stale,
@@ -312,16 +324,83 @@ fn c1_a_poisoned_board_reads_every_line_stale_and_drops_observations() {
 fn c1_a_feed_thread_and_an_order_thread_share_one_verdict() {
     let clock = ManualClock::at(START_NS);
     let board = board(&clock, GapTracking::Unavailable);
-    board.watch(aapl());
+    board.watch(aapl()).unwrap();
     assert_eq!(verdict(&board), MarketDataFreshness::Stale);
 
     let feed = board.clone();
     thread::spawn(move || feed.observe_security(aapl()))
         .join()
+        .unwrap()
         .unwrap();
     assert_eq!(
         verdict(&board),
         MarketDataFreshness::Fresh,
         "a tick written on the feed thread is visible to the order thread"
     );
+}
+
+// --------------------------------------------------------------------------- //
+// Round-1 review: a refresh must prove that new data arrived.
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn c1_a_replayed_tick_does_not_revive_a_time_stale_tracked_line() {
+    let clock = ManualClock::at(START_NS);
+    let board = board(&clock, GapTracking::Tracked);
+    let sink = RecordingGapSink::default();
+    board.observe_tick(&tick("AAPL", 10), &sink).unwrap();
+    clock.set(START_NS + THRESHOLD_NS + 1);
+    assert_eq!(verdict(&board), MarketDataFreshness::Stale);
+
+    // The same sequence again, then an older one: no new data, so the line
+    // stays stale however often they repeat.
+    for replay in [10, 10, 7, 10] {
+        assert!(matches!(
+            board.observe_tick(&tick("AAPL", replay), &sink),
+            Ok(Some(GapObservation::NonMonotonic { .. }))
+        ));
+        assert_eq!(
+            verdict(&board),
+            MarketDataFreshness::Stale,
+            "replayed sequence {replay} must not refresh the line"
+        );
+    }
+    assert_eq!(
+        board
+            .freshness_for("AAPL", AssetClass::Equity)
+            .age_seconds(),
+        Some(15),
+        "the age still counts from the last tick that carried new data"
+    );
+
+    // The next real tick recovers it.
+    board.observe_tick(&tick("AAPL", 11), &sink).unwrap();
+    assert_eq!(verdict(&board), MarketDataFreshness::Fresh);
+}
+
+#[test]
+fn c1_a_tracked_board_refuses_a_refresh_without_a_sequence() {
+    let clock = ManualClock::at(START_NS);
+    let board = board(&clock, GapTracking::Tracked);
+    let sink = RecordingGapSink::default();
+    board.observe_tick(&tick("AAPL", 1), &sink).unwrap();
+    clock.set(START_NS + THRESHOLD_NS + 1);
+    assert_eq!(
+        board.observe_security(aapl()),
+        Err(BoardWriteError::SequenceRequired)
+    );
+    assert_eq!(verdict(&board), MarketDataFreshness::Stale);
+}
+
+#[test]
+fn c1_an_unnameable_tick_is_refused_and_records_nothing() {
+    let clock = ManualClock::at(START_NS);
+    for gaps in [GapTracking::Unavailable, GapTracking::Tracked] {
+        let board = board(&clock, gaps);
+        let result = board.observe_tick(&tick("   ", 1), &RecordingGapSink::default());
+        assert!(
+            matches!(result, Err(BoardWriteError::Uncanonicalizable(_))),
+            "{gaps:?}: {result:?}"
+        );
+    }
 }

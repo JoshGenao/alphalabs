@@ -181,6 +181,11 @@ def _run_one(crate: str, target: str, test_name: str) -> None:
             "srs_md_004_freshness_probe",
             "c1_identities_the_board_cannot_name_fail_closed",
         ),
+        (
+            "atp-market-data",
+            "srs_md_004_freshness_probe",
+            "c1_a_replayed_tick_does_not_revive_a_time_stale_tracked_line",
+        ),
         # The shipped composition: real probe, dispatch, simulator and IB bridge.
         (
             "atp-orchestrator",

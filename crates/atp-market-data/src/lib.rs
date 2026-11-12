@@ -9,7 +9,9 @@ pub mod live_feed;
 /// SRS-MD-004 - the thread-safe line-freshness store the order path reads,
 /// built over [`HeartbeatFreshnessMonitor`] and [`SequenceGapDetector`].
 pub mod freshness_board;
-pub use freshness_board::{FreshnessClock, GapTracking, LineFreshnessBoard, LineVerdict};
+pub use freshness_board::{
+    BoardWriteError, FreshnessClock, GapTracking, LineFreshnessBoard, LineVerdict,
+};
 
 /// SRS-MD-001 — the consolidated subscription registry.
 ///

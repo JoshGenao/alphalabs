@@ -25,9 +25,14 @@
 //!   lines it never saw), so silently pairing one with a sequence-less feed
 //!   would block every order forever; silently skipping it for a sequenced feed
 //!   would ignore every gap.
+//! * **A refresh must prove new data arrived.** On a board that tracks gaps,
+//!   only a tick whose sequence the detector accepts as new refreshes a
+//!   line's age; a duplicate or replayed tick refreshes nothing, and a
+//!   sequence-less observation is refused.
 //! * **Fail closed everywhere.** An unwatched or never-observed line, an
 //!   identity that cannot be canonicalized (an option without contract
-//!   identity), and a poisoned lock all read `Stale` with no age.
+//!   identity), and a poisoned lock all read `Stale` with no age. A write
+//!   that records nothing says so ([`BoardWriteError`]).
 //! * **No I/O under the lock.** The order path holds the lock for one map
 //!   lookup. Gap events are published to their sink only after the lock is
 //!   released, so a slow audit sink can never sit inside an order's latency
@@ -53,8 +58,12 @@ use crate::{
 /// Implementations must be **monotonic**: a reading must never be smaller than
 /// an earlier one. The monitor clamps a negative age to zero, so a clock that
 /// steps backwards would make every silent line read fresh until real time
-/// caught up again. A wall clock (`SystemTime`) is not monotonic; production
-/// binds a monotonic clock in the composition layer. Units are nanoseconds.
+/// caught up again. They must also **keep counting while the host is
+/// suspended**: `Instant` stops during sleep on macOS and Linux, so a line
+/// observed before a long suspend would read seconds old on resume. A wall
+/// clock (`SystemTime`) satisfies the second rule and not the first; the
+/// production clock in the composition layer combines both. Units are
+/// nanoseconds.
 pub trait FreshnessClock: Send + Sync {
     fn now_ns(&self) -> i64;
 }
@@ -100,6 +109,49 @@ impl LineVerdict {
         self.age.map(|age| age.as_secs())
     }
 }
+
+/// Why a write to a [`LineFreshnessBoard`] recorded nothing. Each case
+/// leaves the line as it was, which ages it toward `Stale`; the caller is
+/// told rather than left to assume the write landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardWriteError {
+    /// A thread panicked while holding the board's lock. The board reads
+    /// every line `Stale` and accepts no writes until the process restarts.
+    Poisoned,
+    /// A sequence-less observation was offered to a board that tracks gaps;
+    /// use `observe_tick`, whose sequence the gap detector can check.
+    SequenceRequired,
+    /// The tick could not name a security (blank symbol, or an option a
+    /// `SecurityKey` cannot carry yet).
+    Uncanonicalizable(SubscriptionRegistryError),
+}
+
+impl From<SubscriptionRegistryError> for BoardWriteError {
+    fn from(error: SubscriptionRegistryError) -> Self {
+        Self::Uncanonicalizable(error)
+    }
+}
+
+impl fmt::Display for BoardWriteError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Poisoned => write!(
+                formatter,
+                "SRS-MD-004: the freshness board is poisoned; nothing was recorded"
+            ),
+            Self::SequenceRequired => write!(
+                formatter,
+                "SRS-MD-004: this board tracks sequence gaps; an observation needs a tick sequence"
+            ),
+            Self::Uncanonicalizable(error) => write!(
+                formatter,
+                "SRS-MD-004: the tick names no security ({error:?}); nothing was recorded"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoardWriteError {}
 
 #[derive(Debug)]
 enum GapState {
@@ -156,8 +208,9 @@ impl LineFreshnessBoard {
     }
 
     /// `true` once a thread panicked while holding the board's lock. A
-    /// poisoned board reads every line `Stale` and drops every observation,
-    /// so it blocks all orders until the process restarts. That is the safe
+    /// poisoned board reads every line `Stale` and refuses every write
+    /// ([`BoardWriteError::Poisoned`]), so it blocks all orders until the
+    /// process restarts. That is the safe
     /// direction; this accessor lets a health surface say why.
     pub fn is_poisoned(&self) -> bool {
         self.state.is_poisoned()
@@ -165,53 +218,68 @@ impl LineFreshnessBoard {
 
     /// Register a subscribed line without an observation, so it reads
     /// `Stale` from the moment it is supposed to be flowing.
-    pub fn watch(&self, key: SecurityKey) {
-        if let Some(mut state) = self.lock() {
-            state.monitor.watch_security(key);
-        }
+    pub fn watch(&self, key: SecurityKey) -> Result<(), BoardWriteError> {
+        let mut state = self.lock().ok_or(BoardWriteError::Poisoned)?;
+        state.monitor.watch_security(key);
+        Ok(())
     }
 
-    /// Record that `key`'s line delivered data now. This is the feed's entry
-    /// point when the provider carries no upstream sequence: it says which
-    /// line was fed and invents nothing. On a poisoned board the observation
-    /// is dropped, and the line ages into `Stale`.
-    pub fn observe_security(&self, key: SecurityKey) {
-        if let Some(mut state) = self.lock() {
-            let now_ns = self.clock.now_ns();
-            state.monitor.observe_security(key, now_ns);
+    /// Record that `key`'s line delivered data now, for a provider that
+    /// carries NO upstream sequence. It says which line was fed and invents
+    /// nothing.
+    ///
+    /// Refused on a [`GapTracking::Tracked`] board: there, a refresh must come
+    /// with a sequence the gap detector can check ([`observe_tick`]), or a
+    /// caller could keep a line fresh with no proof that new data arrived.
+    ///
+    /// [`observe_tick`]: Self::observe_tick
+    pub fn observe_security(&self, key: SecurityKey) -> Result<(), BoardWriteError> {
+        let mut state = self.lock().ok_or(BoardWriteError::Poisoned)?;
+        if matches!(state.gaps, GapState::Tracked(_)) {
+            return Err(BoardWriteError::SequenceRequired);
         }
+        let now_ns = self.clock.now_ns();
+        state.monitor.observe_security(key, now_ns);
+        Ok(())
     }
 
-    /// Record one delivered tick: a time observation for its line, and, on a
-    /// [`GapTracking::Tracked`] board, a sequence observation for the gap
-    /// detector. Returns the gap detector's classification (`None` on an
-    /// untracked board, where no sequence is read).
+    /// Record one delivered tick. Returns the gap detector's classification
+    /// on a [`GapTracking::Tracked`] board, `None` on an untracked one (where
+    /// no sequence is read).
+    ///
+    /// On an untracked board every tick is a time observation. On a tracked
+    /// board the sequence is classified FIRST, and only a tick that carries
+    /// new data refreshes the line's age: a baseline, an in-sequence tick, or
+    /// a gap (which leaves the line gap-stale anyway). A duplicate or
+    /// backwards tick ([`GapObservation::NonMonotonic`]) refreshes nothing, so
+    /// a replayed tick can never keep a silent line tradable.
     ///
     /// A gap event is handed to `events` AFTER the lock is released; the
     /// returned [`GapObservation::Gap::published`] carries that real result.
     /// The line is already `Stale` by then, so a failing sink cannot make a
     /// gapped line tradable.
-    ///
-    /// Fails closed on a tick that cannot name a security, exactly as the
-    /// monitor and detector do. A poisoned board drops the observation and
-    /// returns `Ok(None)`: nothing was recorded, and the line ages into
-    /// `Stale`.
     pub fn observe_tick<S: SequenceGapEventSink>(
         &self,
         tick: &MarketDataTick,
         events: &S,
-    ) -> Result<Option<GapObservation>, SubscriptionRegistryError> {
+    ) -> Result<Option<GapObservation>, BoardWriteError> {
         let pending = DeferredGapSink::default();
         let observation = {
-            let Some(mut state) = self.lock() else {
-                return Ok(None);
-            };
+            let mut state = self.lock().ok_or(BoardWriteError::Poisoned)?;
             let now_ns = self.clock.now_ns();
             let BoardState { monitor, gaps } = &mut *state;
-            monitor.observe_tick(tick, now_ns)?;
             match gaps {
-                GapState::Unavailable => None,
-                GapState::Tracked(detector) => Some(detector.observe_tick(tick, now_ns, &pending)?),
+                GapState::Unavailable => {
+                    monitor.observe_tick(tick, now_ns)?;
+                    None
+                }
+                GapState::Tracked(detector) => {
+                    let observation = detector.observe_tick(tick, now_ns, &pending)?;
+                    if !matches!(observation, GapObservation::NonMonotonic { .. }) {
+                        monitor.observe_tick(tick, now_ns)?;
+                    }
+                    Some(observation)
+                }
             }
         };
         Ok(observation.map(|observation| match observation {
@@ -236,15 +304,13 @@ impl LineFreshnessBoard {
 
     /// SRS-MD-007 operator-acknowledged resync for a gap-stale line. On a
     /// board without gap tracking there is no gap state to clear, so it
-    /// reports [`ResyncOutcome::NotTracked`]; a poisoned board does the same.
-    pub fn acknowledge_resync(&self, key: &SecurityKey) -> ResyncOutcome {
-        match self.lock() {
-            Some(mut state) => match &mut state.gaps {
-                GapState::Tracked(detector) => detector.acknowledge_resync(key),
-                GapState::Unavailable => ResyncOutcome::NotTracked,
-            },
-            None => ResyncOutcome::NotTracked,
-        }
+    /// reports [`ResyncOutcome::NotTracked`].
+    pub fn acknowledge_resync(&self, key: &SecurityKey) -> Result<ResyncOutcome, BoardWriteError> {
+        let mut state = self.lock().ok_or(BoardWriteError::Poisoned)?;
+        Ok(match &mut state.gaps {
+            GapState::Tracked(detector) => detector.acknowledge_resync(key),
+            GapState::Unavailable => ResyncOutcome::NotTracked,
+        })
     }
 
     /// The verdict for one canonical line, evaluated now.
