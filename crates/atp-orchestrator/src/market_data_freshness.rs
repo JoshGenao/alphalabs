@@ -16,16 +16,16 @@
 //! own monitor today; composing it into a shared board inside the live
 //! execution host is the host's IB-tier wiring, owned by SRS-EXE-001.
 
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atp_execution::MarketDataFreshnessProbe;
 use atp_market_data::{FreshnessClock, GapTracking, LineFreshnessBoard};
 use atp_types::{AssetClass, MarketDataFreshness};
 
-/// The production freshness clock: epoch nanoseconds that never go backwards
-/// and DO advance while the host is suspended.
+/// The production freshness clock: epoch nanoseconds that never go backwards,
+/// always advance at least as fast as real awake time, and DO advance while
+/// the host is suspended.
 ///
 /// Two sources, because neither is enough alone:
 ///
@@ -34,23 +34,38 @@ use atp_types::{AssetClass, MarketDataFreshness};
 ///   host sleeps, so a line observed before a five-minute suspend would read
 ///   as seconds old on resume and orders would pass on dead data;
 /// * the wall clock (`SystemTime`) keeps counting through a suspend, but an
-///   NTP correction or a manual change can step it backwards, which would
-///   make a silent line's age negative (clamped to zero) and read it fresh.
+///   NTP correction or a manual change can step it in either direction.
 ///
-/// Each reading takes the LARGER of the two elapsed times since construction
-/// and never returns less than the previous reading. A suspend or a forward
-/// wall-clock jump can therefore only age lines faster (they go stale sooner,
-/// the safe direction); a backwards wall-clock step changes nothing, because
-/// the monotonic elapsed time then dominates. If the wall clock cannot be
-/// read, the monotonic source alone is used.
+/// The clock is LOGICAL: each reading advances it by the larger of the two
+/// sources' deltas since the previous reading, where a wall delta that went
+/// backwards counts as zero. So:
+///
+/// * a suspend advances it by the wall delta (silent lines go stale);
+/// * a forward wall jump advances it by the jump (lines go stale sooner, the
+///   safe direction);
+/// * a backwards wall step, including the correction of an earlier forward
+///   jump, advances it by the monotonic delta, so silent lines keep ageing.
+///   Clamping ABSOLUTE readings instead would freeze the clock after a
+///   corrected jump and read a silent line as age zero for as long as the
+///   jump was (adversarial review round 2).
+///
+/// If the wall clock cannot be read, the monotonic delta alone is used.
 ///
 /// Both the feed side (stamping observations) and the order side (evaluating
 /// them) must read the SAME instance, which [`LineFreshnessBoard`] guarantees
 /// by owning its clock.
 pub struct MonotonicEpochClock {
-    anchor_epoch_ns: i64,
     sources: Box<dyn ClockSources>,
-    high_water_ns: AtomicI64,
+    state: Mutex<ClockState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClockState {
+    /// The logical reading handed out last, epoch nanoseconds.
+    logical_ns: i64,
+    last_monotonic: Duration,
+    /// `None` until the wall clock has been read successfully.
+    last_wall: Option<Duration>,
 }
 
 /// The two elapsed-time readings the clock combines. A seam so tests can
@@ -98,9 +113,12 @@ impl MonotonicEpochClock {
 
     fn with_sources(anchor_epoch_ns: i64, sources: Box<dyn ClockSources>) -> Self {
         Self {
-            anchor_epoch_ns,
             sources,
-            high_water_ns: AtomicI64::new(anchor_epoch_ns),
+            state: Mutex::new(ClockState {
+                logical_ns: anchor_epoch_ns,
+                last_monotonic: Duration::ZERO,
+                last_wall: Some(Duration::ZERO),
+            }),
         }
     }
 }
@@ -115,9 +133,18 @@ impl std::fmt::Debug for MonotonicEpochClock {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MonotonicEpochClock")
-            .field("anchor_epoch_ns", &self.anchor_epoch_ns)
-            .field("high_water_ns", &self.high_water_ns.load(Ordering::SeqCst))
+            .field("state", &*self.lock_state())
             .finish_non_exhaustive()
+    }
+}
+
+impl MonotonicEpochClock {
+    fn lock_state(&self) -> MutexGuard<'_, ClockState> {
+        // The state is three plain values assigned together after every
+        // computation, so a panic elsewhere cannot leave it half-written;
+        // recovering keeps the clock advancing rather than wedging every
+        // board that reads it.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -127,16 +154,22 @@ fn duration_ns(duration: Duration) -> i64 {
 
 impl FreshnessClock for MonotonicEpochClock {
     fn now_ns(&self) -> i64 {
+        let mut state = self.lock_state();
         let monotonic = self.sources.monotonic_elapsed();
-        let elapsed = self
-            .sources
-            .wall_elapsed()
-            .map_or(monotonic, |wall| wall.max(monotonic));
-        let candidate = self.anchor_epoch_ns.saturating_add(duration_ns(elapsed));
-        // Never below an earlier reading: a wall clock that jumped forward and
-        // then was corrected back must not hand out a smaller value.
-        let previous = self.high_water_ns.fetch_max(candidate, Ordering::SeqCst);
-        previous.max(candidate)
+        let wall = self.sources.wall_elapsed();
+        let monotonic_delta = monotonic.saturating_sub(state.last_monotonic);
+        let wall_delta = match (wall, state.last_wall) {
+            (Some(now), Some(before)) => now.saturating_sub(before),
+            _ => Duration::ZERO,
+        };
+        state.logical_ns = state
+            .logical_ns
+            .saturating_add(duration_ns(monotonic_delta.max(wall_delta)));
+        state.last_monotonic = monotonic;
+        if wall.is_some() {
+            state.last_wall = wall;
+        }
+        state.logical_ns
     }
 }
 
@@ -179,7 +212,6 @@ impl MarketDataFreshnessProbe for BoardFreshnessProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     const ANCHOR_NS: i64 = 1_750_000_000_000_000_000;
     const SECOND: Duration = Duration::from_secs(1);
@@ -237,12 +269,52 @@ mod tests {
     }
 
     #[test]
-    fn a_corrected_forward_jump_never_hands_out_a_smaller_reading() {
+    fn a_corrected_forward_jump_never_goes_back_and_keeps_ageing() {
         let (clock, script) = scripted();
         script.set(secs(5), Some(secs(500)));
         let jumped = clock.now_ns();
-        script.set(secs(6), Some(secs(6)));
-        assert_eq!(clock.now_ns(), jumped, "readings are non-decreasing");
+        assert_eq!(
+            jumped,
+            ANCHOR_NS + duration_ns(secs(500)),
+            "the jump ages lines faster"
+        );
+        // NTP corrects the wall clock back; 16 s of real time pass.
+        script.set(secs(21), Some(secs(21)));
+        assert_eq!(
+            clock.now_ns(),
+            jumped + duration_ns(secs(16)),
+            "after the correction the clock keeps advancing by real time"
+        );
+    }
+
+    #[test]
+    fn a_corrected_forward_jump_cannot_keep_a_silent_line_fresh() {
+        use atp_types::SecurityKey;
+        let script = Script::default();
+        let board = LineFreshnessBoard::new(
+            Arc::new(MonotonicEpochClock::with_sources(
+                ANCHOR_NS,
+                Box::new(script.clone()),
+            )),
+            GapTracking::Unavailable,
+        );
+        let probe = BoardFreshnessProbe::new(board.clone());
+        // A tick lands while the wall clock is 495 s ahead.
+        script.set(secs(5), Some(secs(500)));
+        board
+            .observe_security(SecurityKey::new("AAPL", AssetClass::Equity).unwrap())
+            .unwrap();
+        // The wall clock is corrected; the line then stays silent for 16 s.
+        script.set(secs(21), Some(secs(21)));
+        assert_eq!(
+            probe.freshness("AAPL", AssetClass::Equity),
+            MarketDataFreshness::Stale,
+            "16 s of silence is stale whatever the wall clock did"
+        );
+        assert_eq!(
+            probe.staleness_seconds("AAPL", AssetClass::Equity),
+            Some(16)
+        );
     }
 
     #[test]
