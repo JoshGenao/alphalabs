@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atp_execution::MarketDataFreshnessProbe;
 use atp_market_data::{FreshnessClock, GapTracking, LineFreshnessBoard};
-use atp_types::{AssetClass, MarketDataFreshness};
+use atp_types::{AssetClass, MarketDataFreshness, HEARTBEAT_STALENESS_THRESHOLD_MS};
 
 /// The production freshness clock: epoch nanoseconds that never go backwards,
 /// always advance at least as fast as real awake time, and DO advance while
@@ -44,9 +44,15 @@ use atp_types::{AssetClass, MarketDataFreshness};
 /// * a forward wall jump advances it by the jump (lines go stale sooner, the
 ///   safe direction);
 /// * a backwards wall step, including the correction of an earlier forward
-///   jump, advances it by the monotonic delta, so silent lines keep ageing.
-///   Clamping ABSOLUTE readings instead would freeze the clock after a
-///   corrected jump (adversarial review round 2).
+///   jump, FORFEITS every earlier observation: the clock jumps forward past
+///   the staleness threshold, so every line reads `Stale` until its next
+///   tick. A backward step can hide any amount of suspend (the wall delta is
+///   negative and the monotonic clock stood still), so from that reading the
+///   clock cannot vouch for any earlier age (adversarial review round 4).
+///   The cost is a brief block on a clock correction until each line ticks
+///   again; the age shown for lines blocked this way is the forfeit jump, not
+///   a measured age. Clamping ABSOLUTE readings instead would freeze the
+///   clock after a corrected jump (round 2).
 ///
 /// The wall clock is read as ABSOLUTE time since the Unix epoch, never as an
 /// offset from when this clock was built: a correction to before start-up is
@@ -144,6 +150,11 @@ impl MonotonicEpochClock {
     }
 }
 
+/// How far a backward wall step moves the clock: just past the staleness
+/// threshold, so every observation stamped before the step reads `Stale`.
+const FORFEIT_STEP: Duration =
+    Duration::from_nanos(HEARTBEAT_STALENESS_THRESHOLD_MS * 1_000_000 + 1);
+
 fn duration_ns(duration: Duration) -> i64 {
     i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX)
 }
@@ -157,12 +168,14 @@ impl FreshnessClock for MonotonicEpochClock {
         let wall = self.sources.wall_since_epoch()?;
         let monotonic = self.sources.monotonic();
         let monotonic_delta = monotonic.saturating_sub(state.last_monotonic);
-        let wall_delta = state
-            .last_wall
-            .map_or(Duration::ZERO, |before| wall.saturating_sub(before));
-        state.logical_ns = state
-            .logical_ns
-            .saturating_add(duration_ns(monotonic_delta.max(wall_delta)));
+        let step = match state.last_wall {
+            // The wall clock stepped back: elapsed time is unknowable from
+            // here, so forfeit every earlier observation.
+            Some(before) if wall < before => monotonic_delta.max(FORFEIT_STEP),
+            Some(before) => monotonic_delta.max(wall - before),
+            None => monotonic_delta,
+        };
+        state.logical_ns = state.logical_ns.saturating_add(duration_ns(step));
         state.last_monotonic = monotonic;
         state.last_wall = Some(wall);
         Some(state.logical_ns)
@@ -283,26 +296,28 @@ mod tests {
     }
 
     #[test]
-    fn a_backwards_wall_step_advances_by_monotonic_time() {
+    fn a_backwards_wall_step_forfeits_earlier_observations() {
         let script = Script::at(0, Some(0));
         let clock = clock(&script);
         script.set(100, Some(100));
         let before = clock.now_ns().unwrap();
         script.set(101, Some(-3_600)); // NTP steps back an hour
-        assert_eq!(clock.now_ns(), Some(before + S));
+        assert_eq!(clock.now_ns(), Some(before + duration_ns(FORFEIT_STEP)));
+        // After the step, ordinary progress resumes from the new wall time.
+        let after = clock.now_ns().unwrap();
         script.set(102, Some(-3_599));
-        assert_eq!(clock.now_ns(), Some(before + 2 * S));
+        assert_eq!(clock.now_ns(), Some(after + S));
     }
 
     #[test]
-    fn a_corrected_forward_jump_never_goes_back_and_keeps_ageing() {
+    fn a_corrected_forward_jump_never_goes_back() {
         let script = Script::at(0, Some(0));
         let clock = clock(&script);
         script.set(5, Some(500));
         let jumped = clock.now_ns().unwrap();
         assert_eq!(jumped, (BASE_S + 500) * S, "the jump ages lines faster");
-        script.set(21, Some(21)); // corrected; 16 s of real time pass
-        assert_eq!(clock.now_ns(), Some(jumped + 16 * S));
+        script.set(21, Some(21)); // corrected: a backward step
+        assert!(clock.now_ns().unwrap() > jumped);
     }
 
     #[test]
@@ -335,7 +350,7 @@ mod tests {
         script.set(5, Some(500)); // a tick lands while the wall is 495 s ahead
         tick(&board);
         script.set(21, Some(21)); // corrected; then 16 s of silence
-        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(16)));
+        assert_eq!(aapl(&probe).0, MarketDataFreshness::Stale);
     }
 
     #[test]
@@ -349,6 +364,29 @@ mod tests {
         assert_eq!(aapl(&probe).0, MarketDataFreshness::Fresh);
         script.set(3, Some(-540)); // 60 s of wall time, 1 s of monotonic time
         assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(60)));
+    }
+
+    #[test]
+    fn a_suspend_hidden_by_a_backward_correction_still_blocks() {
+        // Round 4: a tick, then a 75 s suspend during which the wall clock is
+        // also corrected back 420 s. Wall delta -419 s, monotonic delta 1 s.
+        let script = Script::at(0, Some(0));
+        let (board, probe) = rig(&script);
+        script.set(5, Some(500));
+        tick(&board);
+        script.set(6, Some(81));
+        assert_eq!(
+            aapl(&probe).0,
+            MarketDataFreshness::Stale,
+            "a backward step cannot vouch for any earlier age"
+        );
+        // The next real tick is fresh, and ages normally from there.
+        tick(&board);
+        assert_eq!(aapl(&probe).0, MarketDataFreshness::Fresh);
+        script.set(10, Some(85));
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Fresh, Some(4)));
+        script.set(30, Some(105));
+        assert_eq!(aapl(&probe), (MarketDataFreshness::Stale, Some(24)));
     }
 
     #[test]
