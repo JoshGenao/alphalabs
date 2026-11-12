@@ -52,7 +52,16 @@ fi
 # that matters: a rate-limited or failing Codex is the one whose output the
 # dispatcher must read to decide to fail over, and the one whose blocked round the
 # ledger most needs. The first draft of this change had exactly that bug.
-if out="$(node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")")"; then
+# The feature's acceptance contract and recorded component results, when the
+# dispatcher supplied them (tools/adversarial_review.py feature_context), so the
+# reviewer judges the diff against what it was supposed to do.
+focus="$(cat "$PROMPT_FILE")"
+if [[ -n "${ATP_REVIEW_CONTEXT_FILE:-}" && -f "${ATP_REVIEW_CONTEXT_FILE}" ]]; then
+  focus="${focus}
+
+$(cat "$ATP_REVIEW_CONTEXT_FILE")"
+fi
+if out="$(node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$focus")"; then
   rc=0
 else
   rc=$?

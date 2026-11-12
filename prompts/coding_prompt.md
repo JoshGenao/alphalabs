@@ -120,10 +120,21 @@ Read the architecture/data-systems references under `~/.codex/skills/` (e.g.
 
 ## Step 4 — Understand dependencies before you build
 
-The scheduler only hands you a feature whose recorded dependencies are already
-`passes:true`, so you should be unblocked. But the dependency graph
-(`tools/feature_deps.json`) is incomplete and **self-learning** — you may still
-discover mid-build that you need an *unbuilt* prerequisite. Handle that in Step 5.
+**Implementation completion and requirement verification are separate events.**
+Every edge in `tools/feature_deps.json` has a type in `tools/dependency_types.json`:
+`implementation` (your code needs theirs), `interface` (you need only their
+contract, which must exist at the named path), `integration` (you need them running
+to prove an integration obligation), `verification` (your requirement evidence
+relies on theirs). The scheduler hands you a feature whose **implementation and
+interface** prerequisites are met. Integration and verification dependencies may
+still be open: they never stop you building - they gate the integration run and the
+requirement close. `agent_pool.py status` shows each blocker's type.
+
+If `status` marks your feature `(code merged)`, its code already landed and the work
+is **implementation completion**: an acceptance contract, component evidence, and an
+independent review (Step 6). Do not rebuild it. The graph is still incomplete and
+**self-learning** - you may discover mid-build that you need an *unbuilt*
+prerequisite. Handle that in Step 5.
 
 If your feature is `needs_clarification:true`, STOP: record why in the session
 note, `python3 tools/agent_pool.py release "$ATP_FEATURE_ID"`, and end.
@@ -150,14 +161,25 @@ operator to approve it** (ExitPlanMode). The plan must state:
 - **What you'll build** — the specific files/modules you'll add or change.
 - **Tests** — which layer(s) (L1–L7) and the specific cases; call out the mandatory
   `tests/domain/` test if the feature touches any safety path (Step 5.1).
-- **Completeness classification you expect** — `complete` (every step verifiable
-  solo) vs `serialized` (needs IB/integration/live/e2e). Be honest up front.
+- **Acceptance contract** - `docs/contracts/$ATP_FEATURE_ID.json`
+  (`python3 tools/contracts.py draft "$ATP_FEATURE_ID"` writes the skeleton). Its
+  component obligations are objective criteria, each with a re-executable test
+  command; they alone decide *implementation complete*. Criteria that need a real
+  peer go in integration obligations. The system obligation is the acceptance
+  criterion **verbatim** - `tools/contracts.py check` refuses anything else, so a
+  contract can move a criterion to the level where it is provable but never weaken
+  it. If part of the feature cannot be component-tested, say so in `limitations`.
+- **Completeness classification you expect** - `implemented` (component obligations
+  pass + independent review approves; `passes` stays false), `complete` (every step
+  verifiable solo), or `serialized` (needs IB/integration/live/e2e). Be honest up front.
 - **Dependencies** — if you already know you'll need an unbuilt feature `Y`, say so;
   you'll `block --on Y` after approval (Step 5).
 - **Who owns what the AC names** — list every system, source, or event the
   acceptance criteria require, and the feature that produces each. Any producer
-  that is not `passes:true` is a dependency: name it and `block --on` it, even if
-  your own code would "work" without it. SRS-LOG-001's AC named eight log sources;
+  that is not `passes:true` is a dependency: name it and `block --on` it **with the
+  type that says what you actually need** - usually `integration` (you need it
+  running to prove the AC), `implementation` only if your code cannot be written
+  without theirs. SRS-LOG-001's AC named eight log sources;
   five had no producer, nobody listed them, and 38 review rounds hardened a surface
   that could not close.
 - **Size and surfaces** — your estimated diff in lines (code + tests), and which
@@ -200,7 +222,8 @@ agent could claim and no human could close (`docs/verification-queue.md`).
 
 | what is in the way | where it goes |
 |---|---|
-| another **feature** that isn't built | `agent_pool.py block --on <ids>` |
+| another **feature** that isn't built | `agent_pool.py block --on <ids> --type <implementation\|interface\|integration\|verification>` |
+| no feature, but you cannot proceed: a contract nobody defined, an operator decision, a test failure outside your scope | `agent_pool.py park <id> --kind <contract\|decision\|test-failure\|external\|other> --reason "…"` - not re-offered until something it depends on changes |
 | a **real-world resource no feature owns** — an account you have not bought, hardware you do not have, calendar time that has not elapsed | an `"external_blocker"` on the feature in `feature_list.json` |
 | nothing; the work is done and only evidence is missing | neither — finish the record and close it |
 | a feature tagged `R2` (deferred) | neither — build the piece you need inside your feature; `block --on` refuses the edge |
@@ -217,7 +240,8 @@ If this feature genuinely needs another feature `Y` that isn't done:
 ```bash
 # 1. record the edge. KEEPS your lease so a sibling can't grab this worktree
 #    before your partial work lands.
-python3 tools/agent_pool.py block "$ATP_FEATURE_ID" --on <Y> [<Z> ...] --reason "why"
+python3 tools/agent_pool.py block "$ATP_FEATURE_ID" --on <Y> [<Z> ...] --type <type> --reason "why" \
+    --source <file:line>              # interface: also --contract <file> [--symbol <name>]
 # 2. land any safe partial/foundational work so siblings + the next session benefit
 #    (commit on your branch first — Step 7 — then integrate partial, which RELEASES
 #    the lease on success; if there is nothing to land, `release` it instead):
@@ -229,9 +253,19 @@ cd "$WORKTREE" && export ATP_FEATURE_ID="$FEATURE" ATP_DEV_PORT ATP_IB_LIVE_PORT
 # then restart from Step 1 for the new feature
 ```
 
-`block` marks `$ATP_FEATURE_ID` blocked-on `Y`; the scheduler won't re-offer it
-until `Y` is `passes:true`. If the frontier is empty (everything blocked), stop
-and report the board — that's a signal for the operator, not a thing to force.
+A classification with `"confidence": "low"` gates like an unclassified edge until an
+operator confirms it. `block --type` refuses to replace an existing type (writing
+nothing) unless you pass `--retype` with a reason; a retype that makes an edge gate
+LESS (implementation → interface → integration/verification) is recorded at low
+confidence, so it keeps gating until an operator confirms it. What the edge holds back depends on its type: `implementation` until `Y`'s
+implementation is complete, `interface` until the contract file exists, and
+`integration`/`verification` **nothing you can build** - if that is all that is in
+the way, record it and keep going. An untyped edge gates implementation (unknown
+fails closed). **Never re-try blocked work with nothing changed**: `park` records the
+blocker and the scheduler re-offers the feature only when a prerequisite, contract,
+or its evidence changes. If the frontier is empty, run `agent_pool.py blockers` - it
+names the smallest set of prerequisites, contracts, and decisions that restores
+progress - and report it. That is a signal for the operator, not a thing to force.
 
 **`block` REFUSES a cycle — exit 13, and it writes nothing.** If `Y` already
 depends (transitively) on your feature, recording `you -> Y` would close a loop in
@@ -356,8 +390,44 @@ closes, so a reopened feature starts with no record rather than inheriting yours
 `close_feature.py` refuses to flip `passes:true` without a complete record, and
 `integrate --mode complete` degrades to `serialized` if you skip it — so an
 unrecorded step costs you the close, not just the paperwork. Put the same per-step
-PASS/FAIL summary in the session note for the human reader. Then classify:
+PASS/FAIL summary in the session note for the human reader.
 
+**Implementation completion is recorded separately, against the contract.** Run each
+component obligation through the recorder - every run is kept, failures included:
+
+```bash
+python3 tools/evidence.py run "$ATP_FEATURE_ID" --obligation C1 -- cargo test -p <crate> --test <t>
+python3 tools/evidence.py implemented "$ATP_FEATURE_ID"   # contract + component + review: what is missing
+```
+
+Only runs of the contract's **declared** test commands count; a passing run of any
+other command under the same obligation id is ignored. The independent review is the
+Step 6.1 judgment pass: `adversarial_review.py` sends the reviewer your contract and
+recorded results and appends its verdict, with the commit it judged, to
+`.harness/runs/<ID>/review.jsonl`. `evidence.py implemented` reads that file as a
+**pre-check** only - your branch commits it, so it cannot prove anything to the
+integrator. At `integrate --mode implemented` the integrator runs the reviewer
+**itself** over your full branch diff and re-runs every declared test itself; a
+`block` from that review means not implemented, however green your tests are, and the
+feature is parked until something changes.
+
+**What "independent" means here, precisely.** The reviewer is a separate,
+fresh-context process that never sees your conversation or your session note - only
+the diff, the contract, the recorded results, and the files the contract lists in
+`implementation_paths` (for code already on `main` the diff alone would show the
+reviewer nothing, so list every file that implements the feature). It is NOT a
+security boundary: it runs the reviewer code on your branch, and you chose the
+declared tests. The integrator refuses to record implemented a branch that changes
+the verification harness (`GATE_PATHS` in `tools/agent_pool.py`) - but that check
+lives in code the branch could also change, so it stops accidents, not a determined
+author; such a change is for the operator, and the reviewer sees it in the diff. Then
+classify:
+
+- **implemented** - every component obligation passes and the reviewer approves at
+  the evidenced commit. Integrate `--mode implemented`: the integrator re-runs your
+  component tests, records `implementation: complete`, and `passes` stays false.
+  Downstream implementation unblocks; integration and system obligations stay open
+  and traceable in the contract.
 - **complete** — every step passes *solo* (no IB/integration/live/e2e needed).
   This feature can be fully integrated and flipped to `passes:true`.
 - **serialized** — the code is done but ≥1 step *requires* IB / integration /
@@ -566,9 +636,12 @@ the latest `origin/main`**, and fast-forward-pushes — serialized so two agents
 never race on `main`:
 
 ```bash
-# complete  → runs close_feature.py --verified (flip passes:true + fold note), pushes main
-# serialized → merges code, keeps passes:false, pushes main (operator verifies later)
-python3 tools/agent_pool.py integrate "$ATP_FEATURE_ID" --mode complete    # or: --mode serialized
+# complete    → runs close_feature.py --verified (flip passes:true + fold note), pushes main;
+#               refuses while any prerequisite (of any type) is not yet verified
+# implemented → re-runs your component tests, records implementation: complete,
+#               keeps passes:false (integration/system obligations stay open)
+# serialized  → merges code, keeps passes:false, pushes main (operator verifies later)
+python3 tools/agent_pool.py integrate "$ATP_FEATURE_ID" --mode complete    # or: implemented | serialized
 ```
 
 - A **rebase conflict** aborts the integrate and leaves your branch for manual
@@ -590,7 +663,7 @@ in Step 7, so it lands on `main` via integrate and the next session can resume):
 === SESSION <feature-id> ===
 Date: <today>
 Feature: $ATP_FEATURE_ID — <description>
-Outcome: complete | serialized (<A|B|C|D>: <what is in the way>) | partial(blocked-on <Y>)
+Outcome: complete | implemented (<open integration/system obligations>) | serialized (<A|B|C|D>: <what is in the way>) | partial(blocked-on <Y>)
 
 What I did:  <implementation + key decisions>
 What I tested (per step): Step 1: PASS — <cmd> → <result>; ...
