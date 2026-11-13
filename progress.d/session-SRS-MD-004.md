@@ -45,8 +45,8 @@ What I tested (per step):
   hand (mutation_verify.py reports the Python tests red by import, which is dependence, not behaviour).
 Critic verdicts:
   deterministic: APPROVE - no findings
-  judgment (adversarial_review.py, reviewer=codex): APPROVE at round 6 - no findings
-Adversarial rounds: 6
+  judgment (adversarial_review.py, reviewer=codex): APPROVE at round 6 - no findings; round 7 re-review at the final tree
+Adversarial rounds: 7
   r1 BLOCK - replayed ticks revive a time-stale tracked line; Instant stops during suspend (writers that
      refresh without proof of new data; suspend-blind clock)
   r2 BLOCK - high-water clamp froze the clock after a corrected forward jump (suspend-blind clock)
@@ -55,6 +55,7 @@ Adversarial rounds: 6
   r5 BLOCK - a correction smaller than the suspend left a positive wall delta (suspend-blind clock);
      stopped and asked the operator: approved rustix for the OS suspend-inclusive clock
   r6 APPROVE
+  r7 re-review after the chore commits (playbooks, session note, plan-file removal; no code change)
 Playbook updates: safety-paths.md rules 58-59 (suspend-inclusive clock; writers must prove new data);
   test-integrity.md rules 47-48 (a port change disarms other features' mutation tests; rustfmt writes no
   comma after a block arm); pipeline-and-integrate.md rules 42-43 (do not commit the plan file; record
