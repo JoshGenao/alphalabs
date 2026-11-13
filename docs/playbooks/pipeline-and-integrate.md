@@ -332,3 +332,15 @@ one `main`. Most of this playbook is about that sharing.
   looks like. Run `git fetch origin && git rev-list --count HEAD..origin/main` in Step 1; if
   it is not 0 and your branch has no commits, `git merge --ff-only origin/main` and re-run
   `./init.sh` before reading any code. `(SRS-MD-001)`
+
+42. **Do not commit `progress.d/plan-<ID>.md`, whatever the coding prompt says.** Step 4.1
+    tells you to persist the approved plan there, but `shared_state_violations` lets a branch
+    commit only `progress.d/session-<ID>.md`, so `integrate` refuses the branch with "modify
+    shared coordination files". The guard reads the net `base...HEAD` diff, so a later
+    `git rm` clears it. Put the plan's substance in the session note instead. The prompt and
+    the guard disagree; the operator should fix the prompt. `(SRS-MD-004 integrate)`
+43. **Record evidence LAST.** Any committed change after a `tools/evidence.py run`, even a
+    playbook edit in the chore commit, makes the integrator call every obligation stale ("code
+    has moved since ... passed") and downgrade `implemented` to `serialized`. Order: code, note,
+    playbooks, then evidence, then a commit that touches only `.harness/runs/<ID>/`, then
+    `integrate`. `(SRS-MD-004 integrate)`

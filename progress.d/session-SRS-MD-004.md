@@ -57,7 +57,14 @@ Adversarial rounds: 6
   r6 APPROVE
 Playbook updates: safety-paths.md rules 58-59 (suspend-inclusive clock; writers must prove new data);
   test-integrity.md rules 47-48 (a port change disarms other features' mutation tests; rustfmt writes no
-  comma after a block arm).
+  comma after a block arm); pipeline-and-integrate.md rules 42-43 (do not commit the plan file; record
+  evidence last).
+Integrate attempt 1 (refused, nothing landed): evidence predated the chore commit's playbook edits, and
+  the branch carried progress.d/plan-SRS-MD-004.md, which Step 4.1 of the coding prompt asks for but
+  shared_state_violations refuses. Removed the plan file (its substance is in this note) and re-recorded
+  evidence last. Operator follow-up: prompts/coding_prompt.md Step 4.1 contradicts the integrate guard.
+Push transport: this session had no SSH key loaded, so integrate ran with per-process git settings routing
+  git@github.com to HTTPS through `gh auth git-credential` (no git config or remote was changed).
 Follow-ups seen, not fixed here: ~12 pre-existing rustdoc unresolved-link warnings in
   atp-orchestrator (hot_swap_promotion.rs, resv005_hot_swap_promote_cli.rs, cooldown_store.rs,
   trigger_config_store.rs, err001_broker_envelope_cli.rs); `cargo audit` is not installed locally, so the
