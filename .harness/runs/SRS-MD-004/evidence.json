@@ -2,15 +2,15 @@
   "created": "2026-11-12T05:13:17+00:00",
   "critic": {
     "deterministic": {
-      "head": "2510bef56b16fc9865d825d82733baaa1b3027a6",
-      "ts": "2026-11-13T02:44:29+00:00",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
+      "ts": "2026-11-13T03:18:31+00:00",
       "verdict": "approve"
     },
     "judgment": {
-      "head": "c16ae11de8cb41cde5e55152ba0c241fce449de2",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
       "reviewer": "codex",
       "rounds": 6,
-      "ts": "2026-11-13T02:48:17+00:00",
+      "ts": "2026-11-13T03:18:32+00:00",
       "verdict": "approve"
     }
   },
@@ -157,6 +157,28 @@
           "observed": "running 14 tests\ntest c1_an_unnameable_tick_is_refused_and_records_nothing ... ok\ntest c1_a_watched_line_that_never_ticked_is_stale_with_no_age ... ok\ntest c1_operator_resync_recovers_a_gap_stale_line ... ok\ntest c1_a_replayed_tick_does_not_revive_a_time_stale_tracked_line ... ok\ntest c1_a_clock_that_cannot_read_the_time_blocks_reads_and_refuses_writes ... ok\ntest c1_identities_the_board_cannot_name_fail_closed ... ok\ntest c1_a_tracked_board_refuses_a_refresh_without_a_sequence ... ok\ntest c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh ... ok\ntest c1_combined_line_freshness_a_gap_makes_a_time_fresh_line_stale_until_recovery ... ok\ntest c1_a_failing_gap_sink_is_reported_and_the_line_stays_stale ... ok\ntest c1_a_feed_thread_and_an_order_thread_share_one_verdict ... ok\ntest c1_the_order_symbol_is_canonicalized_like_the_subscription_registry ... ok\ntest c1_without_gap_tracking_ticks_are_time_observations_only ... ok\ntest c1_a_poisoned_board_reads_every_line_stale_and_drops_observations ... ok\n\ntest result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_004_freshness_probe.rs (target/debug/deps/srs_md_004_freshness_probe-6ec3fef736bdd650)",
           "status": "pass",
           "ts": "2026-11-13T02:44:18+00:00"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "atp-market-data",
+            "--test",
+            "srs_md_004_freshness_probe"
+          ],
+          "command": "cargo test -p atp-market-data --test srs_md_004_freshness_probe",
+          "contract_digest": "a9739373466bbfe6",
+          "env": {
+            "platform": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+            "python": "3.13.3"
+          },
+          "executed": true,
+          "exit_code": 0,
+          "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
+          "observed": "running 14 tests\ntest c1_a_replayed_tick_does_not_revive_a_time_stale_tracked_line ... ok\ntest c1_a_watched_line_that_never_ticked_is_stale_with_no_age ... ok\ntest c1_a_line_older_than_15_seconds_is_stale_and_a_new_tick_makes_it_fresh ... ok\ntest c1_a_clock_that_cannot_read_the_time_blocks_reads_and_refuses_writes ... ok\ntest c1_a_tracked_board_refuses_a_refresh_without_a_sequence ... ok\ntest c1_combined_line_freshness_a_gap_makes_a_time_fresh_line_stale_until_recovery ... ok\ntest c1_a_failing_gap_sink_is_reported_and_the_line_stays_stale ... ok\ntest c1_an_unnameable_tick_is_refused_and_records_nothing ... ok\ntest c1_a_feed_thread_and_an_order_thread_share_one_verdict ... ok\ntest c1_identities_the_board_cannot_name_fail_closed ... ok\ntest c1_operator_resync_recovers_a_gap_stale_line ... ok\ntest c1_without_gap_tracking_ticks_are_time_observations_only ... ok\ntest c1_the_order_symbol_is_canonicalized_like_the_subscription_registry ... ok\ntest c1_a_poisoned_board_reads_every_line_stale_and_drops_observations ... ok\n\ntest result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s\n     Running tests/srs_md_004_freshness_probe.rs (target/debug/deps/srs_md_004_freshness_probe-6ec3fef736bdd650)",
+          "status": "pass",
+          "ts": "2026-11-13T03:18:20+00:00"
         }
       ]
     },
@@ -295,6 +317,28 @@
           "observed": "running 7 tests\ntest err_3_unreachable_state_does_not_consult_freshness_port ... ok\ntest err_3_fresh_state_still_routes_through_broker ... ok\ntest err_3_stale_state_holds_across_many_live_submissions ... ok\ntest srs_md_004_route_order_blocks_while_stale_and_resumes_when_fresh ... ok\ntest srs_md_004_unknown_staleness_age_is_reported_as_unknown_not_zero ... ok\ntest err_3_stale_state_blocks_live_submission_with_no_broker_call ... ok\ntest srs_md_004_durable_live_path_blocks_while_stale_and_marks_the_intent_terminal ... ok\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/err_3_stale_data_blocked.rs (target/debug/deps/err_3_stale_data_blocked-2c37dc1c28dde4f7)",
           "status": "pass",
           "ts": "2026-11-13T02:44:18+00:00"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "atp-execution",
+            "--test",
+            "err_3_stale_data_blocked"
+          ],
+          "command": "cargo test -p atp-execution --test err_3_stale_data_blocked",
+          "contract_digest": "a9739373466bbfe6",
+          "env": {
+            "platform": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+            "python": "3.13.3"
+          },
+          "executed": true,
+          "exit_code": 0,
+          "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
+          "observed": "running 7 tests\ntest err_3_fresh_state_still_routes_through_broker ... ok\ntest err_3_unreachable_state_does_not_consult_freshness_port ... ok\ntest err_3_stale_state_holds_across_many_live_submissions ... ok\ntest err_3_stale_state_blocks_live_submission_with_no_broker_call ... ok\ntest srs_md_004_unknown_staleness_age_is_reported_as_unknown_not_zero ... ok\ntest srs_md_004_route_order_blocks_while_stale_and_resumes_when_fresh ... ok\ntest srs_md_004_durable_live_path_blocks_while_stale_and_marks_the_intent_terminal ... ok\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/err_3_stale_data_blocked.rs (target/debug/deps/err_3_stale_data_blocked-2c37dc1c28dde4f7)",
+          "status": "pass",
+          "ts": "2026-11-13T03:18:21+00:00"
         }
       ]
     },
@@ -433,6 +477,28 @@
           "observed": "running 5 tests\ntest c3_a_malformed_paper_order_is_refused_as_malformed_even_when_stale ... ok\ntest c3_an_ib_outage_does_not_block_a_fresh_paper_order ... ok\ntest c3_a_stale_paper_order_is_refused_and_a_fresh_one_reaches_the_simulator ... ok\ntest c3_live_and_paper_on_one_engine_are_both_blocked_with_one_event_each ... ok\ntest c3_an_unknown_age_is_reported_as_unknown ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s\n     Running tests/srs_md_004_paper_stale_gate.rs (target/debug/deps/srs_md_004_paper_stale_gate-444d150a2c965c27)",
           "status": "pass",
           "ts": "2026-11-13T02:44:18+00:00"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "atp-execution",
+            "--test",
+            "srs_md_004_paper_stale_gate"
+          ],
+          "command": "cargo test -p atp-execution --test srs_md_004_paper_stale_gate",
+          "contract_digest": "a9739373466bbfe6",
+          "env": {
+            "platform": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+            "python": "3.13.3"
+          },
+          "executed": true,
+          "exit_code": 0,
+          "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
+          "observed": "running 5 tests\ntest c3_a_malformed_paper_order_is_refused_as_malformed_even_when_stale ... ok\ntest c3_an_ib_outage_does_not_block_a_fresh_paper_order ... ok\ntest c3_a_stale_paper_order_is_refused_and_a_fresh_one_reaches_the_simulator ... ok\ntest c3_live_and_paper_on_one_engine_are_both_blocked_with_one_event_each ... ok\ntest c3_an_unknown_age_is_reported_as_unknown ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s\n     Running tests/srs_md_004_paper_stale_gate.rs (target/debug/deps/srs_md_004_paper_stale_gate-444d150a2c965c27)",
+          "status": "pass",
+          "ts": "2026-11-13T03:18:21+00:00"
         }
       ]
     },
@@ -571,6 +637,28 @@
           "observed": "running 2 tests\ntest c4_one_lines_fresh_data_does_not_admit_orders_on_another_line ... ok\ntest c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-c8372a455f834f93)",
           "status": "pass",
           "ts": "2026-11-13T02:44:19+00:00"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "atp-orchestrator",
+            "--test",
+            "srs_md_004_stale_gate_wired"
+          ],
+          "command": "cargo test -p atp-orchestrator --test srs_md_004_stale_gate_wired",
+          "contract_digest": "a9739373466bbfe6",
+          "env": {
+            "platform": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+            "python": "3.13.3"
+          },
+          "executed": true,
+          "exit_code": 0,
+          "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
+          "observed": "running 2 tests\ntest c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok\ntest c4_one_lines_fresh_data_does_not_admit_orders_on_another_line ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s\n     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-c8372a455f834f93)",
+          "status": "pass",
+          "ts": "2026-11-13T03:18:21+00:00"
         }
       ]
     }
@@ -583,13 +671,13 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "2510bef56b16fc9865d825d82733baaa1b3027a6",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
       "n": 1,
-      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  Dev server already running at http://127.0.0.1:3000.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 18 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n  \u00b7 dependency_check\n\u2713 18/18 contract check(s) passed (scope=env)\n\u2713 Environment ready\n Downloading crates ...\n  Downloaded windows-link v0.2.1\n  Downloaded windows-sys v0.61.2",
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  Dev server already running at http://127.0.0.1:3000.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 18 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n  \u00b7 dependency_check\n\u2713 18/18 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "488d802c9834ff91",
-      "ts": "2026-11-13T02:44:27+00:00"
+      "ts": "2026-11-13T03:18:30+00:00"
     },
     {
       "argv": [
@@ -603,13 +691,13 @@
       "command": "cargo test -p atp-orchestrator --test srs_md_004_stale_gate_wired",
       "executed": true,
       "exit_code": 0,
-      "head": "2510bef56b16fc9865d825d82733baaa1b3027a6",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
       "n": 2,
-      "observed": "running 2 tests\ntest c4_one_lines_fresh_data_does_not_admit_orders_on_another_line ... ok\ntest c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-c8372a455f834f93)",
+      "observed": "running 2 tests\ntest c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok\ntest c4_one_lines_fresh_data_does_not_admit_orders_on_another_line ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-c8372a455f834f93)",
       "status": "pass",
       "step_text": "Step 2: Exercise SRS-MD-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "488d802c9834ff91",
-      "ts": "2026-11-13T02:44:27+00:00"
+      "ts": "2026-11-13T03:18:30+00:00"
     },
     {
       "argv": [
@@ -622,13 +710,13 @@
       "command": ".venv/bin/python -m pytest tests/domain/test_stale_data_block.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "2510bef56b16fc9865d825d82733baaa1b3027a6",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
       "n": 3,
-      "observed": ".............                                                            [100%]\n13 passed in 0.57s\n/Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option \"asyncio_default_fixture_loop_scope\" is unset.\nThe event loop scope for asynchronous fixtures will default to the \"fixture\" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to \"function\" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: \"function\", \"class\", \"module\", \"package\", \"session\"\n\n  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))",
+      "observed": ".............                                                            [100%]\n13 passed in 0.58s\n/Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option \"asyncio_default_fixture_loop_scope\" is unset.\nThe event loop scope for asynchronous fixtures will default to the \"fixture\" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to \"function\" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: \"function\", \"class\", \"module\", \"package\", \"session\"\n\n  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: While subscribed market data is stale, live and paper order submissions return MARKET_DATA_STALE; submissions resume when fresh data is received.",
       "steps_digest": "488d802c9834ff91",
-      "ts": "2026-11-13T02:44:28+00:00"
+      "ts": "2026-11-13T03:18:31+00:00"
     },
     {
       "argv": [
@@ -638,14 +726,14 @@
       "command": ".venv/bin/python tools/freshness_check.py",
       "executed": true,
       "exit_code": 0,
-      "head": "2510bef56b16fc9865d825d82733baaa1b3027a6",
+      "head": "dfb362d9bc2d7f516511a6d116cb2d3374907c51",
       "n": 4,
       "observed": "ERR-3 PASS\n- atp-types declares MarketDataFreshness with 2 states (Fresh, Stale) \u2014 market-data freshness gate (SRS-MD-004 / NFR-P5)\n- atp-types declares StaleDataEvent with the 4 required fields (state, strategy_id, symbol, staleness_seconds) and rejects 5 forbidden broker/vendor/tick fields\n- atp-execution declares port trait MarketDataFreshnessProbe with 2 methods (freshness, staleness_seconds) \u2014 the SRS-MD-004 freshness probe (subscription manager port)\n- atp-execution declares port trait StaleDataEventSink with 1 method (record) \u2014 the structured-event publication channel for ERR-3\n- atp-execution::submit_live_order gates `broker.submit_order` on a nested match MarketDataFreshness::Fresh inside ConnectivityState::Connected; the MarketDataFreshness::Stale leaf emits OrderErrorCategory::MarketDataStale, records a StaleDataEvent via `stale_events.record`, and produces zero broker side effect (ERR-3)\n- atp-execution::dispatch_order gates `simulation.submit_simulated` on MarketDataFreshness::Fresh inside OrderRoute::InternalSimulation; the MarketDataFreshness::Stale leaf emits OrderErrorCategory::MarketDataStale and records a StaleDataEvent via `stale_events.record` (SRS-MD-004 / SYS-87 paper half)\n- cargo test -p atp-execution --lib + err_3_stale_data_blocked + srs_md_004_paper_stale_gate: PASS (live and paper stale-gated rejection, zero broker and simulation side effect verified)",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "488d802c9834ff91",
-      "ts": "2026-11-13T02:44:28+00:00"
+      "ts": "2026-11-13T03:18:31+00:00"
     }
   ],
-  "updated": "2026-11-13T02:48:17+00:00"
+  "updated": "2026-11-13T03:18:32+00:00"
 }
