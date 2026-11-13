@@ -10,7 +10,7 @@
 
 ## Outstanding
 
-- deterministic critic approved at e4e72239, but 2 non-evidence path(s) have changed since (architecture/runtime_services.json, crates/atp-orchestrator/src/market_data_freshness.rs) — the approval describes code this close would not ship. Re-run the deterministic review.
+- deterministic critic approved at 8c257b06, but 5 non-evidence path(s) have changed since (Cargo.lock, architecture/runtime_services.json, crates/atp-orchestrator/Cargo.toml…) — the approval describes code this close would not ship. Re-run the deterministic review.
 - no judgment critic verdict recorded
 
 ## Acceptance criterion
@@ -60,6 +60,9 @@ Step 1: Run ./init.sh and confirm the development environment reports Environmen
   · dependency_check
 ✓ 18/18 contract check(s) passed (scope=env)
 ✓ Environment ready
+ Downloading crates ...
+  Downloaded windows-link v0.2.1
+  Downloaded windows-sys v0.61.2
 ```
 
 </details>
@@ -83,8 +86,8 @@ test c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... 
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
-     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-46b09ac8d0198f19)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running tests/srs_md_004_stale_gate_wired.rs (target/debug/deps/srs_md_004_stale_gate_wired-c8372a455f834f93)
 ```
 
 </details>
@@ -103,7 +106,7 @@ Step 3: Verify acceptance criteria: While subscribed market data is stale, live 
 
 ```
 .............                                                            [100%]
-13 passed in 0.50s
+13 passed in 0.57s
 /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-004/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
 The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
 
