@@ -330,3 +330,24 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     silently disables the feature the suppression protects. Pair every suppression case with
     the same caller succeeding outside the window, and with the exempt caller succeeding
     inside it. `(RESV-006 r17)`
+
+## A freshness gate is only as honest as its clock and its writers (SRS-MD-004)
+
+58. **A staleness clock must count through host suspend; do not rebuild one from
+    `SystemTime` + `Instant`.** `Instant` stops while the host sleeps (macOS
+    `CLOCK_UPTIME_RAW`, Linux `CLOCK_MONOTONIC`), so a line observed before a five-minute
+    sleep reads seconds old on resume. Combining it with the wall clock does not converge:
+    rounds 2-5 each found a new mix of suspend and NTP correction that cancelled out (a
+    clamped high-water froze after a corrected jump; an anchor-relative wall read went
+    "unavailable" before start-up and counted as zero; a backward step hid the suspend; a
+    correction smaller than the suspend left a positive delta). Read the OS suspend-inclusive
+    clock (`CLOCK_BOOTTIME` on Linux, `CLOCK_MONOTONIC` on macOS) through `rustix` (the
+    workspace forbids `unsafe`), and return `None` where none exists so the gate fails closed.
+    When the same class comes back a third time, stop patching and ask whether the SOURCE
+    can ever be right. `(SRS-MD-004 r2-r5)`
+59. **Every writer that refreshes a freshness verdict must prove new data arrived.** On a
+    gap-tracked line the heartbeat was refreshed before the sequence was classified, so a
+    replayed tick kept a silent line tradable forever. Classify first; refresh only on a tick
+    that carries new data; refuse a sequence-less refresh where sequences exist; and make
+    every write return a typed result: a write that records nothing (poisoned store, no
+    clock, unnameable tick) must say so, not vanish. `(SRS-MD-004 r1)`

@@ -429,3 +429,23 @@ Read this whenever you write a test, and before you believe a green one.
     user); and a file overlaid with an mtime older than the last build is not rebuilt, so a
     "without the fix" mutation run silently tests the fixed binary. `touch` the overlay and
     grep it inside the container before trusting a green. `(EXE-001 red main)`
+
+## A port change disarms OTHER features' negative tests (SRS-MD-004)
+
+47. **Changing a shared signature silently turns other features' mutation tests into
+    no-ops.** SRS-MD-004 made `MarketDataFreshnessProbe` security-aware. Three negative tests
+    in `test_freshness_contract.py` / `test_order_routing_contract.py` mutated the source with
+    `.replace("<old signature>", ...)`; the old text no longer existed, the "mutant" equalled
+    the source, and each test either passed asserting nothing or failed for an unrelated
+    reason. Rule 2 (line-unique anchors) does not catch this: the anchor was unique until
+    someone else's change removed it. Route every mutation through a helper that RAISES when
+    the anchor is absent (`mutate()` in `test_freshness_contract.py`), and after changing a
+    pinned signature, grep the tests that mutate that file for the old text.
+    `(SRS-MD-004)`
+48. **rustfmt writes no comma after a block-bodied match arm.** `_rust_parser._match_arm`
+    ended every arm at the next top-level comma, so `Connected => { ... }` followed by
+    `Unreachable => { ... }` returned BOTH arms as "the Connected arm". It surfaced only when
+    a line grew long enough for rustfmt to wrap the arm in braces: `connectivity_check` then
+    found no blocked-state branch "outside" Connected and failed, cascading into twelve red
+    tests in unrelated architecture suites. A block arm now ends at its closing brace; pin
+    any arm parser with a comma-less block arm followed by a sibling. `(SRS-MD-004)`
