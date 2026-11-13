@@ -559,7 +559,21 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "solo"
+    "verification_method": "solo",
+    "implementation": {
+      "status": "complete",
+      "steps_digest": "488d802c9834ff91",
+      "commit": "e11d3b2d0436a7802ce5f6cfe825c7e1d34bc233",
+      "ts": "2026-11-13T03:26:22+00:00",
+      "component": {
+        "C1": "passed",
+        "C2": "passed",
+        "C3": "passed",
+        "C4": "passed"
+      },
+      "reviewer": "codex",
+      "review_head": "e11d3b2d0436a7802ce5f6cfe825c7e1d34bc233"
+    }
   },
   {
     "id": "SRS-MD-005",
