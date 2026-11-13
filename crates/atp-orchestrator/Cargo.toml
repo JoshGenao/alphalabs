@@ -158,6 +158,11 @@ atp-market-data = { path = "../atp-market-data" }
 atp-notification = { path = "../atp-notification" }
 atp-simulation = { path = "../atp-simulation" }
 atp-types = { path = "../atp-types" }
+# SRS-MD-004: the production market-data freshness clock must keep counting while the
+# host is suspended (CLOCK_BOOTTIME on Linux, CLOCK_MONOTONIC on macOS); std's Instant
+# stops during sleep, and the workspace forbids the unsafe code a raw libc call needs.
+# rustix exposes clock_gettime safely. Approved by the operator 2026-11-12.
+rustix = { version = "1.0", default-features = false, features = ["std", "time"] }
 
 [features]
 # Pass-through to the adapter's operator-initiated live IB socket transport. OFF
