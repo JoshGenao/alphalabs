@@ -6,12 +6,7 @@
 - **steps evidenced**: 4/4
 - **critics**: deterministic `approve`, judgment `approve`
 - **artifacts**: 0
-- **record complete**: NO
-
-## Outstanding
-
-- deterministic critic approved at 2510bef5, but 3 non-evidence path(s) have changed since (docs/playbooks/pipeline-and-integrate.md, docs/playbooks/safety-paths.md, docs/playbooks/test-integrity.md) — the approval describes code this close would not ship. Re-run the deterministic review.
-- judgment critic approved at c16ae11d, but 3 non-evidence path(s) have changed since (docs/playbooks/pipeline-and-integrate.md, docs/playbooks/safety-paths.md, docs/playbooks/test-integrity.md) — the approval describes code this close would not ship. Re-run the judgment review.
+- **record complete**: yes
 
 ## Acceptance criterion
 
@@ -78,8 +73,8 @@ cargo test -p atp-orchestrator --test srs_md_004_stale_gate_wired
 
 ```
 running 2 tests
-test c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok
 test c4_one_lines_fresh_data_does_not_admit_orders_on_another_line ... ok
+test c4_live_and_paper_block_while_stale_and_resume_when_fresh_data_arrives ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
