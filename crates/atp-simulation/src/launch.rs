@@ -5,7 +5,7 @@
 //! data or uploaded Parquet data; **start and end dates are selectable** through
 //! API and dashboard." The [`backtest`](crate::backtest) engine takes a
 //! configurable [`DateRange`] of opaque ordered `u64` timestamps and deliberately
-//! leaves "binding them to wall-clock calendar dates [as] the launch surface's
+//! leaves "binding them to wall-clock calendar dates `as` the launch surface's
 //! concern". This module is that binding: it parses an operator-supplied
 //! `YYYY-MM-DD` start/end date into the engine's epoch-second [`DateRange`], so the
 //! "dates are selectable" half of the acceptance criterion has a real, reusable,

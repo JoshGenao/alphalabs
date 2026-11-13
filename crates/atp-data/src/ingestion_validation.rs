@@ -1,14 +1,14 @@
 //! SRS-DATA-013 / SyRS SYS-77 / ERR-5 — the concrete ingestion-validation rule logic.
 //!
 //! The ERR-5 gate ([`DataLayer::ingest_record`](crate::DataLayer::ingest_record)) and its ports
-//! ([`RecordValidator`](crate::RecordValidator) / [`IngestionValidationEventSink`](crate::IngestionValidationEventSink))
+//! ([`RecordValidator`] / [`IngestionValidationEventSink`])
 //! define the *mechanism* — probe a record, and on `Quarantined` emit one structured event and refuse
 //! the primary write. This module supplies the three pieces DATA-013 owns:
 //!
 //!   1. [`Sys77RecordValidator`] — the real, read-only, kind-aware classifier that applies SyRS SYS-77
 //!      rules (a)..(f) to a canonical [`MarketDataRecord`] (equity OHLCV bars *and* option-chain
 //!      snapshots), returning exactly one [`QuarantineReason`] per rejected record.
-//!   2. [`QuarantineSummarySink`] — an [`IngestionValidationEventSink`](crate::IngestionValidationEventSink)
+//!   2. [`QuarantineSummarySink`] — an [`IngestionValidationEventSink`]
 //!      that aggregates the per-record events into the "count and nature of quarantined records" the
 //!      SyRS SYS-77 alert clause requires (counts-by-reason + total).
 //!   3. [`DataLayer::ingest_market_records_quarantining`] — the **quarantine-and-continue** batch write
@@ -272,7 +272,7 @@ impl QuarantineSummary {
     }
 }
 
-/// An [`IngestionValidationEventSink`](crate::IngestionValidationEventSink) that aggregates the ERR-5
+/// An [`IngestionValidationEventSink`] that aggregates the ERR-5
 /// per-record events into a [`QuarantineSummary`]. Interior-mutable so the gate can `record` into a
 /// shared `&self` while the batch loop runs (single-threaded ingestion).
 #[derive(Debug, Default)]
@@ -342,7 +342,7 @@ impl DataLayer {
     /// [`StoreError::ConflictingContent`](crate::store::StoreError). An IDENTICAL existing record is left
     /// in place (the tier's idempotent upsert collapses it, SRS-DATA-016).
     ///
-    /// Routing the valid subset through [`TieredStore::ingest`] keeps SRS-DATA-008's "all ingestion is
+    /// Routing the valid subset through `TieredStore::ingest` keeps SRS-DATA-008's "all ingestion is
     /// SSD-first + NAS-synced" invariant intact. The same trust boundary as the sibling paths applies:
     /// corporate-action COVERAGE ([`DatasetKind::CorporateActionCoverage`]) is refused
     /// ([`MarketIngestError::UnsupportedKind`]) — it is an operator trust assertion, not provider

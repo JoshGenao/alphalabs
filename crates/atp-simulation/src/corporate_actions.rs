@@ -79,7 +79,7 @@
 //!     terminates regardless of the conversion terms, so the merger cancel does
 //!     not depend on term validity.
 //!   * **Split**: quantity scales `N / M` exact-and-positive, limit/stop prices
-//!     scale `M / N` rounded half-to-even ([`div_round_half_even`], byte-stable
+//!     scale `M / N` rounded half-to-even (`div_round_half_even`, byte-stable
 //!     with `atp-data::normalization` and SRS-DATA-019) — any non-integral
 //!     quantity, non-positive price, overflow, or non-positive factor CANCELS the
 //!     order rather than leaving it resting on a stale basis.

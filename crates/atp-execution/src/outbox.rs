@@ -726,7 +726,7 @@ pub struct OutboxSnapshot {
 }
 
 impl OutboxSnapshot {
-    /// Capture `outbox` at the current [`OUTBOX_SCHEMA_VERSION`].
+    /// Capture `outbox` at the current `OUTBOX_SCHEMA_VERSION`.
     pub fn capture(outbox: OrderOutbox) -> Self {
         Self {
             schema_version: OUTBOX_SCHEMA_VERSION,

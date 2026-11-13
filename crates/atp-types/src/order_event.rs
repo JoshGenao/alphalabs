@@ -18,7 +18,7 @@
 //! dispatchers derive an *identical* event category from an identical transition
 //! by construction — the SRS-SDK-001 parity guarantee, not a runtime coincidence.
 //!
-//! The single in-code source of truth is [`OrderEventCategory::for_transition`]:
+//! The single in-code source of truth is `OrderEventCategory::for_transition`:
 //! it is **fail-closed** — it consults the documented [`OrderState`] graph
 //! (`OrderState::allowed_next`, the SRS-EXE-008 authority) and refuses to derive
 //! an event for a transition that cannot legally happen. A legal transition into
@@ -64,7 +64,7 @@ use crate::order_lifecycle::{OrderKey, OrderLifecycleError, OrderState};
 /// REST / WebSocket surfaces (SyRS SYS-64 alignment).
 ///
 /// **Opaque (private construction) on purpose.** This is a newtype around a
-/// *private* [`Category`] enum, so a dispatcher in another crate cannot
+/// *private* `Category` enum, so a dispatcher in another crate cannot
 /// construct a category directly — neither the inner enum nor the field is
 /// reachable, and (unlike a bare `#[non_exhaustive]` enum) the unit variants are
 /// not nameable for construction. The only way to obtain a value is from

@@ -18,7 +18,7 @@
 //! - `run [--commission M] [--slippage M] [--spread M] [--lot N] [--sell-ts T] [--full]` — build a
 //!   [`CostConfig`] from the flags (no cost flags ⇒ `CostConfig::default()`, the SyRS baseline),
 //!   set it on the request, run the SAME fixture strategy once through the real engine, and print
-//!   the resolved config, the per-fill [`CostBreakdown`] (commission / slippage / spread-impact, in
+//!   the resolved config, the per-fill [`CostBreakdown`](atp_simulation::cost::CostBreakdown) (commission / slippage / spread-impact, in
 //!   integer minor units), the aggregate total cost, and the final equity. The strategy is fixed:
 //!   only the cost config changes between runs, which is the "override … without changing strategy
 //!   code" half of the AC (SYS-15d). `--full` also renders the equity curve.

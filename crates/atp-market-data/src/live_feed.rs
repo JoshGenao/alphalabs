@@ -1,7 +1,7 @@
 //! SRS-MD-003 — the LIVE feed loop: the producer that turns a real broker
 //! connection into continuous freshness evidence.
 //!
-//! [`HeartbeatFreshnessMonitor`](crate::HeartbeatFreshnessMonitor) is clock-free
+//! [`HeartbeatFreshnessMonitor`] is clock-free
 //! and source-free by design: something has to call `observe_*` per genuinely
 //! delivered tick and per genuine gateway round trip, then `evaluate` on a
 //! cadence. That something is [`LiveFeedLoop`]. It talks to the broker through

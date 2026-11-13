@@ -38,7 +38,7 @@
 //!
 //! # Deterministic, dependency-free codec
 //!
-//! Like the paper analogue ([`atp_simulation::paper_state`], SRS-SIM-004), the
+//! Like the paper analogue (`atp_simulation::paper_state`, SRS-SIM-004), the
 //! snapshot serializes to a **byte-identical** form for the same state (orders,
 //! broker IDs, fills, and positions are emitted in a canonical order), is
 //! prefixed with a magic header and an FNV-1a integrity checksum over the body,
@@ -532,7 +532,7 @@ pub struct LiveStateSnapshot {
 }
 
 impl LiveStateSnapshot {
-    /// Capture `state` at [`SCHEMA_VERSION`] with `config`.
+    /// Capture `state` at `SCHEMA_VERSION` with `config`.
     pub fn capture(state: LiveExecutionState, config: RecoveryConfig) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,

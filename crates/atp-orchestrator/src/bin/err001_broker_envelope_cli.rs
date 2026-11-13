@@ -414,7 +414,7 @@ fn cmd_parity(rest: &[String]) -> Result<(), String> {
 
 /// Drive a broker rejection through the PRODUCTION order-submission boundary:
 /// `ExecutionEngine::route_order`, which resolves live-ness from the engine-owned
-/// [`LiveDesignation`] registry before delegating to the inner gate and the brokerage port.
+/// [`LiveDesignation`](atp_execution::LiveDesignation) registry before delegating to the inner gate and the brokerage port.
 ///
 /// Routing through `route_order` rather than calling `submit_live_order` directly matters for the
 /// evidence: `submit_live_order` takes `StrategyMode::Live` as a *caller-supplied* argument, so a

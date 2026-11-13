@@ -37,7 +37,7 @@
 //! no window (review r13).
 //!
 //! So [`begin_provisional`] opens the window BEFORE the demotion, in its own
-//! [`CooldownRecord::provisional_completion`] slot and stamped with the attempt instant, and
+//! `CooldownRecord::provisional_completion` slot and stamped with the attempt instant, and
 //! [`record_completion`] confirms it after the durable publish with the real completion
 //! instant. A changeover that refuses or fails calls [`abandon_provisional`], so a window
 //! still never outlives a swap that did not happen. Every interruption in between now lands
@@ -363,7 +363,7 @@ fn validate_strategy_id(value: &str, field: &str) -> Result<(), String> {
 
 /// Serialize `record` to the single-line v1 JSON payload this module persists.
 ///
-/// The three completion fields are written together or not at all — [`deserialize`]
+/// The three completion fields are written together or not at all — `deserialize`
 /// refuses any partial combination rather than picking which half to believe.
 pub fn serialize(record: &CooldownRecord) -> String {
     let mut payload = String::new();

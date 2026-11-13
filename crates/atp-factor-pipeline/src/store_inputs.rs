@@ -483,7 +483,7 @@ fn fundamental_ratios(
 /// The market half is read over the inclusive `[start_ts, end_ts]` lookback (for the trailing return /
 /// volatility); the fundamental half is the as-of statement at/before `end_ts` (the run date), which may
 /// predate `start_ts` because fundamentals are periodic. A `None` market or fundamental input is a
-/// legitimate auditable absence carried through to [`run_factor_job`] (which records the corresponding
+/// legitimate auditable absence carried through to [`run_factor_job`](crate::factor_job::run_factor_job) (which records the corresponding
 /// skip); a structural problem (inverted market window, missing field, non-positive close/denominator,
 /// uncovered split-adjusted basis) fails closed. The securities are returned in input order; the job
 /// re-sorts into canonical order, so the outcome is order-independent.

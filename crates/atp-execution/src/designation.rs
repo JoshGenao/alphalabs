@@ -2,7 +2,7 @@
 //! SYS-2d / AC-15; NFR-S2; StRS SN-1.01 / SN-1.06 / SN-1.11).
 //!
 //! AGENTS.md core constraint: *"Exactly one strategy may execute against the IB
-//! live account at any time."* [`ExecutionEngine::submit_live_order`] decides
+//! live account at any time."* [`ExecutionEngine::submit_live_order`](crate::ExecutionEngine::submit_live_order) decides
 //! whether a *Live* submission may reach the broker (ERR-1/2/3 — mode,
 //! connectivity, freshness), but it **trusts the caller-passed
 //! [`atp_types::StrategyMode`]**: nothing in that gate establishes *which*

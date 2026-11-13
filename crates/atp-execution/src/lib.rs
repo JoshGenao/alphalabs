@@ -99,7 +99,7 @@ impl fmt::Display for AckFailure {
 }
 
 /// SRS-EXE-009 — the failure surface of
-/// [`ExecutionEngine::submit_live_order_durably`]. It **distinguishes whether a live
+/// `ExecutionEngine::submit_live_order_durably`. It **distinguishes whether a live
 /// order might exist**, which is the safety-critical fact a caller needs to decide
 /// whether a retry is safe:
 /// * [`Rejected`](Self::Rejected) / [`WriteAheadPersistence`](Self::WriteAheadPersistence)
@@ -814,7 +814,7 @@ impl ExecutionEngine {
     /// used to self-declare live-ness. The ONLY public way to reach it is
     /// [`route_order_durably`](Self::route_order_durably), which derives live-ness
     /// from the engine-owned [`LiveDesignation`] authority (exactly as
-    /// [`route_order`] gates [`submit_live_order`]). So the single-live-strategy
+    /// `route_order` gates [`submit_live_order`]). So the single-live-strategy
     /// invariant (AGENTS.md) holds by construction for the durable path too.
     ///
     /// **Scope.** Wiring the durable seam into the PRODUCTION
@@ -950,15 +950,14 @@ impl ExecutionEngine {
     /// error **before any outbox mutation or broker contact** — a non-designated
     /// caller cannot even obtain a durable intent, let alone reach IB. Only an
     /// [`LiveRoutingDecision::Authorized`] submission proceeds to the durable seam
-    /// [`submit_live_order_durably`](Self::submit_live_order_durably) (write-ahead
+    /// `submit_live_order_durably` (write-ahead
     /// commit + persist BEFORE the broker call, bind the ack, mark a rejection
     /// terminal).
     ///
     /// This mirrors the [`route_composite_order`](Self::route_composite_order) /
-    /// [`submit_live_composite_order`] authority pattern, so the single-live-strategy
+    /// `submit_live_composite_order` authority pattern, so the single-live-strategy
     /// invariant (AGENTS.md) holds for the durable path by construction.
     ///
-    /// [`submit_live_composite_order`]: Self::submit_live_composite_order
     #[allow(clippy::too_many_arguments)]
     pub fn route_order_durably<B, C, E, F, S>(
         &self,
@@ -1161,13 +1160,13 @@ impl ExecutionEngine {
         }
     }
 
-    /// SRS-EXE-004 / SRS-EXE-001 — the composite analogue of [`route_order`]: the
+    /// SRS-EXE-004 / SRS-EXE-001 — the composite analogue of `route_order`: the
     /// live-routing **authority** gate for a multi-leg composite. Derives
     /// live-ness from the engine-owned [`LiveDesignation`] (never trusted from the
     /// caller), rejecting a composite from any non-designated strategy
     /// synchronously with `NON_LIVE_STRATEGY_SUBMISSION` before any broker,
     /// connectivity, or freshness port is consulted; an authorized composite
-    /// proceeds to the ERR-1/2/3 gate in [`submit_live_composite_order`].
+    /// proceeds to the ERR-1/2/3 gate in `submit_live_composite_order`.
     #[allow(clippy::too_many_arguments)]
     pub fn route_composite_order<B, C, E, F, S>(
         &self,

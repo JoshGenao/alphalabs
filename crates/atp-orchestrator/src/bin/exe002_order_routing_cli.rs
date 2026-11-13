@@ -6,7 +6,7 @@
 //! `LiveDesignation` authority, real `PaperSimulationEngine` +
 //! `VirtualOrderBook` behind the `InternalSimulationSubmit` port, real
 //! `InteractiveBrokersBrokerage` behind the `LiveBrokerageSubmit` port — with
-//! the deterministic mocked-IB transport ([`RecordingIbGateway`]) recording
+//! the deterministic mocked-IB transport ([`RecordingIbGateway`](atp_orchestrator::order_routing_wiring::RecordingIbGateway)) recording
 //! every order-creating wire operation. This verifies the routing invariant
 //! over deterministic fixtures (scenario-authored synthetic strategy ids); it
 //! is NOT the deployed strategy-runtime order path — real strategy-container

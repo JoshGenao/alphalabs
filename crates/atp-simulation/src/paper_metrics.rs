@@ -17,7 +17,7 @@
 //! (mark-to-market at each bar close, fill-then-mark within a bar) over a starting cash
 //! baseline. This accumulator builds the IDENTICAL quantity: `cash` starts at
 //! `starting_cash_minor` and accumulates each fill's `cash_delta_minor`
-//! (`-(notional) - cost`, the simulator's signed cash impact); at each [`mark`] event
+//! (`-(notional) - cost`, the simulator's signed cash impact); at each `mark` event
 //! it values every open position with [`VirtualPosition::market_value_minor`]
 //! (`mark * quantity`) and sets `equity = cash + sum(market_value)`. For one symbol that
 //! is exactly `cash + position * close`. So a paper run whose fills and per-bar marks
@@ -32,7 +32,7 @@
 //! ## Fail closed, never fabricate
 //!
 //! The accumulator's headline hazard is fabricating equity. Two guards prevent it:
-//!   * a [`mark`] event MUST supply a strictly-positive mark for EVERY open (non-flat)
+//!   * a `mark` event MUST supply a strictly-positive mark for EVERY open (non-flat)
 //!     position -- a missing mark would silently value a held position at zero and
 //!     overstate or understate net-liq, so it is rejected
 //!     ([`PaperMetricsError::MissingMark`]); a non-positive mark is rejected by the
@@ -43,6 +43,7 @@
 //!     is a valid (ordered, non-degenerate) input to
 //!     [`metrics::compute`](crate::metrics::compute), and a duplicate symbol within one
 //!     mark event is ambiguous and rejected ([`PaperMetricsError::DuplicateMark`]).
+//!
 //! Fills are validated by the ledger ([`StrategyLedger::apply_fill`]: positive price,
 //! non-negative costs, `cash_delta` consistency) before any state changes, so a corrupt
 //! fill leaves the accumulator unchanged. The accumulator reads no wall clock, spawns no

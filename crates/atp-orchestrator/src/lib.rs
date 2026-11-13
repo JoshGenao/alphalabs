@@ -17,31 +17,31 @@ use std::fmt;
 use crate::cooldown::{CooldownState, ManualCooldownAcknowledgement};
 use crate::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 
-/// SRS-NOTIF-001 detection wiring: binds `atp-execution`'s ERR-2 / SRS-SAFE-003
-/// connectivity gate to the operator-notification dispatcher. Lives here because
-/// `atp-execution` must not depend on `atp-notification` (SRS-ARCH-002).
+// SRS-NOTIF-001 detection wiring: binds `atp-execution`'s ERR-2 / SRS-SAFE-003
+// connectivity gate to the operator-notification dispatcher. Lives here because
+// `atp-execution` must not depend on `atp-notification` (SRS-ARCH-002).
 pub mod connectivity_notification;
-/// SRS-RESV-006 — the SyRS SYS-49e Hot-Swap cool-down window: the pure classifier
-/// (`CooldownState`) both SRS-RESV-003 entry points consult through one predicate,
-/// `proven_clear`. No clock, no I/O — see [`cooldown_store`] for the durable half.
+// SRS-RESV-006 — the SyRS SYS-49e Hot-Swap cool-down window: the pure classifier
+// (`CooldownState`) both SRS-RESV-003 entry points consult through one predicate,
+// `proven_clear`. No clock, no I/O — see [`cooldown_store`] for the durable half.
 pub mod cooldown;
-/// SRS-RESV-006 — the durable SyRS SYS-49e window: the configured period plus the last
-/// swap completion, in one atomically-published record. Absent means no swap has ever
-/// completed; UNREADABLE means [`cooldown::CooldownState::Unknown`], never "no cool-down".
+// SRS-RESV-006 — the durable SyRS SYS-49e window: the configured period plus the last
+// swap completion, in one atomically-published record. Absent means no swap has ever
+// completed; UNREADABLE means [`cooldown::CooldownState::Unknown`], never "no cool-down".
 pub mod cooldown_store;
-/// SRS-RESV-004 — the durable demotion-pending lockout SyRS SYS-49c (c)/(d) requires:
-/// engaged by the liquidation-timeout branch, cleared only by an explicit operator
-/// resolution, and fail-closed on an unreadable store.
+// SRS-RESV-004 — the durable demotion-pending lockout SyRS SYS-49c (c)/(d) requires:
+// engaged by the liquidation-timeout branch, cleared only by an explicit operator
+// resolution, and fail-closed on an unreadable store.
 pub mod demotion_pending_store;
-/// SRS-RESV-004 — the SyRS SYS-49b demotion sequence (cease signals → cancel resting
-/// orders → submit liquidations) and the flat-confirmation probe that feeds
-/// [`StrategyOrchestrator::resolve_demotion`].
+// SRS-RESV-004 — the SyRS SYS-49b demotion sequence (cease signals → cancel resting
+// orders → submit liquidations) and the flat-confirmation probe that feeds
+// [`StrategyOrchestrator::resolve_demotion`].
 pub mod hot_swap_demotion;
-/// SRS-RESV-004 — the fixture-tier composition binding the real demotion sequence, gate,
-/// lockout and SRS-NOTIF-001 notifier into one runnable drill (the operator CLI's engine).
+// SRS-RESV-004 — the fixture-tier composition binding the real demotion sequence, gate,
+// lockout and SRS-NOTIF-001 notifier into one runnable drill (the operator CLI's engine).
 pub mod hot_swap_demotion_drill;
-/// SRS-RESV-005 — the Hot-Swap promotion gate: a live promotion is reachable
-/// only from a real SRS-RESV-004 demotion acceptance.
+// SRS-RESV-005 — the Hot-Swap promotion gate: a live promotion is reachable
+// only from a real SRS-RESV-004 demotion acceptance.
 pub mod hot_swap_promotion;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
@@ -50,22 +50,22 @@ pub mod kill_switch_timeout;
 pub mod live_designation_store;
 // SRS-EXE-001: the live execution host - the production call site of route_order.
 pub mod live_host;
-/// SRS-MD-003 — composition of the IB transport with the live freshness feed
-/// loop (operator-gated `ib-live-transport`).
+// SRS-MD-003 — composition of the IB transport with the live freshness feed
+// loop (operator-gated `ib-live-transport`).
 pub mod live_market_data;
-/// SRS-MD-004 — the production `MarketDataFreshnessProbe`: the execution
-/// gate's view of `atp-market-data`'s shared line-freshness board, plus the
-/// monotonic clock both sides of the board share.
+// SRS-MD-004 — the production `MarketDataFreshnessProbe`: the execution
+// gate's view of `atp-market-data`'s shared line-freshness board, plus the
+// monotonic clock both sides of the board share.
 pub mod market_data_freshness;
 pub mod operator_channels;
 pub mod order_routing_wiring;
 pub mod quarantine_notification;
-/// SRS-MD-005 — the scheduled IB Gateway restart-window connectivity producer:
-/// the decision `atp-notification`'s suppression seam and `atp-execution`'s
-/// live-order gate have both been waiting on.
+// SRS-MD-005 — the scheduled IB Gateway restart-window connectivity producer:
+// the decision `atp-notification`'s suppression seam and `atp-execution`'s
+// live-order gate have both been waiting on.
 pub mod restart_window_connectivity;
-/// SRS-MD-005 — the end-to-end restart-window scenario: one instant, all
-/// four SYS-75 clauses, driven through the real authority chain.
+// SRS-MD-005 — the end-to-end restart-window scenario: one instant, all
+// four SYS-75 clauses, driven through the real authority chain.
 pub mod restart_window_scenario;
 pub mod trigger_config_store;
 

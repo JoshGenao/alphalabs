@@ -58,7 +58,7 @@ pub const MAX_CONNECTIONS_PER_STRATEGY: usize = 4;
 pub const REPLY_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// After a refusal that ends a connection, the most the host reads and discards
-/// before closing, and for how long. See [`refuse_and_close`].
+/// before closing, and for how long. See `refuse_and_close`.
 pub const CLOSE_DRAIN_LIMIT_BYTES: u64 = 64 * 1024;
 pub const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 

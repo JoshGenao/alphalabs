@@ -124,7 +124,7 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// ## Mechanism
 ///
 /// A `<path>.lock` sibling created with `create_new` (`O_EXCL`), which the OS makes atomic: exactly
-/// one creator wins. Contenders retry until [`LOCK_TIMEOUT`], then fail closed with an explicit
+/// one creator wins. Contenders retry until `LOCK_TIMEOUT`, then fail closed with an explicit
 /// error rather than proceeding unserialised — refusing an operation is recoverable, corrupting the
 /// configuration or the audit trail is not.
 ///

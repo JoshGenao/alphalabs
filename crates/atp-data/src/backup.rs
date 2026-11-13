@@ -12,7 +12,7 @@
 //! second archive format or a second checksum: a backup unit is a directory holding one of the
 //! repo's `MAGIC`-prefixed store blobs, and "validate integrity on completion" means re-reading the
 //! **exported** bytes through the very same fail-closed codec that wrote them
-//! ([`store::checksum`], [`MarketDataStore::load_from_path`]) and comparing the result against the
+//! (`store::checksum`, [`MarketDataStore::load_from_path`]) and comparing the result against the
 //! source. Copying bytes and trusting the copy would prove nothing.
 //!
 //! ## The three fail-closed stances that make a backup trustworthy
@@ -212,7 +212,7 @@ pub enum SyncDurability {
     /// The write was flushed to stable storage with the platform's full sync barrier.
     FullSync,
     /// The target filesystem does not implement the barrier, so the bytes were written and read
-    /// back but never explicitly flushed. See [`sync_to_stable_storage`].
+    /// back but never explicitly flushed. See `sync_to_stable_storage`.
     TargetUnsupported,
 }
 
@@ -273,7 +273,7 @@ fn sync_to_stable_storage(file: &fs::File) -> Result<SyncDurability, io::Error> 
 }
 
 /// Whether `err` means the sync barrier does not exist on this filesystem, rather than that it was
-/// attempted and failed. Split out from [`sync_to_stable_storage`] so the classification can be
+/// attempted and failed. Split out from `sync_to_stable_storage` so the classification can be
 /// tested directly — no test can mount a barrier-less filesystem to provoke the real thing.
 fn sync_barrier_is_unavailable(err: &io::Error) -> bool {
     err.raw_os_error()
@@ -673,7 +673,7 @@ impl BackupReport {
 }
 
 /// Verify a blob's **envelope**: the magic header line, then the FNV-1a checksum line over the
-/// remaining body, recomputed with [`store::checksum`] — the same function that wrote it.
+/// remaining body, recomputed with `store::checksum` — the same function that wrote it.
 ///
 /// Returns the body on success so a caller can do a stronger record-level check on top.
 fn verify_envelope<'a>(text: &'a str, expected_magic: &str) -> Result<&'a str, String> {

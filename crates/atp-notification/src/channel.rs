@@ -77,11 +77,11 @@ pub struct ChannelReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelHandoff {
     /// A destination OUTSIDE this system acknowledged the message (an ntfy
-    /// message id). Maps to [`DeliveryOutcome::Delivered`].
+    /// message id). Maps to [`DeliveryOutcome::Delivered`](crate::event::DeliveryOutcome::Delivered).
     AcceptedByDestination,
     /// A queue THIS SYSTEM OPERATES accepted the message and final delivery has
     /// not been observed (Postfix's `250 Ok: queued as <id>` from
-    /// `phase1-notification-egress`). Maps to [`DeliveryOutcome::Queued`].
+    /// `phase1-notification-egress`). Maps to [`DeliveryOutcome::Queued`](crate::event::DeliveryOutcome::Queued).
     QueuedForRelay,
 }
 

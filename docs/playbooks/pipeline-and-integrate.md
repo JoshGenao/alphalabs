@@ -82,12 +82,13 @@ one `main`. Most of this playbook is about that sharing.
 
 ## Gates that fail for reasons no diff caused
 
-- **Do not commit `progress.d/plan-<id>.md`, even though Step 4.1 tells you to write it.** The
-  integrate guard treats everything in `progress.d/` except `session-<id>.md` as shared
-  coordination state and refuses the branch — at the very last step, after the whole gate has
-  passed. Write the plan there if you want it as a working aid, but keep it out of the commit
-  (or put its content in the session note, which is the artefact that survives anyway).
-  `(SRS-RESV-004, hit at integrate)`
+- **Do not commit `progress.d/plan-<id>.md`.** The integrate guard treats everything in
+  `progress.d/` except `session-<id>.md` as shared coordination state and refuses the branch
+  at the very last step, after the whole gate has passed. The guard reads the net
+  `base...HEAD` diff, so a later `git rm` clears it. Step 4.1 of the coding prompt used to
+  tell you to write that file; it now says to put the plan in the session note under
+  `Approved plan:`, which is the artefact that survives anyway.
+  `(SRS-RESV-004, hit at integrate; SRS-MD-004 hit it again and fixed the prompt)`
 
 
 - **A gate that is red in every worktree is red for nobody.** `docs_link_check` failed in every
@@ -333,14 +334,19 @@ one `main`. Most of this playbook is about that sharing.
   it is not 0 and your branch has no commits, `git merge --ff-only origin/main` and re-run
   `./init.sh` before reading any code. `(SRS-MD-001)`
 
-42. **Do not commit `progress.d/plan-<ID>.md`, whatever the coding prompt says.** Step 4.1
-    tells you to persist the approved plan there, but `shared_state_violations` lets a branch
-    commit only `progress.d/session-<ID>.md`, so `integrate` refuses the branch with "modify
-    shared coordination files". The guard reads the net `base...HEAD` diff, so a later
-    `git rm` clears it. Put the plan's substance in the session note instead. The prompt and
-    the guard disagree; the operator should fix the prompt. `(SRS-MD-004 integrate)`
-43. **Record evidence LAST.** Any committed change after a `tools/evidence.py run`, even a
+42. **Record evidence LAST.** Any committed change after a `tools/evidence.py run`, even a
     playbook edit in the chore commit, makes the integrator call every obligation stale ("code
     has moved since ... passed") and downgrade `implemented` to `serialized`. Order: code, note,
     playbooks, then evidence, then a commit that touches only `.harness/runs/<ID>/`, then
     `integrate`. `(SRS-MD-004 integrate)`
+43. **Never put a `///` doc on a `mod foo;` line when `foo.rs` has `//!` docs.** Rustdoc merges
+    the two and resolves the module's own `//!` links in the PARENT's scope, so every link
+    that is correct inside the module breaks. That one pattern, on 40 `mod` lines, caused 306
+    of the 410 rustdoc warnings that had built up. Use a `//` comment on the declaration and
+    keep the docs in the module. `cargo doc --workspace --no-deps` now runs with
+    `RUSTDOCFLAGS=-D warnings` in `run_ci_locally.sh` and CI, so a broken intra-doc link fails
+    the build. Exception: never edit a digest-pinned file to fix a doc link, not even a
+    comment. `interactive_brokers.rs`, its `wire.rs` and the SRS-EXE-006 test are SHA-256-pinned
+    by live IB evidence (`ib_adapter_check._code_digest`); one comment edit made eight evidence
+    tests fail. Allow the lint on the `mod` line instead, as `atp-adapters/src/lib.rs` does.
+    `(SRS-MD-004 follow-up)`
