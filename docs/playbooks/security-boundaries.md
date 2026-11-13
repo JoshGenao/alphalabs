@@ -179,6 +179,16 @@ as PASS. A compose text-check must handle all of these or refuse:
   without the repo config rather than running a different version. When your local
   reproduction is CLEANER than CI on the same commit, suspect that CI is not loading what
   you think it is. `(2026-09-03)`
+- **CORRECTION: it was ALSO a different version, and "loaded" is not "parsed".** After
+  the `GITLEAKS_CONFIG` fix, the CI log said `using gitleaks config from GITLEAKS_CONFIG
+  env var` and the nightly still reported the same four findings for two more months.
+  `gitleaks-action` defaults to gitleaks **8.24.3**; the `[[allowlists]]` array this
+  config uses arrived in **8.25.0**, and older versions skip the unknown key without a
+  warning. A defaults-only run reproduces "config not loaded" and "config loaded but not
+  understood" identically, so that test cannot tell them apart. Read the tool version
+  out of the CI log (`gitleaks version:`) and match it locally, and pin the version in
+  the workflow (`GITLEAKS_VERSION`). `test_ci_pins_a_gitleaks_version_that_reads_the_allowlists`
+  fails if the pin goes missing or drops below 8.25.0. `(2026-11-13)`
 
 ## Unix-socket identity
 
