@@ -14,16 +14,16 @@
 //!
 //! - `digest [--lot N] [--sell-ts T] [--seed N] [--code-version V] [--strategy S] [--full]` — run
 //!   the fixture backtest through the real [`BacktestEngine`] once and print, on their own lines:
-//!     * `run-manifest:<hex>` — the [`ManifestDigest`] of the run's IMMUTABLE INPUTS (code version,
+//!     * `run-manifest:<hex>` — the [`ManifestDigest`](atp_simulation::determinism::ManifestDigest) of the run's IMMUTABLE INPUTS (code version,
 //!       parameters, data source/symbol/content digest, date range, seed, cost model). Two runs
 //!       with the same manifest digest received identical inputs, so a reproducibility check PROVES
 //!       the inputs matched rather than assuming the fixture is deterministic.
-//!     * `run-digest:<hex>` — the [`RunDigest`] over all three SRS-BT-010 artifacts (trade log,
+//!     * `run-digest:<hex>` — the [`RunDigest`](atp_simulation::determinism::RunDigest) over all three SRS-BT-010 artifacts (trade log,
 //!       equity curve, and the SRS-BT-004 metric family).
 //!     * with `--full`, the manifest fields and the complete trade log / equity curve / metrics
 //!       are also rendered, so an operator can eyeball that two fresh-process runs are identical.
 //! - `verify` — run the in-process double-run
-//!   ([`verify_reproducible_with_metrics`](atp_simulation::determinism::verify_reproducible_with_metrics))
+//!   ([`verify_reproducible_with_metrics`])
 //!   and print the resulting digest; a convenience wrapper that keeps that surface CLI-reachable.
 //!
 //! The seed is recorded in the manifest for provenance, but the deterministic engine consumes NO
@@ -34,7 +34,7 @@
 //!
 //! Scope: the REST `POST /api/v1/backtests` + dashboard rendering of this repeated-run workflow
 //! (SRS-API-001 / SRS-UI), the end-to-end guarantee under the real Python strategy host binding the
-//! strategy code version + seed (SRS-BT-001-runtime), and stamping the [`RunDigest`] onto each
+//! strategy code version + seed (SRS-BT-001-runtime), and stamping the [`RunDigest`](atp_simulation::determinism::RunDigest) onto each
 //! persisted SRS-BT-009 record (SRS-BT-009 store integration) remain deferred. The market data and
 //! strategy here are deliberate fixtures.
 

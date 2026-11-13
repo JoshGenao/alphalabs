@@ -13,7 +13,7 @@
 //! It exercises EVERY production order-submission rejection path that builds a [`StructuredOrderError`]:
 //!   * the engine-owned single-live **authority** gate
 //!     [`atp_execution::ExecutionEngine::route_order`] — the production order-submission boundary that
-//!     derives live-ness from the engine's [`LiveDesignation`] registry and rejects any strategy that
+//!     derives live-ness from the engine's [`LiveDesignation`](atp_execution::LiveDesignation) registry and rejects any strategy that
 //!     is not the single designated live strategy with a `NotDesignated` structured error;
 //!   * the inner mode/connectivity/freshness gate
 //!     [`atp_execution::ExecutionEngine::submit_live_order`] — paper non-live, IB unreachable,
@@ -36,7 +36,7 @@
 //!   the broker is consulted ZERO times. Emit `no-ib-side-effect:true`.
 //!
 //! - `authority [--inject F]` — drive the production authority gate `route_order` through the
-//!   engine-owned [`LiveDesignation`] registry: a non-designated strategy (with NO live strategy, and
+//!   engine-owned [`LiveDesignation`](atp_execution::LiveDesignation) registry: a non-designated strategy (with NO live strategy, and
 //!   again with a DIFFERENT strategy designated live) is rejected with a `NotDesignated` structured
 //!   envelope and reaches no broker, while the single designated live strategy IS authorized (routes Ok
 //!   and reaches the broker). Emit `authority-enforced:true` — the single-live-strategy invariant

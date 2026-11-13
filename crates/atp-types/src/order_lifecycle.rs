@@ -13,8 +13,8 @@
 //! *sibling* crates — neither may depend on the other (AGENTS.md module flow,
 //! SRS-ARCH-002 dependency direction). So the single source of truth for the
 //! state graph and the idempotency key lives here, in the leaf crate both
-//! sides already depend on — exactly where [`OrderSubmission`](crate::OrderSubmission)
-//! and [`StructuredOrderError`](crate::StructuredOrderError) live, and for the
+//! sides already depend on — exactly where [`OrderSubmission`]
+//! and [`StructuredOrderError`] live, and for the
 //! same reason.
 //!
 //! # The documented transition graph
@@ -58,7 +58,7 @@
 //! # Idempotency key (the AC's spine)
 //!
 //! Each order is identified by an [`OrderKey`] = the submitting
-//! [`StrategyId`](crate::StrategyId) **plus** the strategy-supplied
+//! [`StrategyId`] **plus** the strategy-supplied
 //! [`ClientCorrelationId`]. Keying by the pair — not the correlation id alone —
 //! is deliberate: the platform runs one live plus up to ~30 paper strategies
 //! concurrently and each supplies its *own* client ids, so two strategies that
@@ -68,7 +68,7 @@
 //! across restarts" idempotency key relies on. Within a single process,
 //! [`OrderLedger::submit`] rejects a duplicate `(strategy, correlation id)`
 //! **idempotently** — the existing order is left untouched and the caller gets a
-//! [`StructuredOrderError`](crate::StructuredOrderError) in the SRS-ERR-001
+//! [`StructuredOrderError`] in the SRS-ERR-001
 //! envelope, category
 //! [`DuplicateClientCorrelationId`](crate::OrderErrorCategory::DuplicateClientCorrelationId).
 //!

@@ -210,6 +210,13 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace -- -D warnings
 
+      # Broken or private intra-doc links render as plain text and fail nothing;
+      # 410 accumulated before this step existed. Same command as run_ci_locally.sh.
+      - name: cargo doc (warnings are errors)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
       - name: cargo test
         run: cargo test --workspace
 

@@ -4,7 +4,7 @@
 //! SYS-86 requires the internal simulation engine to compute the SAME eight performance
 //! metrics for a PAPER strategy that the backtest engine computes, so paper and backtest
 //! performance are directly comparable. This CLI drives the
-//! [`PaperMetricsAccumulator`](atp_simulation::paper_metrics::PaperMetricsAccumulator) over a
+//! [`PaperMetricsAccumulator`] over a
 //! deterministic fixture paper run (a sequence of simulated fills + per-bar mark-to-market
 //! instants) and renders the eight metrics, then proves the SYS-86 comparison by running the
 //! IDENTICAL activity through the real [`BacktestEngine`] and asserting the two metric

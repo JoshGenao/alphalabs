@@ -803,7 +803,7 @@ where
 /// completed at or before the resolved deadline instant, or [`FactorJobOutcome::DeadlineExceeded`]
 /// (fail-closed) when it was invoked after the deadline (a late start) or its scoring + ranking +
 /// finalization crossed it -- so a late run is caught against the ABSOLUTE deadline, not assumed
-/// on-time. A run that scores fewer than [`FactorJobConfig::min_scored`] securities fails closed
+/// on-time. A run that scores fewer than `FactorJobConfig::min_scored` securities fails closed
 /// ([`FactorJobError::NoUsableCoverage`]). Every precondition violation fails closed with a
 /// localized [`FactorJobError`].
 pub fn run_factor_job<C, M, K>(

@@ -44,7 +44,7 @@
 //!
 //! A historical record is **immutable by natural key** (a datum is content-addressed by
 //! `(kind, symbol, resolution, event_ts, option_contract)`), so the same key MUST resolve to identical
-//! content in every tier. The merge ([`merge_record`]) therefore compares the FULL record on any
+//! content in every tier. The merge (`merge_record`) therefore compares the FULL record on any
 //! cross-tier duplicate and **fails closed** ([`ColdReadError::CrossTierDivergence`]) if the content
 //! disagrees — most importantly when a stale/corrupt cold-read cache entry that still decodes disagrees
 //! with the authoritative NAS record. The reader surfaces that corruption rather than silently

@@ -1,34 +1,34 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// SRS-MD-003 — the live feed loop that drives [`HeartbeatFreshnessMonitor`]
-/// from a real broker connection (the producer this crate's monitor was built
-/// to receive).
+// SRS-MD-003 — the live feed loop that drives [`HeartbeatFreshnessMonitor`]
+// from a real broker connection (the producer this crate's monitor was built
+// to receive).
 pub mod live_feed;
 
-/// SRS-MD-004 - the thread-safe line-freshness store the order path reads,
-/// built over [`HeartbeatFreshnessMonitor`] and [`SequenceGapDetector`].
+// SRS-MD-004 - the thread-safe line-freshness store the order path reads,
+// built over [`HeartbeatFreshnessMonitor`] and [`SequenceGapDetector`].
 pub mod freshness_board;
 pub use freshness_board::{
     BoardWriteError, FreshnessClock, GapTracking, LineFreshnessBoard, LineVerdict,
 };
 
-/// SRS-MD-001 — the consolidated subscription registry.
-///
-/// A separate module because its `subscribers` field must be invisible to this
-/// one: Rust exposes a parent's privates to its children, so while the registry
-/// lived here every sibling module could reach the consolidated set and no
-/// static guard could bound the set of code that admits a subscription. See the
-/// module docs.
+// SRS-MD-001 — the consolidated subscription registry.
+//
+// A separate module because its `subscribers` field must be invisible to this
+// one: Rust exposes a parent's privates to its children, so while the registry
+// lived here every sibling module could reach the consolidated set and no
+// static guard could bound the set of code that admits a subscription. See the
+// module docs.
 pub mod subscriptions;
 pub use subscriptions::{
     ConsolidatedSubscriptionRegistry, SubscriptionChangeSink, SubscriptionRegistryError,
 };
 
-/// SRS-MD-001 — the thread-safe fan-out runtime: drives one upstream line per
-/// security through a vendor-neutral port and delivers ticks to each
-/// subscriber's own bounded queue. Goes through the registry's gated public
-/// API only.
+// SRS-MD-001 — the thread-safe fan-out runtime: drives one upstream line per
+// security through a vendor-neutral port and delivers ticks to each
+// subscriber's own bounded queue. Goes through the registry's gated public
+// API only.
 pub mod runtime;
 pub use runtime::{
     FanOutDelivery, FanOutRuntime, FanOutRuntimeError, IngestReport, SubscriberLagEvent,

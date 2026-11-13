@@ -9,8 +9,8 @@
 //! hot runtime data**.
 //!
 //! This module is the **policy brain** over the DATA-008 / DATA-009 primitives. It does not reinvent
-//! the tier substrate — capacity is the DATA-009 [`ColdReadConfig`] record-unit proxy, the hot/cold
-//! boundary is the DATA-008 [`TierConfig::hot_window_start`], the cache store is the DATA-009 cold-read
+//! the tier substrate — capacity is the DATA-009 [`ColdReadConfig`](crate::cold_read::ColdReadConfig) record-unit proxy, the hot/cold
+//! boundary is the DATA-008 [`TierConfig::hot_window_start`](crate::tiering::TierConfig::hot_window_start), the cache store is the DATA-009 cold-read
 //! cache. It adds: a [`StoragePolicy`] (the 80% mark + 24 h recency window), a [`ProtectionInputs`]
 //! model (the never-evict + deprioritise sets), a **pure planner** [`plan_eviction`], and an
 //! [`EvictionEngine`] that enforces the plan.

@@ -1,6 +1,6 @@
 //! SRS-BT-008 operator walk-forward-analysis CLI.
 //!
-//! The operator-facing workflow over the public [`walk_forward`] API: define a fold
+//! The operator-facing workflow over the public [`walk_forward`](atp_simulation::walk_forward) API: define a fold
 //! schedule (either explicit `--fold IS_START:IS_END:OOS_START:OOS_END` flags or a rolling
 //! `--rolling START:IS_LEN:OOS_LEN:STEP:COUNT` generator), a parameter space (repeatable
 //! `--axis name=v1,v2,...`), and an objective (`--objective <metric> --direction

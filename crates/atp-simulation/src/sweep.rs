@@ -17,7 +17,7 @@
 //!   first, with 1-based ranks.
 //!
 //! [`SweepRunner::run`] evaluates each point through the SAME shipped producer chain a
-//! single backtest uses — [`BacktestEngine::run`] then [`benchmark::compare`] — so a
+//! single backtest uses — [`BacktestEngine::run`] then [`benchmark::compare`](crate::benchmark::compare) — so a
 //! sweep result is exactly what a standalone run of that point would report. Points are
 //! evaluated strictly sequentially in enumeration order with no parallelism, RNG, or
 //! clock, so identical inputs produce an identical report (SRS-BT-010).
@@ -561,7 +561,7 @@ pub struct SweepReport {
 }
 
 /// The sweep orchestrator: evaluates every point of a [`SweepRequest`] through the
-/// shipped [`BacktestEngine`] + [`benchmark::compare`] chain and ranks the results.
+/// shipped [`BacktestEngine`] + [`benchmark::compare`](crate::benchmark::compare) chain and ranks the results.
 pub struct SweepRunner {
     engine: BacktestEngine,
     max_points: usize,

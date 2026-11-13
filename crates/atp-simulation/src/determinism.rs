@@ -3,7 +3,7 @@
 //!
 //! # Why this module exists
 //!
-//! The [`BacktestEngine`](crate::backtest::BacktestEngine) is already deterministic *by
+//! The [`BacktestEngine`] is already deterministic *by
 //! construction* — it stable-sorts the replay window and does all money math in integer
 //! minor units (`backtest.rs`). Every sibling numeric module (metrics, benchmark, cost,
 //! store, factor) likewise *claims* determinism. What was missing is a way to make that
@@ -15,8 +15,8 @@
 //! # What is real here vs deferred
 //!
 //! This module is genuinely runnable in-process. [`digest_result`] / [`digest_run`] reduce a
-//! [`BacktestResult`](crate::backtest::BacktestResult) (and an optional
-//! [`PerformanceMetrics`](crate::metrics::PerformanceMetrics)) to a stable [`RunDigest`];
+//! [`BacktestResult`] (and an optional
+//! [`PerformanceMetrics`]) to a stable [`RunDigest`];
 //! [`runs_match`] / [`metrics_match`] localize the first divergent artifact; and
 //! [`verify_reproducible`] runs the engine twice over identical inputs and returns the run's
 //! digest, failing closed with a localized [`DeterminismError`] if the two runs disagree.
@@ -109,7 +109,7 @@ const MANIFEST_MAGIC: &str = "ATP-BACKTEST-RUN-MANIFEST";
 /// reproducibility check can **prove** the inputs were identical rather than assume the caller's
 /// strategy factory + [`BarSource`] were deterministic. Like [`RunDigest`] it is a non-cryptographic
 /// 64-bit FNV-1a checksum (reproducibility, not authentication), domain-tagged with
-/// [`MANIFEST_MAGIC`] so it can never collide with a [`RunDigest`].
+/// `MANIFEST_MAGIC` so it can never collide with a [`RunDigest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ManifestDigest(u64);
 

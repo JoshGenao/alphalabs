@@ -16,12 +16,12 @@
 //! Every artifact the acceptance names already exists as a producer type elsewhere in
 //! this crate, so this slice **wraps** them rather than recomputing anything:
 //!
-//!   * *parameters / parameter set* — [`BacktestRequest`](crate::backtest::BacktestRequest)
+//!   * *parameters / parameter set* — [`BacktestRequest`]
 //!     (strategy id, symbol, data source, run window, starting cash, cost family);
-//!   * *metrics* — [`PerformanceMetrics`](crate::metrics::PerformanceMetrics) (SRS-BT-004);
-//!   * *trade log* — `Vec<`[`Fill`](crate::backtest::Fill)`>` (integer minor units);
-//!   * *equity curve* — `Vec<`[`EquityPoint`](crate::backtest::EquityPoint)`>`;
-//!   * *benchmark comparison* — [`BenchmarkComparison`](crate::benchmark::BenchmarkComparison)
+//!   * *metrics* — [`PerformanceMetrics`] (SRS-BT-004);
+//!   * *trade log* — `Vec<`[`Fill`]`>` (integer minor units);
+//!   * *equity curve* — `Vec<`[`EquityPoint`]`>`;
+//!   * *benchmark comparison* — [`BenchmarkComparison`]
 //!     (SRS-BT-005) — the record's benchmark identity;
 //!   * *strategy code version* — [`CodeVersion`], an opaque caller-supplied provenance label;
 //!   * *timestamp* — `completed_at_ts`, a **producer-supplied** completion instant.

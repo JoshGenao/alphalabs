@@ -416,7 +416,7 @@ impl MarketDataStore {
     /// served series is adjusted for every event on/before the as-of date and no further; coverage
     /// through `D >= end_ts` still guarantees that on/before-`end_ts` event set is COMPLETE (the
     /// uncovered tail could otherwise hide an in-window-affecting event, so an uncovered query still
-    /// fails closed). [`query_split_adjusted`] by contrast adjusts to the as-of-`D`
+    /// fails closed). `query_split_adjusted` by contrast adjusts to the as-of-`D`
     /// (coverage-frontier) basis — the "current" basis a LIVE strategy wants, not a point-in-time
     /// historical one.
     pub fn query_split_adjusted_as_of(
@@ -434,9 +434,9 @@ impl MarketDataStore {
     /// exactly (one division per field) with the split factors. Volume is NEVER dividend-scaled (a
     /// dividend changes no share count). Each dividend's reference close is the last RAW close in the
     /// lineage series strictly before its ex-date; a dividend with no prior close fails the read
-    /// closed ([`NormalizationError::MissingReferenceClose`] via [`CoverageError::Normalization`]) —
+    /// closed (`NormalizationError::MissingReferenceClose` via [`CoverageError::Normalization`]) —
     /// never a silent factor of 1 — as does a split effective between a reference close and its
-    /// ex-date ([`NormalizationError::BasisCrossingDividend`]: mismatched share bases).
+    /// ex-date (`NormalizationError::BasisCrossingDividend`: mismatched share bases).
     pub fn query_fully_adjusted(
         &self,
         query: &UnifiedHistoricalQuery,

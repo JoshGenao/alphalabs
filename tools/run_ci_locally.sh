@@ -123,9 +123,14 @@ if command -v cargo >/dev/null 2>&1; then
   cargo fmt --check
   if [[ "${FAST}" == "1" ]]; then
     skip "cargo clippy --workspace" "--fast: minutes on a cold cache; CI runs it"
+    skip "cargo doc --workspace" "--fast: a full doc build; CI runs it"
   else
     step "cargo clippy --workspace -- -D warnings"
     cargo clippy --workspace -- -D warnings
+    # A broken intra-doc link is a doc comment pointing at nothing: the rendered
+    # docs show plain text and nothing failed. 410 accumulated before this gate.
+    step "cargo doc --workspace --no-deps  (RUSTDOCFLAGS=-D warnings)"
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
   fi
 else
   skip "cargo gates" "cargo not installed"

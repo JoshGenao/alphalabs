@@ -54,7 +54,7 @@
 //!
 //! # Determinism (the headline invariant)
 //!
-//! [`HashMap`](std::collections::HashMap) iteration order is unspecified, so the
+//! [`HashMap`] iteration order is unspecified, so the
 //! serializer sorts strategies by id and positions by canonical symbol before
 //! emitting. The same state therefore always serializes to **byte-identical**
 //! output — a 60s checkpoint of an unchanged ledger never churns — and a restore of

@@ -24,7 +24,7 @@
 //! **layers a new authority on top and leaves the pinned primitive alone**:
 //!
 //!   * [`DemotionReceipt`] has private fields, no `Clone`, no `Default`, and no
-//!     public constructor. It is mintable only by [`DemotionReceipt::mint`],
+//!     public constructor. It is mintable only by `DemotionReceipt::mint`,
 //!     which is `pub(crate)` and which refuses a `promotion_allowed: false`
 //!     acceptance. A downstream crate cannot build one at all (E0603 on the
 //!     constructor, private fields on the literal).
@@ -105,7 +105,7 @@ use std::fmt;
 
 /// Proof that a **real** SRS-RESV-004 demotion reached flat before its timeout.
 ///
-/// The only thing that can produce one is [`DemotionReceipt::mint`], which is
+/// The only thing that can produce one is `DemotionReceipt::mint`, which is
 /// `pub(crate)` and is called from exactly one place: the `Ok` arm of
 /// [`StrategyOrchestrator::execute_hot_swap`]'s `resolve_demotion` call.
 ///
@@ -535,7 +535,7 @@ pub enum CooldownWindowOutcome {
 /// seven-day window suppressing the automatic triggers for a swap the durable
 /// authority never accepted (adversarial review r6). So the gate now MINTS this
 /// token and the caller redeems it with
-/// [`StrategyOrchestrator::commit_cooldown_window`] **after** the publish.
+/// `StrategyOrchestrator::commit_cooldown_window` **after** the publish.
 ///
 /// The same shape as [`DemotionReceipt`], for the same reason: private fields, no
 /// `Clone` (one swap opens one window), no `Default`, `pub(crate)` sole
@@ -822,7 +822,7 @@ pub enum HotSwapPromotionError {
     /// The SRS-RESV-004 demotion did not reach flat: promotion never started.
     DemotionRefused(StructuredHotSwapDemotionError),
     /// The demotion gate returned an acceptance that does not allow promotion.
-    /// Unreachable today (see [`DemotionReceipt::mint`]) and kept as a typed
+    /// Unreachable today (see `DemotionReceipt::mint`) and kept as a typed
     /// refusal rather than an `unwrap`.
     DemotionNotAccepted {
         demoting_strategy_id: StrategyId,
@@ -1143,7 +1143,7 @@ impl StrategyOrchestrator {
     ///    never reached (the demotion gate has already cancelled the unfilled
     ///    liquidation order, paged the operator on all three channels, and
     ///    recorded the demotion-pending transition);
-    /// 2. [`DemotionReceipt::mint`] from the acceptance — the token no caller can
+    /// 2. `DemotionReceipt::mint` from the acceptance — the token no caller can
     ///    forge;
     /// 3. the promotion gate below.
     ///

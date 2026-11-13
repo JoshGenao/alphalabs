@@ -171,7 +171,7 @@ impl VirtualPosition {
     /// non-negative cost components) BEFORE calling this, so this is a pure field
     /// constructor with no I/O and no clock. Kept `pub(crate)` so persistence can
     /// rebuild a position without widening the public mutation surface (the only
-    /// public way to change a position stays [`apply_fill`](Self::apply_fill)).
+    /// public way to change a position stays `apply_fill`).
     pub(crate) fn from_components(
         quantity: i64,
         cost_basis: i128,
@@ -253,7 +253,7 @@ impl VirtualPosition {
     /// move by up to one minor unit across a partial close even though no new
     /// shares were acquired -- that is an inherent property of integer cost basis,
     /// not a lost or fabricated value. The underlying basis is always exact and
-    /// conserved (see [`apply_fill`](Self::apply_fill)), so realized P&L and total
+    /// conserved (see `apply_fill`), so realized P&L and total
     /// P&L never leak; only the rounded per-unit display shifts. Callers that need
     /// exactness must read [`cost_basis_minor`](Self::cost_basis_minor).
     pub fn average_cost_minor(&self) -> Option<i128> {
@@ -502,7 +502,7 @@ impl StrategyLedger {
 
     /// Apply a simulated fill to this strategy's position in `fill.symbol`,
     /// creating the position on first touch. The symbol is canonicalized
-    /// ([`canonical_symbol`]: trim + upper-case, the same policy as
+    /// (`canonical_symbol`: trim + upper-case, the same policy as
     /// [`atp_types::SecurityKey`]) before keying, so `AAPL`, `aapl`, and ` AAPL `
     /// resolve to the SAME position rather than splitting one security's quantity
     /// and P&L across aliases.
@@ -512,7 +512,7 @@ impl StrategyLedger {
     /// fresh position that is inserted ONLY if it succeeds -- so a rejected fill
     /// (e.g. a non-positive price) never leaves a phantom symbol behind. An
     /// existing position is mutated in place, and its own
-    /// [`VirtualPosition::apply_fill`] is atomic, so a rejected fill leaves it
+    /// `VirtualPosition::apply_fill` is atomic, so a rejected fill leaves it
     /// unchanged.
     pub fn apply_fill(&mut self, fill: &PaperFill) -> Result<(), LedgerError> {
         let symbol = canonical_symbol(&fill.symbol);
@@ -656,7 +656,7 @@ impl VirtualLedgerBook {
     /// Reconstruct a ledger book from an already-validated ledger map (SRS-SIM-004
     /// restore). Crate-internal: persistence rebuilds the book without widening the
     /// public mutation surface (the only public way to populate a book stays
-    /// [`apply_fill`](Self::apply_fill)).
+    /// `apply_fill`).
     pub(crate) fn from_ledgers(ledgers: HashMap<StrategyId, StrategyLedger>) -> Self {
         Self { ledgers }
     }

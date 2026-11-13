@@ -379,7 +379,7 @@ impl std::error::Error for BenchmarkError {}
 /// `BacktestResult.range`): every equity mark must fall within it
 /// ([`BenchmarkError::EquityMarkOutsideWindow`]), and the benchmark baseline is resolved
 /// **as-of `window.start`** (the pre-trade instant), which must open strictly before the
-/// first mark ([`BenchmarkError::WindowStartNotBeforeRun`]). This prevents a stale or
+/// first mark (`BenchmarkError::WindowStartNotBeforeRun`). This prevents a stale or
 /// unrelated baseline from measuring the benchmark over a different period than the
 /// strategy. (The full atomic run-snapshot identity -- a producer-stamped run id binding
 /// equity curve, trade log, and benchmark window into one consistent snapshot -- is the

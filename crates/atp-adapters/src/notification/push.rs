@@ -30,9 +30,9 @@
 //!    **HTTP 200** with a valid message id, but `message` is replaced by
 //!    "You received a file: attachment.txt" — so the alert text never reaches the
 //!    operator's lock screen while the transport reports success. That makes
-//!    [`MAX_PUSH_BODY_BYTES`] a safety property, not a nicety, and it is why this
+//!    `MAX_PUSH_BODY_BYTES` a safety property, not a nicety, and it is why this
 //!    module also fails a 2xx that came back carrying an attachment
-//!    (see [`PushChannel::post`]).
+//!    (see `PushChannel::post`).
 //! 2. **An empty body becomes the literal word "triggered".** ntfy substitutes
 //!    its own placeholder. An operator alert must never degrade into a one-word
 //!    notification with no statement of what fired, so an empty composition is

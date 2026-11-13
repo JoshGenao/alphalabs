@@ -14,7 +14,7 @@
 //!
 //! # The four invariants (each independently inspectable)
 //!
-//!   1. **SSD-first write** — [`TieredStore::ingest`] durably persists the batch to the SSD store
+//!   1. **SSD-first write** — `TieredStore::ingest` durably persists the batch to the SSD store
 //!      (a unique-scratch + fsync + atomic-rename publish via [`MarketDataStore::save_to_path`])
 //!      **before** any NAS write is attempted. So a crash, or an unreachable NAS, between the two
 //!      can never leave a datum on NAS but not on SSD — the primary tier is the source of truth.
@@ -36,7 +36,7 @@
 //!
 //! # NAS access taxonomy — degraded vs failed (SRS-MD-006 hook)
 //!
-//! A single classifier ([`TieredStore::nas_access`]) decides, for every NAS path, whether the
+//! A single classifier (`TieredStore::nas_access`) decides, for every NAS path, whether the
 //! archival tier is **reachable**, **unreachable**, or an **alias** of SSD — so the three are never
 //! confused. On the *ingest* path the SSD write always commits first, then:
 //!   * **unreachable** (the archival directory is absent/unmounted) → [`NasSyncStatus::Degraded`], a
@@ -70,7 +70,7 @@
 //! **ALL ingestion is SSD-first, then NAS-synced (the AC's cross-cutting clause).** The single
 //! validated, tiered market-data write surface is
 //! [`DataLayer::ingest_market_records_tiered`](crate::DataLayer::ingest_market_records_tiered): it
-//! composes the unchanged ERR-5 validation gate with [`TieredStore::ingest`] (SSD-first durable
+//! composes the unchanged ERR-5 validation gate with `TieredStore::ingest` (SSD-first durable
 //! write, then NAS sync). Every market-data ingestion binary syncs its SSD write to NAS via the tier:
 //! `data008_tier_cli` uses the encapsulated surface, while `data016_ingest_cli` and
 //! `data005_fundamental_cli` keep their SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization
@@ -160,7 +160,7 @@ pub enum TierError {
 }
 
 impl TierError {
-    /// Could the failed [`TieredStore::ingest`] have committed the SSD primary anyway? `true` for an
+    /// Could the failed `TieredStore::ingest` have committed the SSD primary anyway? `true` for an
     /// SSD error raised after the store's atomic rename, and for any NAS error (NAS work only starts
     /// once the SSD write has committed). Configuration errors precede every write.
     pub fn may_have_published(&self) -> bool {
@@ -198,7 +198,7 @@ impl fmt::Display for TierError {
 
 impl Error for TierError {}
 
-/// The result of the NAS-sync half of an [`TieredStore::ingest`]. The SSD write has already
+/// The result of the NAS-sync half of an `TieredStore::ingest`. The SSD write has already
 /// committed by the time this is produced, so **none** of these values means a lost ingest — they
 /// distinguish how the *archival* side fared. Critically, a recoverable outage
 /// ([`Degraded`](Self::Degraded)) is kept distinct from a reachable-but-broken archive
@@ -249,7 +249,7 @@ impl NasSyncStatus {
     }
 }
 
-/// The outcome of an [`TieredStore::ingest`]: the SSD write counts plus the NAS-sync status.
+/// The outcome of an `TieredStore::ingest`: the SSD write counts plus the NAS-sync status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TierIngestOutcome {
     /// Records newly inserted into the SSD store (absent keys).
@@ -260,7 +260,7 @@ pub struct TierIngestOutcome {
     pub nas_sync: NasSyncStatus,
 }
 
-/// What [`TieredStore::ingest`] does with a record whose natural key is already present with
+/// What `TieredStore::ingest` does with a record whose natural key is already present with
 /// DIFFERENT content (a conflicting re-ingest). Decided under the SSD single-writer lock, so a
 /// concurrent writer cannot slip a conflict past the caller's quarantine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +272,7 @@ pub enum OnConflict {
     SetAside,
 }
 
-/// The outcome of a [`TieredStore::ingest`]: the conflicting records it set aside, and the write.
+/// The outcome of a `TieredStore::ingest`: the conflicting records it set aside, and the write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenedIngest {
     /// Records set aside because their key is already present with different content, in batch
@@ -645,7 +645,7 @@ impl TieredStore {
     ///
     /// This is what an operator ingest path calls **after** it has already committed its SSD write
     /// (SSD-first): it must sync the new data to NAS without failing the whole ingest on a *recoverable*
-    /// NAS outage. The taxonomy matches [`ingest`](Self::ingest): an **unreachable** NAS →
+    /// NAS outage. The taxonomy matches `ingest`: an **unreachable** NAS →
     /// [`NasSyncStatus::Degraded`] (the SSD write stands; a later [`sync_ssd_to_nas`](Self::sync_ssd_to_nas)
     /// reconciles); an **alias** or a **reachable-but-broken** NAS (corrupt store, conflict, lock) →
     /// [`NasSyncStatus::Failed`] (an integrity failure, never mistaken for an offline mount); a
@@ -844,7 +844,7 @@ impl TieredStore {
     }
 }
 
-/// How the NAS archival tier classifies relative to the SSD primary (see [`TieredStore::nas_access`]).
+/// How the NAS archival tier classifies relative to the SSD primary (see `TieredStore::nas_access`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NasAccess {
     /// A provisioned directory distinct from SSD — safe to archive into.

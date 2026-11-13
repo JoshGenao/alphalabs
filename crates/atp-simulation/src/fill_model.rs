@@ -533,7 +533,7 @@ impl PaperSimulationEngine {
     /// so *one* order can never fill more than the bar traded. The **aggregate**
     /// SYS-87b guarantee for the bar *period* (the SUM of fills from several orders
     /// against one bar not exceeding the observed volume) requires bar-level state;
-    /// thread a [`BarVolumeBudget`] through [`evaluate_fill_against_budget`] for
+    /// thread a [`BarVolumeBudget`] through `evaluate_fill_against_budget` for
     /// that. `evaluate_fill` is exactly `evaluate_fill_against_budget` with a fresh
     /// per-call budget.
     ///

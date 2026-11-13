@@ -4,7 +4,7 @@
 //! benchmark defaulting to SPY" (docs/SRS.md SRS-5.6 SRS-BT-005; SyRS SYS-17 / SYS-36 / SYS-37; StRS
 //! SN-1.04). The comparison *engine* in the [`benchmark`](atp_simulation::benchmark) module already
 //! implements the AC -- [`BenchmarkSelection`] resolves an unselected benchmark to SPY,
-//! [`compare`](atp_simulation::benchmark::compare) computes alpha/beta against the resolved series
+//! [`compare`] computes alpha/beta against the resolved series
 //! and packages a [`BenchmarkReport`] whose [`BenchmarkComparison`] identifies the benchmark -- and
 //! the runnable [`BacktestEngine`] already produces the equity curve + trade log the comparison
 //! consumes. What kept SRS-BT-005 `passes:false` was the deferred operator RENDERING surface: the

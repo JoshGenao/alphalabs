@@ -1,6 +1,6 @@
 //! SRS-BT-007 operator grid-search / parameter-sweep CLI.
 //!
-//! The operator-facing workflow over the public [`sweep`] API: define a parameter space
+//! The operator-facing workflow over the public [`sweep`](atp_simulation::sweep) API: define a parameter space
 //! with repeatable `--axis name=v1,v2,...` flags, select an objective function
 //! (`--objective <metric> --direction <max|min>`), and get ranked backtest results —
 //! the SRS-BT-007 acceptance criterion demonstrated end to end. There is no

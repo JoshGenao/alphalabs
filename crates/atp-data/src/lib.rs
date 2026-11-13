@@ -273,7 +273,7 @@ pub enum MarketIngestError {
     /// COVERAGE ([`DatasetKind::CorporateActionCoverage`]) is an OPERATOR trust assertion (the
     /// SRS-DATA-011 completeness-through-date frontier the split-adjusted gate reads), NOT provider
     /// market data — it is asserted ONLY through its dedicated surface (`data011_coverage_cli` /
-    /// [`store::coverage_record`](crate::store::coverage_record)), never this provider-ingestion entry
+    /// [`store::coverage_record`]), never this provider-ingestion entry
     /// point. Refusing it here means no generic ingest loop (e.g. one iterating dataset kinds over the
     /// provider fixtures) can mint a trusted frontier that would let the split-adjusted gate ship
     /// raw-as-adjusted output.
@@ -397,7 +397,7 @@ impl DataLayer {
     /// the SRS-DATA-008 acceptance clause "all ingestion writes to SSD first; new data is synced to
     /// NAS" holds by construction: it composes the UNCHANGED ERR-5 validation gate
     /// ([`ingest_record`](Self::ingest_record)) with the SSD-first + NAS-sync discipline of
-    /// [`TieredStore::ingest`]. There is no durable market-data write here that is not SSD-first +
+    /// `TieredStore::ingest`. There is no durable market-data write here that is not SSD-first +
     /// NAS-synced, so a caller cannot ingest market data SSD-only.
     ///
     /// **Ordering (fail-closed before any write).** Every record is validated read-only through the

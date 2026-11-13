@@ -52,7 +52,7 @@
 //! into their parents, so a recorded run survives a power loss with its directory.
 //!
 //! **Every exit is recorded.** Both write paths send every early error through
-//! [`QuarantineStore::refuse`], which records the batch — with every reject classified so far — as
+//! `QuarantineStore::refuse`, which records the batch — with every reject classified so far — as
 //! `REFUSED` before the error is returned. `tools/ingestion_validation_check.py` fails on any other
 //! early return in those paths.
 //!

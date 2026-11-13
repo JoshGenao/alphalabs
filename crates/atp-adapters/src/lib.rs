@@ -5,12 +5,19 @@ use std::fmt;
 
 pub use atp_types::{CompositeOrderSubmission, OrderReceipt, OrderSubmission};
 
-/// SRS-EXE-006 — the headless IB Gateway brokerage adapter: the IB-error → SyRS
-/// SYS-64 classification, the TWS transport seam, the four AC operations exposed
-/// through the canonical [`BrokerageAdapter`] / [`MarketDataAdapter`] /
-/// [`HistoricalDataAdapter`] traits, and the operator-gated live transport. See the
-/// module docs for what ships solo vs. what the operator-initiated paper-account
-/// integration test completes.
+// SRS-EXE-006 — the headless IB Gateway brokerage adapter: the IB-error → SyRS
+// SYS-64 classification, the TWS transport seam, the four AC operations exposed
+// through the canonical [`BrokerageAdapter`] / [`MarketDataAdapter`] /
+// [`HistoricalDataAdapter`] traits, and the operator-gated live transport. See the
+// module docs for what ships solo vs. what the operator-initiated paper-account
+// integration test completes.
+//
+// The allow below is the one exception to the workspace `cargo doc -D warnings` gate.
+// interactive_brokers.rs is SHA-256-pinned by the recorded IB paper-account evidence
+// (ib_adapter_check `_code_digest`, SRS-EXE-006/EXE-007): changing even a doc comment
+// there makes that evidence stale until an operator re-runs the live round trip. When
+// that run next happens, fix the module's intra-doc links and delete this allow.
+#[allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 pub mod interactive_brokers;
 pub use interactive_brokers::{
     classify_ib_order_error, IbAccountKind, IbApiError, IbConnectionConfig,
@@ -20,18 +27,18 @@ pub use interactive_brokers::{
 pub mod connection_control;
 pub use connection_control::IbConnectionControl;
 
-/// SRS-MD-005 — the "is the IB Gateway answering?" control-plane seam the
-/// scheduled-restart producer consults. Kept out of `interactive_brokers` for
-/// the same reason as [`connection_control`]: that module is digest-pinned by
-/// the SRS-EXE-006 live evidence.
+// SRS-MD-005 — the "is the IB Gateway answering?" control-plane seam the
+// scheduled-restart producer consults. Kept out of `interactive_brokers` for
+// the same reason as [`connection_control`]: that module is digest-pinned by
+// the SRS-EXE-006 live evidence.
 pub mod gateway_reachability;
 pub use gateway_reachability::{
     GatewayReachability, ReachabilityOutcome, TcpGatewayReachability, REACHABILITY_PROBE_TIMEOUT,
 };
 
-/// SRS-NOTIF-001 — the concrete operator-notification transports (IF-10 email
-/// over SMTP submission, IF-11 push over the gateway relay) behind
-/// [`atp_notification::NotificationChannelClient`].
+// SRS-NOTIF-001 — the concrete operator-notification transports (IF-10 email
+// over SMTP submission, IF-11 push over the gateway relay) behind
+// [`atp_notification::NotificationChannelClient`].
 pub mod notification;
 /// The live IB socket transport is behind the non-default `ib-live-transport`
 /// feature (operator-gated scaffold; see [`interactive_brokers`]).

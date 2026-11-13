@@ -8,8 +8,8 @@
 //! The SRS-EXE-003 acceptance criterion is that each order type can be
 //! "accepted, validated, state-tracked, and acknowledged in **both** live
 //! adapter test mode **and** internal simulation." A *prerequisite* for that
-//! AC is that the live execution path ([`atp-execution`], SRS-EXE-001 /
-//! SRS-EXE-006) and the paper simulation path ([`atp-simulation`], SRS-SIM-001)
+//! AC is that the live execution path (`atp-execution`, SRS-EXE-001 /
+//! SRS-EXE-006) and the paper simulation path (`atp-simulation`, SRS-SIM-001)
 //! share ONE order-type model — not two that can drift. Both sibling crates
 //! depend on this leaf crate, so the canonical vocabulary lives here and neither
 //! side re-implements it.

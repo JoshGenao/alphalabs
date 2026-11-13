@@ -16,7 +16,7 @@
 //! An order enters the book through the ENGINE'S OWN intake:
 //! [`VirtualOrderBook::place_accepted`] submits a [`PaperOrderRequest`] through
 //! the real [`PaperSimulationEngine::accept_order`] (the SRS-SIM-001 validation
-//! + internal-simulation routing every paper order takes) and rests each
+//! and internal-simulation routing every paper order takes) and rests each
 //! accepted leg — so a corporate action reaches exactly the orders the intake
 //! path accepted, never a shape constructed around it. The single-leg
 //! [`VirtualOrderBook::place`] primitive applies the same `validate_leg`
@@ -34,7 +34,7 @@
 //! the shipped, verified SRS-SIM-003 pattern, not an improvisation). The
 //! corporate-action application itself lives in [`crate::corporate_actions`];
 //! this store offers the crate-internal mutation seams it needs
-//! ([`VirtualOrderBook::orders_mut`]).
+//! (`VirtualOrderBook::orders_mut`).
 //!
 //! ## Why `accept_order` itself does not (and must not, today) retain
 //!

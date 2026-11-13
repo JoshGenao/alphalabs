@@ -198,7 +198,7 @@ impl ExecutionEngine {
     /// subscribed market data is stale is rejected with `MARKET_DATA_STALE`
     /// (the same category and `error_type` the live gate returns, so the
     /// error contract is identical for live and paper per SYS-64), a
-    /// [`StaleDataEvent`](atp_types::StaleDataEvent) is published, and the
+    /// [`StaleDataEvent`] is published, and the
     /// simulation port is never called. Paper does NOT check brokerage
     /// connectivity: it never reaches IB, so an IB outage is not a reason to
     /// refuse a simulated order.

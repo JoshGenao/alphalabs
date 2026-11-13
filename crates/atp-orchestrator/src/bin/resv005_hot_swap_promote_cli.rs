@@ -10,7 +10,7 @@
 //!
 //!   * the **real** SRS-RESV-004 demotion gate (`resolve_demotion`);
 //!   * the **real** SRS-EXE-001 live-designation authority
-//!     ([`LiveDesignation`]), persisted between invocations in a magic-headed
+//!     ([`LiveDesignation`](atp_execution::LiveDesignation)), persisted between invocations in a magic-headed
 //!     snapshot (scratch write → fsync → atomic rename), so the single-live
 //!     invariant survives the process boundary the REST surface sits behind;
 //!   * the **real** SRS-SIM-004 paper-state snapshot for the "preserves prior
@@ -1154,9 +1154,9 @@ impl HotSwapPromotionEventSink for JournalPromotionEvents {
     /// append happened here and the durable publish then failed BEFORE its rename, the
     /// journal would claim `promoted:true` for a swap the durable authority never
     /// accepted — and recovery tooling would reconcile from a false audit record for a
-    /// live-trading state change. So the event is buffered and [`commit`] appends it
+    /// live-trading state change. So the event is buffered and `commit` appends it
     /// once the designation is published (or once the attempt is known to have changed
-    /// nothing). Raised by /codex adversarial review r6 [high].
+    /// nothing). Raised by /codex adversarial review r6 `high`.
     fn record(&self, event: HotSwapPromotionEvent) -> Result<(), HotSwapSideEffectError> {
         println!("promotion-event-promoted:{}", event.promoted);
         println!("promotion-event-refusal:{}", event.refusal.unwrap_or("-"));

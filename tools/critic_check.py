@@ -42,6 +42,11 @@ class DiffSlice:
     files_deleted: tuple[str, ...]
     unified_diff: str
     commit_message: str = ""
+    # Where the two sides of the diff can be read, for checks that need whole files
+    # (the comment-only carve-out). `old_ref` is a commit; `new_ref` is a commit,
+    # INDEX (staged content) or WORKTREE. None = unknown, and such checks fail closed.
+    old_ref: str | None = None
+    new_ref: str | None = None
 
 
 def _run_git(args: list[str]) -> str:
@@ -57,20 +62,148 @@ def _run_git(args: list[str]) -> str:
     return result.stdout
 
 
+INDEX = "INDEX"
+WORKTREE = "WORKTREE"
+
+
 def staged_slice() -> DiffSlice:
-    return _slice_from(["--cached"])
+    sl = _slice_from(["--cached"])
+    return DiffSlice(
+        files_changed=sl.files_changed,
+        files_added=sl.files_added,
+        files_deleted=sl.files_deleted,
+        unified_diff=sl.unified_diff,
+        old_ref="HEAD",
+        new_ref=INDEX,
+    )
+
+
+def _range_refs(commit_range: str) -> tuple[str, str]:
+    """The two sides `git diff <commit_range>` compares."""
+    if "..." in commit_range:
+        left, right = commit_range.split("...", 1)
+        right = right or "HEAD"
+        return _run_git(["merge-base", left or "HEAD", right]).strip(), right
+    if ".." in commit_range:
+        left, right = commit_range.split("..", 1)
+        return left or "HEAD", right or "HEAD"
+    return commit_range, WORKTREE
 
 
 def range_slice(commit_range: str) -> DiffSlice:
     sl = _slice_from([commit_range])
     msg = _run_git(["log", "-1", "--format=%B", commit_range.split("..")[-1] or "HEAD"])
+    old_ref, new_ref = _range_refs(commit_range)
     return DiffSlice(
         files_changed=sl.files_changed,
         files_added=sl.files_added,
         files_deleted=sl.files_deleted,
         unified_diff=sl.unified_diff,
         commit_message=msg.strip(),
+        old_ref=old_ref,
+        new_ref=new_ref,
     )
+
+
+def _file_at(ref: str | None, path: str) -> str | None:
+    """`path` as it is at `ref` (a commit, INDEX or WORKTREE); None if unreadable."""
+    if ref is None:
+        return None
+    if ref == WORKTREE:
+        try:
+            return (ROOT / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    spec = f":{path}" if ref == INDEX else f"{ref}:{path}"
+    try:
+        return _run_git(["show", spec])
+    except RuntimeError:
+        return None
+
+
+def rust_code_without_comments(src: str) -> str:
+    """Rust source with every comment removed and whitespace outside literals collapsed.
+
+    Two versions of a file with equal results differ only in comments (doc comments
+    included) and layout, so they compile to the same program. String, raw-string,
+    byte-string and char literals are copied verbatim, so a `//` or `/*` inside one is
+    never mistaken for a comment; block comments nest, as in Rust.
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+
+    def ident(ch: str) -> bool:
+        return ch.isalnum() or ch == "_"
+
+    while i < n:
+        ch = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt == "/":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if src.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif src.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            if out and out[-1] != " ":
+                out.append(" ")
+            continue
+        raw = re.match(r'(?:b|c)?r(#*)"', src[i:]) if ch in "brc" else None
+        if raw and (i == 0 or not ident(src[i - 1])):
+            close = '"' + raw.group(1)
+            end = src.find(close, i + raw.end())
+            end = n if end < 0 else end + len(close)
+            out.append(src[i:end])
+            i = end
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            out.append(src[i : j + 1])
+            i = j + 1
+            continue
+        if ch == "'":
+            if nxt == "\\":
+                end = src.find("'", i + 3 if src[i + 2 : i + 3] == "'" else i + 2)
+                end = n if end < 0 else end + 1
+                out.append(src[i:end])
+                i = end
+                continue
+            if i + 2 < n and src[i + 2] == "'":
+                out.append(src[i : i + 3])
+                i += 3
+                continue
+            out.append(ch)  # a lifetime or label
+            i += 1
+            continue
+        if ch.isspace():
+            if out and out[-1] != " ":
+                out.append(" ")
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out).strip()
+
+
+def comment_only_change(diff: DiffSlice, path: str) -> bool:
+    """True only when `path` is a Rust file present on both sides of the diff and
+    its comment-stripped source is identical. Anything else (added, deleted, not
+    Rust, unreadable, or a ref that is not known) is NOT comment-only: fail closed."""
+    if not path.endswith(".rs") or path in diff.files_added or path in diff.files_deleted:
+        return False
+    old = _file_at(diff.old_ref, path)
+    new = _file_at(diff.new_ref, path)
+    if old is None or new is None:
+        return False
+    return rust_code_without_comments(old) == rust_code_without_comments(new)
 
 
 def _slice_from(diff_args: list[str]) -> DiffSlice:
@@ -376,11 +509,20 @@ def check_safety_critical_paired(diff: DiffSlice, report: Report) -> None:
     # output, EVIDENCE.md) named for the feature, so a feature whose id is itself a safety
     # token (srs-exe-001) matched by its evidence path alone, while integrate refuses to run
     # unless that evidence is committed. Evidence carries no behavior. (SRS-EXE-001, 2026-10-10)
+    #
+    # A Rust safety file whose change is COMMENTS ONLY is exempt too: its comment-stripped
+    # source is identical on both sides, so the compiled program is unchanged and there is
+    # no behaviour for a domain test to pin. The comparison uses a string-aware lexer, so a
+    # change inside a string literal that merely looks like a comment still counts as code.
+    # (SRS-MD-004 follow-up: clearing 410 rustdoc warnings touched 23 safety files.)
     _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/", ".harness/runs/")
     safety_files = [
         p
         for p in diff.files_changed
-        if SAFETY_PATH_RE.search(p) and "test" not in p and not p.startswith(_DOC_ONLY_PREFIXES)
+        if SAFETY_PATH_RE.search(p)
+        and "test" not in p
+        and not p.startswith(_DOC_ONLY_PREFIXES)
+        and not comment_only_change(diff, p)
     ]
     if not safety_files:
         return
