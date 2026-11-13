@@ -130,3 +130,34 @@ def test_the_matcher_itself_is_not_vacuous():
     assert len(_allowlist_regexes()) >= 4, (
         "fewer allowlist regexes than expected; the TOML parse may have silently returned nothing"
     )
+
+
+#: `[[allowlists]]` (the array form .gitleaks.toml uses) was added in gitleaks
+#: 8.25.0. Older versions skip the unknown key without a warning.
+MIN_GITLEAKS_FOR_ALLOWLISTS = (8, 25, 0)
+SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
+
+
+def test_ci_pins_a_gitleaks_version_that_reads_the_allowlists():
+    """Every test above proves the regexes are right. None of it matters if CI runs
+    a gitleaks that cannot parse them. gitleaks-action defaults to 8.24.3, which
+    predates `[[allowlists]]` and ignores the whole array, so the nightly
+    full-history scan stayed red on four allowlisted placeholders even after
+    `GITLEAKS_CONFIG` made the action read the file (2026-11-13)."""
+
+    workflow = SECURITY_WORKFLOW.read_text(encoding="utf-8")
+    pins = re.findall(
+        r"""^\s*GITLEAKS_VERSION:\s*["']?(\d+)\.(\d+)\.(\d+)["']?\s*$""", workflow, re.M
+    )
+    assert len(pins) == 1, (
+        f"{SECURITY_WORKFLOW.name} must pin exactly one GITLEAKS_VERSION; found {len(pins)}. "
+        "Without it the action runs 8.24.3, which ignores [[allowlists]]."
+    )
+    version = tuple(int(part) for part in pins[0])
+    assert version >= MIN_GITLEAKS_FOR_ALLOWLISTS, (
+        f"GITLEAKS_VERSION {'.'.join(pins[0])} predates [[allowlists]] "
+        f"({'.'.join(map(str, MIN_GITLEAKS_FOR_ALLOWLISTS))}); CI would silently skip every allowlist."
+    )
+    assert tomllib.loads(CONFIG.read_text(encoding="utf-8")).get("allowlists"), (
+        "the version floor above assumes the [[allowlists]] array form; update it if the config changes shape"
+    )
