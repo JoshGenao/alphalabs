@@ -63,13 +63,13 @@ Playbook updates: safety-paths.md rules 58-59 (suspend-inclusive clock; writers 
 Integrate attempt 1 (refused, nothing landed): evidence predated the chore commit's playbook edits, and
   the branch carried progress.d/plan-SRS-MD-004.md, which Step 4.1 of the coding prompt asks for but
   shared_state_violations refuses. Removed the plan file (its substance is in this note) and re-recorded
-  evidence last. Operator follow-up: prompts/coding_prompt.md Step 4.1 contradicts the integrate guard.
+  evidence last. Fixed afterwards: prompts/coding_prompt.md Step 4.1 now puts the plan in the session
+  note under `Approved plan:` instead of a plan file.
 Push transport: this session had no SSH key loaded, so integrate ran with per-process git settings routing
   git@github.com to HTTPS through `gh auth git-credential` (no git config or remote was changed).
-Follow-ups seen, not fixed here: ~12 pre-existing rustdoc unresolved-link warnings in
-  atp-orchestrator (hot_swap_promotion.rs, resv005_hot_swap_promote_cli.rs, cooldown_store.rs,
-  trigger_config_store.rs, err001_broker_envelope_cli.rs); `cargo audit` is not installed locally, so the
-  new rustix/bitflags/errno/libc entries are first audited by CI's security workflow.
+Follow-ups: the rustdoc warnings were 410 workspace-wide, not ~12; all fixed afterwards and gated by
+  `RUSTDOCFLAGS=-D warnings cargo doc` (pipeline-and-integrate.md rule 43). CI's security workflow
+  (`cargo audit`) passed on the rustix entries at 6d60266.
 Resume / next: implementation is complete. Remaining: I1 (operator IB paper-gateway window, after
   SRS-MD-003 verifies) and S1 (closes once SRS-MD-003 is passes:true). SRS-EXE-001 owns feeding a
   LineFreshnessBoard from the live IB tick stream inside the live host (see the host's refusal text and

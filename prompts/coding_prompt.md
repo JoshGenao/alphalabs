@@ -191,9 +191,13 @@ operator to approve it** (ExitPlanMode). The plan must state:
 
 Only after the operator approves does implementation begin. Two follow-ups:
 
-- **First action after approval:** persist the approved plan to
-  `progress.d/plan-$ATP_FEATURE_ID.md` (you couldn't write it while in plan mode).
-  It is a durable artifact + a resume aid for the next session.
+- **First action after approval:** write the approved plan into your session note,
+  `progress.d/session-$ATP_FEATURE_ID.md`, under an `Approved plan:` heading (you
+  couldn't write it while in plan mode). It is the resume aid for the next session,
+  and it lands on `main` with your chore commit (Step 7). Do **not** create
+  `progress.d/plan-$ATP_FEATURE_ID.md`: a branch may commit only its own session note
+  under `progress.d/`, so `integrate` refuses a branch carrying a plan file
+  (`shared_state_violations`, exit 6) at the very last step, after every gate passed.
 - **Long planning?** Extend your lease so a sibling can't reclaim the worktree:
   `python3 tools/agent_pool.py heartbeat "$ATP_FEATURE_ID"`.
 
@@ -664,6 +668,7 @@ in Step 7, so it lands on `main` via integrate and the next session can resume):
 Date: <today>
 Feature: $ATP_FEATURE_ID — <description>
 Outcome: complete | implemented (<open integration/system obligations>) | serialized (<A|B|C|D>: <what is in the way>) | partial(blocked-on <Y>)
+Approved plan: <written right after Step 4.1 approval; amend it if the scope changed>
 
 What I did:  <implementation + key decisions>
 What I tested (per step): Step 1: PASS — <cmd> → <result>; ...
