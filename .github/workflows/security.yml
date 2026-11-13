@@ -51,6 +51,14 @@ jobs:
           # commit. Setting the path explicitly removes the naming trap
           # entirely rather than relying on either convention.
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # The config above WAS read after that fix, and the nightly still failed
+          # on the same four findings. The action defaults to gitleaks 8.24.3, and
+          # the `[[allowlists]]` array in .gitleaks.toml only exists from 8.25.0.
+          # 8.24.3 skips the unknown key without a warning, so every allowlist was
+          # a no-op in CI while local runs (8.30.x) were clean. Pin a version that
+          # parses the config. tests/unit/test_gitleaks_allowlist.py fails if this
+          # pin is removed or drops below 8.25.0.
+          GITLEAKS_VERSION: "8.30.1"
 
   python-sast:
     name: Python SAST (bandit + pip-audit)
